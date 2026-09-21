@@ -4,7 +4,8 @@
  */
 
 import type { OpenAICodexAccountSummary } from './store.ts'
-import { OPENAI_CODEX_ACCOUNT_KEY_PREFIX, OPENAI_CODEX_PROVIDER } from './store.ts'
+import { OPENAI_CODEX_PROVIDER } from './store.ts'
+import { OPENAI_CODEX_ACCOUNT_LABEL_LENGTH, openAICodexAccountKeySuffix } from './account-contract.ts'
 
 /** One registered LLM route and the stored account it authenticates as. */
 export interface OpenAICodexAccountRoute {
@@ -20,7 +21,7 @@ export interface OpenAICodexAccountRoute {
 export const OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'
 
 /** Account-key characters kept in a secondary route label. */
-export const OPENAI_CODEX_ROUTE_LABEL_SUFFIX_LENGTH = 6
+export const OPENAI_CODEX_ROUTE_LABEL_SUFFIX_LENGTH = OPENAI_CODEX_ACCOUNT_LABEL_LENGTH
 
 /** Whether a route id belongs to this plugin's Codex route family. */
 export function isOpenAICodexRouteId(routeId: string): boolean {
@@ -31,10 +32,7 @@ export function isOpenAICodexRouteId(routeId: string): boolean {
 
 /** Build the stable selector label for one non-primary account. */
 export function openAICodexAccountRouteLabel(accountKey: string): string {
-  const suffix = (accountKey.startsWith(OPENAI_CODEX_ACCOUNT_KEY_PREFIX)
-    ? accountKey.slice(OPENAI_CODEX_ACCOUNT_KEY_PREFIX.length)
-    : accountKey).slice(0, OPENAI_CODEX_ROUTE_LABEL_SUFFIX_LENGTH)
-  return `${OPENAI_CODEX_PRIMARY_DISPLAY_NAME} (acct ${suffix})`
+  return `${OPENAI_CODEX_PRIMARY_DISPLAY_NAME} (acct ${openAICodexAccountKeySuffix(accountKey)})`
 }
 
 /** The lowest free `openai-codex-N` id at or above 2. */

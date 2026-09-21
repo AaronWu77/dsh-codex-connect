@@ -32,6 +32,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 - **Fast Mode** 只为当前对话请求优先服务（`service_tier: 'priority'`）。默认关闭，也不会更换模型。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
 - **额度条**在已登录时通常每 60 秒刷新一次，只显示服务端实际返回的 `5h` 和 `7d` 窗口，并显示精确剩余百分比与重置时间。`gpt-5.3-codex-spark` 使用独立的 Spark 额度桶。Codex Connect 不会虚构缺失窗口，也不会根据套餐名称隐藏已返回窗口。
 
+其他插件通过 `codexQuota` 客户端服务渲染额度。该服务保留活动账户原有的 `windows` 与 `credits` 字段，并新增 `accounts` 数组，按“活动账户在前、随后为文档顺序”列出每个已登录账户。每个条目包含由不可逆账户 key 生成的短标签（`acct <后缀>`）、窗口、已披露的赠送额度、刷新时间，以及 `unavailable` 标志。只有活动账户来自账户页面自身的轮询；其他已保存账户由 DSH 主机通过 `GET /plugins/dsh-openai-codex/quota` 读取，在有待观察者订阅时约每 60 秒一次。该路由只返回不可逆账户 key 和与状态路由相同的去密用量投影，绝不返回邮箱、token 或提供方账户 id。读取失败的账户会保留最近一次真实数据五分钟，因此单个账户的失败不会清空其他账户的单元格。
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/composer-capabilities.jpg" alt="DeepSeek Harness Composer 中的 Fast Mode 与额度控件" width="820">
 </p>

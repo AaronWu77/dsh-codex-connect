@@ -33,6 +33,7 @@ import { registerOpenAICodexProxyRoutes } from './proxy-routes.ts'
 import { OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME, OpenAICodexTrustedOriginsStore } from './trusted-origins.ts'
 import { registerOpenAICodexUpdateRoutes } from './update-routes.ts'
 import { registerOpenAICodexModelCatalogRoute } from './model-routes.ts'
+import { registerOpenAICodexQuotaRoute } from './quota-routes.ts'
 import { registerOpenAICodexOriginalImageRoute } from './image-asset-routes.ts'
 import {
   checkForOpenAICodexUpdate,
@@ -374,6 +375,12 @@ export function apply(ctx: Context, config: Config): void {
     registerOpenAICodexUpdateRoutes(webCtx, { currentVersion: CODEX_CONNECT_VERSION }, trustedOrigins)
     registerOpenAICodexModelCatalogRoute(webCtx, openAICodexModelCatalog, trustedOrigins)
     registerOpenAICodexOriginalImageRoute(webCtx, trustedOrigins, imageAssets)
+    registerOpenAICodexQuotaRoute(webCtx, {
+      store: credentials,
+      trustedOrigins,
+      proxyManager,
+      resolveProxyUrl: resolveProviderProxyUrl,
+    })
   })
 
   let stopped = false

@@ -26,6 +26,7 @@ import {
   OpenAICodexTrustedOriginsStore,
   normalizeTrustedOrigin,
 } from './trusted-origins.ts'
+import { OPENAI_CODEX_ACCOUNT_KEY_PATTERN } from './account-contract.ts'
 import { FastModeRegistry, isFastModeSessionId } from './fast-mode.ts'
 import { OPENAI_CODEX_FAST_MODE_PATH } from './fast-mode-paths.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
@@ -568,7 +569,7 @@ function fastModeBody(value: unknown): { sessionId: string; enabled: boolean } |
 }
 
 function accountKey(value: unknown): string | undefined {
-  return typeof value === 'string' && /^acct_[A-Za-z0-9_-]{43}$/u.test(value) ? value : undefined
+  return typeof value === 'string' && OPENAI_CODEX_ACCOUNT_KEY_PATTERN.test(value) ? value : undefined
 }
 
 function activateAccountBody(value: unknown): { accountKey: string } | undefined {

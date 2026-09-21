@@ -1,5 +1,6 @@
 /** Shared, in-memory OAuth UI state. No token or browser storage is used here. */
 import type { OpenAICodexUsage } from '../usage.ts'
+import { OPENAI_CODEX_ACCOUNT_KEY_PATTERN } from '../account-contract.ts'
 import { BrowserRequestTimeoutError, requestJson } from './request-json.ts'
 import {
   OPENAI_CODEX_AUTH_ACCOUNTS_PATH,
@@ -54,7 +55,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseUsage(value: unknown): OpenAICodexUsage {
+/**
+ * Validate one secret-free provider usage projection from a same-origin
+ * response.
+ * @param value - opaque JSON field carried by the account status or quota route.
+ * @returns the validated rolling buckets, credits, and optional member limit.
+ */
+export function decodeOpenAICodexUsage(value: unknown): OpenAICodexUsage {
   if (!isRecord(value) || !Array.isArray(value['rateLimits'])) throw new AccountRequestError('Invalid account response')
   const rateLimits = value['rateLimits'].map((candidate) => {
     if (!isRecord(candidate)
@@ -127,7 +134,7 @@ function parseStatus(value: unknown): AccountStatus {
     if (value['quotaError'] !== undefined && typeof value['quotaError'] !== 'string') throw new AccountRequestError('Invalid account response')
     return {
       status: 'signed-in',
-      usage: parseUsage(value['usage']),
+      usage: decodeOpenAICodexUsage(value['usage']),
       ...(typeof value['quotaError'] === 'string' ? { quotaError: value['quotaError'] } : {}),
     }
   }
@@ -144,7 +151,7 @@ function parseAccounts(value: unknown): readonly AccountSummary[] {
   const accounts = value['accounts'].map((candidate): AccountSummary => {
     if (!isRecord(candidate)
       || typeof candidate['accountKey'] !== 'string'
-      || !/^acct_[A-Za-z0-9_-]{43}$/u.test(candidate['accountKey'])
+      || !OPENAI_CODEX_ACCOUNT_KEY_PATTERN.test(candidate['accountKey'])
       || typeof candidate['active'] !== 'boolean'
       || typeof candidate['displayName'] !== 'string'
       || candidate['displayName'].length === 0

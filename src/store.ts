@@ -13,6 +13,12 @@ import {
   resolveOpenAICodexAccountProfiles,
   type OpenAICodexAccountProfileSource,
 } from './account-profile.ts'
+import {
+  OPENAI_CODEX_ACCOUNT_KEY_PREFIX,
+  OPENAI_CODEX_ACCOUNT_LIMIT,
+} from './account-contract.ts'
+
+export { OPENAI_CODEX_ACCOUNT_KEY_PREFIX, OPENAI_CODEX_ACCOUNT_LIMIT }
 
 /** Provider route and pi-ai provider id owned by this bundle. */
 export const OPENAI_CODEX_PROVIDER = 'openai-codex'
@@ -22,12 +28,6 @@ export const OPENAI_CODEX_AUTH_FILENAME = '.openai-codex-auth.json'
 
 /** Current multi-account on-disk format. */
 const AUTH_FORMAT_VERSION = 2
-
-/** Maximum number of stored OpenAI Codex accounts. */
-export const OPENAI_CODEX_ACCOUNT_LIMIT = 16
-
-/** Prefix of the browser-safe key derived from one provider account id. */
-export const OPENAI_CODEX_ACCOUNT_KEY_PREFIX = 'acct_'
 
 /** Maximum serialized credential document size. */
 export const OPENAI_CODEX_AUTH_DOCUMENT_LIMIT = 512 * 1024

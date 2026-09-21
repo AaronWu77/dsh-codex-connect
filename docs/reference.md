@@ -32,6 +32,8 @@ For GPT Codex conversations, the Composer shows Fast Mode and quota:
 - **Fast Mode** requests priority service (`service_tier: 'priority'`) for that conversation only. It is off by default and does not change the model. Actual speed and quota consumption depend on the service; a fixed speed multiplier is not guaranteed.
 - **Quota bars** normally refresh every 60 seconds while signed in and show only the `5h` and `7d` windows returned by the server, with the exact remaining percentage and reset time. `gpt-5.3-codex-spark` uses its separate Spark bucket. Codex Connect never invents missing windows or suppresses returned windows based on a plan name.
 
+Other plugins render quota through the `codexQuota` client service. It keeps the active account's `windows` and `credits` exactly as before and adds an `accounts` array listing every signed-in account, active first, then document order. Each entry carries a short label derived from the hashed account key (`acct <suffix>`), its windows, disclosed credits, refresh time, and an `unavailable` flag. Only the active account comes from the account page's own poll; every other stored account is read on the DSH host, roughly every 60 seconds while a consumer subscribes, through `GET /plugins/dsh-openai-codex/quota`. That route returns hashed account keys and the same secret-free usage projection as the status route — never an email, token, or provider account id. A failed account keeps its last real figures for five minutes, so one account's failure never blanks another's cells.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/composer-capabilities.jpg" alt="Fast Mode and quota controls in the DeepSeek Harness Composer" width="820">
 </p>

@@ -6,13 +6,15 @@ import { WebSearchProvider, WebSearchRequest, WebSearchResult } from "@deepseek-
 //#region src/account-profile.d.ts
 type OpenAICodexAccountProfileSource = 'oauth' | 'generated';
 //#endregion
+//#region src/account-contract.d.ts
+/** Maximum number of stored OpenAI Codex accounts. */
+declare const OPENAI_CODEX_ACCOUNT_LIMIT = 16;
+//#endregion
 //#region src/store.d.ts
 /** Provider route and pi-ai provider id owned by this bundle. */
 declare const OPENAI_CODEX_PROVIDER = "openai-codex";
 /** Basename of the OAuth document inside the Harness home. */
 declare const OPENAI_CODEX_AUTH_FILENAME = ".openai-codex-auth.json";
-/** Maximum number of stored OpenAI Codex accounts. */
-declare const OPENAI_CODEX_ACCOUNT_LIMIT = 16;
 /** Maximum serialized credential document size. */
 declare const OPENAI_CODEX_AUTH_DOCUMENT_LIMIT: number;
 /** Suffix used for the one-time version-1 rollback copy. */
