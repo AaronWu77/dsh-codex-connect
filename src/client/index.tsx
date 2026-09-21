@@ -34,6 +34,7 @@ import { OpenAICodexUpdateOverlay } from './OpenAICodexUpdateNotice.tsx'
 import { OpenAICodexUpdateStore } from './update-store.ts'
 import { CODEX_CONNECT_VERSION } from '../version.ts'
 import { OpenAICodexAccountStore } from './account-store.ts'
+import { createCodexQuotaService } from './quota-service.ts'
 import { OpenAICodexModelsCard } from './OpenAICodexModelsCard.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -54,6 +55,9 @@ export function apply(ctx: ClientContext): void {
   const updater = new OpenAICodexUpdateStore(CODEX_CONNECT_VERSION)
   const account = new OpenAICodexAccountStore()
   ctx.effect(() => () => { account.dispose() }, 'dsh-codex-connect: account observation')
+  // Cross-plugin quota face: other client plugins read the signed-in account's
+  // rolling windows through ctx.get('codexQuota').
+  ctx.provide('codexQuota', createCodexQuotaService(account))
   ctx.effect(() => {
     void updater.refresh()
     return () => { updater.dispose() }
