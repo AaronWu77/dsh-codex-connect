@@ -1,15 +1,22 @@
 /**
  * The cross-plugin quota face of the signed-in Codex account.
  *
- * The account store already polls ChatGPT's usage endpoint for the plugin's own
- * settings UI; this module reshapes that snapshot into one stable, secret-free
- * service so other plugins (the dsh-context dashboard) can render the rolling
- * windows without duplicating OAuth handling. `subscribe` delegates to the
- * store, so the first consumer also starts the poll and every account change
- * reaches it.
+ * The account store polls ChatGPT's usage endpoint for the plugin's own
+ * settings UI; this module reshapes that snapshot into one stable service so
+ * other plugins (the dsh-context panel) can render the rolling windows without
+ * duplicating OAuth handling.
+ *
+ * A poll that reports nothing — still loading, signed out, a failed request —
+ * must never blank a consumer's cells: the last real figure stands until it is
+ * older than {@link STALE_HOLD_MS}. Only a value-equivalent snapshot is
+ * swallowed entirely, so the store republishing the same numbers every 60s
+ * does not re-render anyone.
  */
 import type { AccountSnapshot, OpenAICodexAccountStore } from './account-store.ts'
 import type { OpenAICodexUsage } from '../usage.ts'
+
+/** How long the last reported quota survives refreshes that report nothing. */
+const STALE_HOLD_MS = 5 * 60_000
 
 /** One rolling quota window, flattened across the server's buckets. */
 export interface CodexQuotaWindow {
@@ -43,7 +50,7 @@ export interface CodexQuota {
 
 /** The `codexQuota` client service. */
 export interface CodexQuotaService {
-  /** Latest snapshot, or null while no account reports quota. */
+  /** Latest known snapshot, or null before the first report and after the hold expires. */
   snapshot(): CodexQuota | null
   /** Observe snapshot changes. */
   subscribe(listener: () => void): () => void
@@ -78,24 +85,78 @@ function quotaOf(usage: OpenAICodexUsage | null): CodexQuota | null {
   }
 }
 
+/** Whether two snapshots carry the same figures (identity is irrelevant). */
+function sameQuota(left: CodexQuota, right: CodexQuota): boolean {
+  if (left.windows.length !== right.windows.length) return false
+  for (let index = 0; index < left.windows.length; index += 1) {
+    const a = left.windows[index]!
+    const b = right.windows[index]!
+    if (a.bucketId !== b.bucketId
+      || a.remainingPercent !== b.remainingPercent
+      || a.windowSeconds !== b.windowSeconds
+      || a.resetAt !== b.resetAt) return false
+  }
+  const before = left.credits
+  const after = right.credits
+  if ((before === undefined) !== (after === undefined)) return false
+  if (before === undefined || after === undefined) return true
+  return before.unlimited === after.unlimited && before.balance === after.balance
+}
+
 /**
  * Bind the account store as the quota service.
  * @param account - the plugin instance's account store.
  * @returns the service published as `codexQuota`.
  */
 export function createCodexQuotaService(account: OpenAICodexAccountStore): CodexQuotaService {
-  // Snapshot identity is the cache key: the same reference must yield the same
-  // object, or a useSyncExternalStore consumer would re-render on every read.
-  const derived = new WeakMap<AccountSnapshot, CodexQuota | null>()
+  const listeners = new Set<() => void>()
+  let current: CodexQuota | null = null
+  let currentAt = 0
+  let unsubscribeAccount: (() => void) | undefined
+  let staleTimer: ReturnType<typeof setTimeout> | undefined
+
+  const notify = (): void => { for (const listener of listeners) listener() }
+  const clearTimer = (): void => {
+    clearTimeout(staleTimer)
+    staleTimer = undefined
+  }
+  /** Drop a held figure once it is older than the hold window. */
+  const armTimer = (): void => {
+    clearTimer()
+    if (current === null) return
+    const left = STALE_HOLD_MS - (Date.now() - currentAt)
+    staleTimer = setTimeout(() => {
+      staleTimer = undefined
+      if (current === null) return
+      if (Date.now() - currentAt < STALE_HOLD_MS) { armTimer(); return }
+      current = null
+      notify()
+    }, Math.max(0, left))
+  }
+  const sync = (): void => {
+    const next = quotaOf(usageOf(account.getSnapshot()))
+    if (next === null) { armTimer(); return }
+    currentAt = Date.now()
+    armTimer()
+    if (current !== null && sameQuota(current, next)) return
+    current = next
+    notify()
+  }
   return {
-    snapshot: (): CodexQuota | null => {
-      const snapshot = account.getSnapshot()
-      const cached = derived.get(snapshot)
-      if (cached !== undefined) return cached
-      const quota = quotaOf(usageOf(snapshot))
-      derived.set(snapshot, quota)
-      return quota
+    snapshot: () => current,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      // The store polls while it has listeners, so the service attaches on the
+      // first consumer and detaches with the last one.
+      if (unsubscribeAccount === undefined) unsubscribeAccount = account.subscribe(sync)
+      sync()
+      return () => {
+        listeners.delete(listener)
+        if (listeners.size > 0 || unsubscribeAccount === undefined) return
+        unsubscribeAccount()
+        unsubscribeAccount = undefined
+        clearTimer()
+      }
     },
-    subscribe: listener => account.subscribe(listener),
   }
 }
