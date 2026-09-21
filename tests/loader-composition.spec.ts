@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -19,10 +19,14 @@ afterEach(async () => {
   context = undefined
   if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
+  vi.unstubAllEnvs()
 })
 
 describe('OpenAI Codex real composition', () => {
   it('composes with the rc.2 pi-ai catalog directory without duplicate declarations', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-openai-codex-home-'))
+    // The stored account document decides the registered route set; keep it empty and hermetic.
+    vi.stubEnv('DSH_HOME', root)
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
@@ -32,6 +36,7 @@ describe('OpenAI Codex real composition', () => {
 
   it('loads through the Loader, exposes the catalog, and unregisters on disposal', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-openai-codex-loader-'))
+    vi.stubEnv('DSH_HOME', root)
     const configPath = join(root, 'cordis.yml')
     await writeFile(configPath, [
       '- id: llm',

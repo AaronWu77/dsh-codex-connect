@@ -61,15 +61,17 @@ describe('OpenAI Codex browser contribution', () => {
   })
 
   it('renders a Codex Connect card and uses OpenAI Codex for the Composer provider', async () => {
-    const [clientCard, locales, adapter] = await Promise.all([
+    const [clientCard, locales, adapter, accountRoutes] = await Promise.all([
       readFile(new URL('../src/client/OpenAICodexPluginCard.tsx', import.meta.url), 'utf8'),
       readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8'),
       readFile(new URL('../src/adapter.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../src/account-routes.ts', import.meta.url), 'utf8'),
     ])
     expect(clientCard).toContain('<li style={{ ...cardStyle, background:')
     expect(clientCard).toContain('aria-expanded={open}')
     expect(locales.match(/title: 'Codex Connect'/gu)).toHaveLength(2)
-    expect(adapter).toContain("displayName: 'OpenAI Codex'")
+    expect(accountRoutes).toContain("OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'")
+    expect(adapter).toContain('displayName: OPENAI_CODEX_PRIMARY_DISPLAY_NAME')
   })
 
   it('registers the image-generation result view independently of the generation toggle', async () => {

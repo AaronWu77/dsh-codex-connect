@@ -58,7 +58,7 @@ function response(): ServerResponse & { observed: { status?: number; body?: stri
 
 describe('Codex Connect model catalog route', () => {
   it('serves the detached provider catalog to a trusted loopback GET', async () => {
-    const catalog: OpenAICodexModelCatalogEntry[] = [{ id: 'gpt-test', name: 'GPT Test', contextWindow: 128_000, maxContextWindow: 128_000, contextLimitSource: 'catalog-default' }]
+    const catalog: OpenAICodexModelCatalogEntry[] = [{ id: 'gpt-test', name: 'GPT Test', contextWindow: 128_000, maxTokens: 128_000, maxContextWindow: 128_000, contextLimitSource: 'catalog-default' }]
     const resolveCatalog = vi.fn(() => catalog)
     const res = response()
 

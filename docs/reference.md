@@ -10,6 +10,8 @@ OAuth credentials are stored on the DSH host and used there to authenticate and 
 
 Choose an `openai-codex` model in the normal Harness model picker. Model names remain canonical in every UI language. **More settings → Models** controls which models appear in discovery; hiding a model does not disable routing by its exact id.
 
+Every stored account also keeps its own route in the model picker, so another signed-in account's models stay selectable while a different account is current. The current account keeps the `openai-codex` route; each other stored account is offered as `openai-codex-2`, `openai-codex-3`, and so on, labelled `OpenAI Codex (acct <suffix>)` from its opaque account key. A route authenticates as its own account for the whole request, including token refresh. Activating another account hands `openai-codex` to it and gives the previously current account a numbered route; all other accounts keep their existing numbers. This is model selection, not failover: Codex Connect still never rotates accounts or retries a rejected request as another account.
+
 The Codex catalog comes from the installed `@earendil-works/pi-ai` package, not a live query of the account's available models. DSH `0.1.2-rc.1` uses pi-ai `^0.84.2`, which lacks `gpt-6-astra`; Codex Connect supplies that definition. Alpha 4.33 is also verified with DSH `0.1.5-alpha.1` and pi-ai `0.85.1`. Mixed host package versions and other DSH/pi-ai combinations remain unverified. With a native Astra entry, the plugin preserves its metadata and retains Low, Medium, High, Xhigh, and Max reasoning choices without modifying the installed catalog. Users do not need to upgrade pi-ai separately to select Astra. The exact verified pairs and acceptance limits are recorded in the release notes; dependency declarations alone do not establish verification. Neither catalog source proves account access.
 
 - Adding an account leaves the current account usable while authorization is pending.
@@ -100,6 +102,7 @@ The main plugin options are:
 | `enableProxy` | `false` | Use `proxyUrl` for Codex Connect traffic |
 | `proxyUrl` | `http://127.0.0.1:7890` | Credential-free HTTP(S) proxy origin; inactive until enabled |
 | `contextWindowOverrides` | none | Per-model client context-budget overrides |
+| `maxTokensOverrides` | none | Per-model default maximum output tokens |
 | `enableSearch` | `false` | Register Codex search and select it when the setting is saved |
 | `enableImageTool` | `false` | Register `view_image` |
 | `enableImageGeneration` | `false` | Register GPT Image generation |
@@ -111,6 +114,8 @@ The main plugin options are:
 | `searchMaxOutputTokens` | `10000` | Positive integer output budget for search |
 
 `contextWindowOverrides` changes the client budget, not OpenAI's server capacity. Unknown model ids and values above the plugin's documented configuration ceiling fail explicitly. Use `null` for the whole field to mask inherited overrides, or `null` for one model to restore its catalog default while preserving other entries. Leave room for output and protocol overhead, and treat larger values as deployment-specific experiments rather than entitlement evidence. [Alpha design](design.md) documents the ownership and persistence rules.
+
+`maxTokensOverrides` takes the same map with the same per-model ceiling. Each value becomes the request default output cap DSH reports for that model and the `maxTokens` on its resolved model record; it does not change the context window and does not prove the account can generate that much. Use `null` the same way to mask or reset.
 
 ## Diagnostics and recovery
 

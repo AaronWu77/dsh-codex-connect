@@ -26,6 +26,9 @@ const AUTH_FORMAT_VERSION = 2
 /** Maximum number of stored OpenAI Codex accounts. */
 export const OPENAI_CODEX_ACCOUNT_LIMIT = 16
 
+/** Prefix of the browser-safe key derived from one provider account id. */
+export const OPENAI_CODEX_ACCOUNT_KEY_PREFIX = 'acct_'
+
 /** Maximum serialized credential document size. */
 export const OPENAI_CODEX_AUTH_DOCUMENT_LIMIT = 512 * 1024
 
@@ -180,7 +183,7 @@ function activeCredential(document: AuthDocument): StoredOAuthCredential {
 }
 
 function accountKey(accountId: string): string {
-  return `acct_${createHash('sha256').update(accountId).digest('base64url')}`
+  return `${OPENAI_CODEX_ACCOUNT_KEY_PREFIX}${createHash('sha256').update(accountId).digest('base64url')}`
 }
 
 function serializeDocument(document: AuthDocument): string {
@@ -207,6 +210,31 @@ export class OpenAICodexCredentialStore implements CredentialStore {
 
   /** Owner-only version-1 rollback copy, created at the first migration write. */
   readonly version1BackupFilename: string
+
+  private readonly changeListeners = new Set<() => void>()
+
+  /**
+   * Observe committed credential-document changes that can alter the stored
+   * account set or the current selection. Token refreshes of one captured
+   * request do not notify. A throwing listener is contained so it cannot fail
+   * the commit.
+   * @param listener - called after each such change commits.
+   * @returns the unsubscribe function.
+   */
+  onDidChange(listener: () => void): () => void {
+    this.changeListeners.add(listener)
+    return () => { this.changeListeners.delete(listener) }
+  }
+
+  private notifyChanged(): void {
+    for (const listener of [...this.changeListeners]) {
+      try {
+        listener()
+      } catch {
+        // A listener failure must not fail a credential write that already committed.
+      }
+    }
+  }
 
   /**
    * @param filename - explicit document path, defaulting under `$DSH_HOME`.
@@ -273,7 +301,33 @@ export class OpenAICodexCredentialStore implements CredentialStore {
    */
   async captureActiveAccount(): Promise<CapturedOpenAICodexAccount> {
     const document = await this.readDocument()
-    const captured = document === undefined ? undefined : cloneCredential(activeCredential(document))
+    return this.captureCredential(
+      document,
+      document === undefined ? undefined : cloneCredential(activeCredential(document)),
+    )
+  }
+
+  /**
+   * Capture one exact stored account by its browser-safe key for a request's
+   * complete auth resolution, whether or not it is the current selection.
+   * Refreshes through the returned store update only that captured account and
+   * never change the user's current account selection.
+   * @param selectedAccountKey - account key from {@link accounts}.
+   * @returns the request-scoped store; an unknown key captures no credential.
+   */
+  async captureAccount(selectedAccountKey: string): Promise<CapturedOpenAICodexAccount> {
+    const document = await this.readDocument()
+    const selected = document === undefined
+      ? undefined
+      : documentCredentials(document).find(credential => accountKey(credential.accountId) === selectedAccountKey)
+    return this.captureCredential(document, selected === undefined ? undefined : cloneCredential(selected))
+  }
+
+  /** Bind one already-read credential to a request-scoped store. */
+  private captureCredential(
+    document: AuthDocument | undefined,
+    captured: StoredOAuthCredential | undefined,
+  ): CapturedOpenAICodexAccount {
     const capturedAccountId = captured?.accountId
     let requestCredential: StoredOAuthCredential | undefined = captured
     const snapshot: CapturedOpenAICodexAccount = {
@@ -355,7 +409,7 @@ export class OpenAICodexCredentialStore implements CredentialStore {
   /** Select a stored account using its browser-safe key. */
   async activate(selectedAccountKey: string): Promise<OAuthCredential> {
     await mkdir(dirname(this.filename), { recursive: true, mode: 0o700 })
-    return this.withWriterLock(async () => {
+    const activated = await this.withWriterLock(async () => {
       const document = await this.readDocument()
       if (document === undefined) throw new Error('openai-codex: account not found')
       const credentials = documentCredentials(document)
@@ -368,6 +422,8 @@ export class OpenAICodexCredentialStore implements CredentialStore {
       }, document)
       return cloneCredential(selected)
     })
+    this.notifyChanged()
+    return activated
   }
 
   /** Remove one account; active removal requires an explicit stored replacement. */
@@ -404,6 +460,7 @@ export class OpenAICodexCredentialStore implements CredentialStore {
         credentials: remaining.map(cloneCredential),
       })
     })
+    this.notifyChanged()
   }
 
   /** @inheritdoc */
@@ -417,7 +474,7 @@ export class OpenAICodexCredentialStore implements CredentialStore {
       throw new Error(`openai-codex: credential store does not own provider "${providerId}"`)
     }
     await mkdir(dirname(this.filename), { recursive: true, mode: 0o700 })
-    return this.withWriterLock(async () => {
+    const modified = await this.withWriterLock(async () => {
       const currentDocument = await this.readDocument()
       const current = currentDocument === undefined ? undefined : cloneCredential(activeCredential(currentDocument))
       // pi-ai treats invocation of fn as the commit point and waits for its result.
@@ -439,6 +496,8 @@ export class OpenAICodexCredentialStore implements CredentialStore {
       }, currentDocument)
       return cloneCredential(validated)
     })
+    this.notifyChanged()
+    return modified
   }
 
   /** @inheritdoc */
@@ -449,6 +508,7 @@ export class OpenAICodexCredentialStore implements CredentialStore {
       await rm(this.filename, { force: true })
       await rm(this.version1BackupFilename, { force: true })
     })
+    this.notifyChanged()
   }
 
   /** Allow the provider's 15-second refresh plus bounded filesystem completion. */

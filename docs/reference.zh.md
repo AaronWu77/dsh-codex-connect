@@ -10,6 +10,8 @@ OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认�
 
 在 Harness 的常规模型选择器中选择一个 `openai-codex` 模型。所有界面语言均保留模型的规范名称。**更多设置 → 模型** 控制发现列表中显示哪些模型；隐藏模型不会禁用按精确 ID 路由。
 
+每个已保存账户在模型选择器中都有独立路由，因此当前账户不是某个账户时，该账户的模型仍然可以直接选择。当前账户保留 `openai-codex` 路由；其他每个账户分别以 `openai-codex-2`、`openai-codex-3` 等出现，并用其不可逆账户 key 生成的 `OpenAI Codex (acct <后缀>)` 标注。每条路由在整个请求期间（包括 token 刷新）都只以自己绑定的账户认证。切换到另一个账户时，`openai-codex` 移交该账户，原当前账户获得一个编号路由；其余账户的编号保持不变。这是模型选择，不是故障切换：Codex Connect 仍不会自动轮换账户，也不会改用其他账户重试被拒绝的请求。
+
 Codex 目录来自已安装的 `@earendil-works/pi-ai` 包，不是实时查询账户可用模型的结果。DSH `0.1.2-rc.1` 使用 pi-ai `^0.84.2`，其中尚无 `gpt-6-astra`，因此由 Codex Connect 补充定义。Alpha 4.33 也已验证 DSH `0.1.5-alpha.1` 与 pi-ai `0.85.1` 的组合；混装的宿主包以及其他 DSH/pi-ai 组合仍属未验证。遇到原生 Astra 条目时，插件保留其元数据，并维持 Low、Medium、High、Xhigh 和 Max 推理选择，不修改已安装的目录。用户无需单独升级 pi-ai 即可选择 Astra。发布说明记录了准确的已验证组合和验收限制；依赖声明本身不代表已验证。两种来源的目录条目都不能证明账户具有调用权限。
 
 - 添加账户期间，当前账户仍可继续使用。
@@ -100,6 +102,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 | `enableProxy` | `false` | Codex Connect 流量是否使用 `proxyUrl` |
 | `proxyUrl` | `http://127.0.0.1:7890` | 不带凭据的 HTTP(S) proxy origin；启用前不生效 |
 | `contextWindowOverrides` | 无 | 按模型设置客户端上下文预算 |
+| `maxTokensOverrides` | 无 | 按模型设置默认最大输出 Tokens |
 | `enableSearch` | `false` | 注册 Codex 搜索，并在保存时将它选为搜索提供方 |
 | `enableImageTool` | `false` | 注册 `view_image` |
 | `enableImageGeneration` | `false` | 注册 GPT Image 图片生成 |
@@ -111,6 +114,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 | `searchMaxOutputTokens` | `10000` | 搜索使用的正整数输出预算 |
 
 `contextWindowOverrides` 修改的是客户端预算，不是 OpenAI 服务端容量。未知模型 ID 或超过插件文档配置上限的值会明确失败。将整个字段设为 `null` 可屏蔽继承的全部覆盖值；将单个模型设为 `null` 可恢复其目录默认值，同时保留其他条目。请为输出和协议开销预留空间，并把更大的数值视为特定部署的实验，不能当作账户权限证据。所有权与持久化规则见 [Alpha 设计](design.zh.md)。
+
+`maxTokensOverrides` 使用相同的地图结构和相同的逐模型上限。每个值会成为 DSH 为该模型上报的请求默认输出上限，以及该模型解析记录中的 `maxTokens`；它不会改变上下文长度，也不代表账户真的能生成这么多。整字段或单个模型设为 `null` 的语义与上文一致。
 
 ## 诊断与恢复
 

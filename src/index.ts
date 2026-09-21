@@ -18,7 +18,16 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import { assertOpenAICodexContextWindowOverrides, createOpenAICodexAdapter, openAICodexModelCatalog } from './adapter.ts'
+import {
+  assertOpenAICodexContextWindowOverrides,
+  assertOpenAICodexMaxTokensOverrides,
+  createOpenAICodexAdapter,
+  openAICodexModelCatalog,
+} from './adapter.ts'
+import { OPENAI_CODEX_PRIMARY_ROUTE } from './adapter.ts'
+import type { OpenAICodexRouteBinding } from './adapter.ts'
+import type { OpenAICodexAccountRoute } from './account-routes.ts'
+import { OpenAICodexAccountRouteRegistry } from './account-routes.ts'
 import { OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS, registerOpenAICodexAuthRoutes } from './auth-routes.ts'
 import { registerOpenAICodexProxyRoutes } from './proxy-routes.ts'
 import { OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME, OpenAICodexTrustedOriginsStore } from './trusted-origins.ts'
@@ -109,6 +118,7 @@ import {
   resolveOpenAICodexProxyUrl,
   resolveOpenAICodexSettings,
   parseOpenAICodexContextWindowOverrides,
+  parseOpenAICodexMaxTokensOverrides,
 } from './settings-contract.ts'
 
 export {
@@ -118,6 +128,7 @@ export {
   DEFAULT_OPENAI_CODEX_SETTINGS,
   isValidOpenAICodexImageModelHint,
   isValidOpenAICodexContextWindowOverrides,
+  isValidOpenAICodexMaxTokensOverrides,
   isValidOpenAICodexProxyUrl,
   OPENAI_CODEX_SETTINGS_NAMESPACE,
   resolveOpenAICodexProxyUrl,
@@ -249,6 +260,14 @@ export interface Config {
    * Whole-map or per-model null disables inherited overrides; omitted keys inherit lower layers.
    */
   contextWindowOverrides?: Record<string, number | null> | null | undefined
+  /**
+   * Per-model maximum output tokens keyed by catalog model id. Each value sets
+   * the request default output cap DSH reports for that model and the resolved
+   * model record's `maxTokens`. It does not change the context window, the
+   * provider's actual capability, or the deployment's compaction policy.
+   * Whole-map or per-model null disables inherited overrides; omitted keys inherit lower layers.
+   */
+  maxTokensOverrides?: Record<string, number | null> | null | undefined
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean
   /** Register the optional image-loading tool. */
@@ -280,6 +299,10 @@ export const Config: z<Config> = z.object({
     z.union([z.const(undefined), z.dict(z.union([z.const(null), z.number()]))]),
     parseOpenAICodexContextWindowOverrides,
   ),
+  maxTokensOverrides: z.transform(
+    z.union([z.const(undefined), z.dict(z.union([z.const(null), z.number()]))]),
+    parseOpenAICodexMaxTokensOverrides,
+  ),
   enableSearch: z.boolean().default(false),
   enableImageTool: z.boolean().default(false),
   enableImageGeneration: z.boolean().default(false),
@@ -304,6 +327,7 @@ export function apply(ctx: Context, config: Config): void {
   const validateSettings = (value: Config): void => {
     resolveOpenAICodexSettings(value)
     assertOpenAICodexContextWindowOverrides(value.contextWindowOverrides ?? undefined, catalog)
+    assertOpenAICodexMaxTokensOverrides(value.maxTokensOverrides ?? undefined, catalog)
   }
   validateSettings(config)
   let current = () => config
@@ -325,7 +349,12 @@ export function apply(ctx: Context, config: Config): void {
     resolveProviderProxyUrl,
     () => resolveOpenAICodexSettings(current()).enableAutoReview,
   )
-  ctx.llm.registerAdapter(
+  // The active account keeps the primary route id so existing settings and the
+  // settings card keep addressing it; every other stored account gets its own
+  // route, reconciled below whenever the account document changes.
+  const accountRoutes = new OpenAICodexAccountRouteRegistry()
+  let routeBindings: readonly OpenAICodexRouteBinding[] = [OPENAI_CODEX_PRIMARY_ROUTE]
+  const registration = ctx.llm.registerAdapter(
     [OPENAI_CODEX_PROVIDER],
     createOpenAICodexAdapter(
       credentials,
@@ -335,6 +364,8 @@ export function apply(ctx: Context, config: Config): void {
       proxyManager,
       resolveProviderProxyUrl,
       () => resolveOpenAICodexSettings(current()).contextWindowOverrides,
+      () => resolveOpenAICodexSettings(current()).maxTokensOverrides,
+      () => routeBindings,
     ),
   )
   ctx.inject(['webServer'], webCtx => {
@@ -353,6 +384,40 @@ export function apply(ctx: Context, config: Config): void {
   let imageTail = Promise.resolve()
   let imageGenerationFiber: Fiber | undefined
   let imageGenerationTail = Promise.resolve()
+  let accountRouteTail = Promise.resolve()
+  let registeredRouteIds: readonly string[] = [OPENAI_CODEX_PROVIDER]
+
+  const reconcileAccountRoutes = async (): Promise<void> => {
+    if (stopped) return
+    let next: readonly OpenAICodexAccountRoute[]
+    try {
+      next = accountRoutes.reconcile(await credentials.accounts())
+    } catch (error: unknown) {
+      ctx.logger.error('dsh-codex-connect: could not read the stored accounts for the model picker')
+      ctx.logger.error(error)
+      return
+    }
+    const nextRouteIds = next.map(route => route.routeId)
+    if (deepEqualJson(nextRouteIds, registeredRouteIds)) return
+    // The account read is the only suspension point; teardown may have started inside it.
+    if (stopped) return
+    const previous = routeBindings
+    routeBindings = next
+    try {
+      // One atomic route swap: no request observes the registry between sets.
+      registration.replace([...nextRouteIds])
+    } catch (error: unknown) {
+      routeBindings = previous
+      ctx.logger.error('dsh-codex-connect: could not register the per-account Codex model routes')
+      ctx.logger.error(error)
+      return
+    }
+    registeredRouteIds = nextRouteIds
+  }
+
+  const scheduleAccountRoutes = (): void => {
+    accountRouteTail = accountRouteTail.then(reconcileAccountRoutes, reconcileAccountRoutes)
+  }
 
   const reconcileSearch = async (): Promise<void> => {
     if (stopped) return
@@ -464,9 +529,11 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
+  ctx.effect(() => credentials.onDidChange(scheduleAccountRoutes), 'dsh-codex-connect: account route reconciliation')
+
   ctx.effect(() => async () => {
     stopped = true
-    await Promise.all([searchTail, imageTail, imageGenerationTail])
+    await Promise.all([searchTail, imageTail, imageGenerationTail, accountRouteTail])
     const search = searchFiber
     const image = imageFiber
     const imageGeneration = imageGenerationFiber
@@ -504,4 +571,5 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
   scheduleCapabilities()
+  scheduleAccountRoutes()
 }

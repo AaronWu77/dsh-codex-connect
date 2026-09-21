@@ -263,4 +263,53 @@ describe('OpenAICodexCredentialStore', () => {
     await expect(stat(auth.filename)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(auth.version1BackupFilename)).rejects.toMatchObject({ code: 'ENOENT' })
   })
+
+  it('captures one named account for a request without changing the current selection', async () => {
+    const auth = await store()
+    await auth.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential('one', 'account-1')))
+    await auth.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential('two', 'account-2')))
+    const other = (await auth.accounts()).find(account => !account.active)!
+
+    const captured = await auth.captureAccount(other.accountKey)
+    expect(await captured.read(OPENAI_CODEX_PROVIDER)).toMatchObject({ access: 'one', accountId: 'account-1' })
+    expect((await captured.accounts()).map(account => account.active)).toEqual([false, true])
+    const refreshed = await captured.modify(OPENAI_CODEX_PROVIDER, async current => {
+      expect(current).toMatchObject({ access: 'one', accountId: 'account-1' })
+      return credential('one-refreshed', 'account-1')
+    })
+    expect(refreshed).toMatchObject({ access: 'one-refreshed', accountId: 'account-1' })
+    expect(await auth.read(OPENAI_CODEX_PROVIDER)).toMatchObject({ access: 'two', accountId: 'account-2' })
+
+    const missing = await auth.captureAccount('acct_0000000000000000000000000000000000000000000')
+    expect(await missing.read(OPENAI_CODEX_PROVIDER)).toBeUndefined()
+    expect(await missing.list()).toEqual([])
+    expect(await missing.modify(OPENAI_CODEX_PROVIDER, async () => credential('ignored', 'account-9'))).toBeUndefined()
+  })
+
+  it('notifies subscribers after a committed account set or selection change only', async () => {
+    const auth = await store()
+    const changes: string[] = []
+    const unsubscribe = auth.onDidChange(() => { changes.push('removed') })
+    unsubscribe()
+    await auth.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential('one', 'account-1')))
+    expect(changes).toEqual([])
+
+    const stop = auth.onDidChange(() => { changes.push('changed') })
+    expect(await auth.activate((await auth.accounts())[0]!.accountKey)).toMatchObject({ accountId: 'account-1' })
+    await auth.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential('two', 'account-2')))
+    const accounts = await auth.accounts()
+    await auth.removeAccount(accounts[0]!.accountKey)
+    await auth.delete(OPENAI_CODEX_PROVIDER)
+    expect(changes).toHaveLength(4)
+    stop()
+  })
+
+  it('contains a failing change listener so the committed write still succeeds', async () => {
+    const auth = await store()
+    const stop = auth.onDidChange(() => { throw new Error('listener failure fixture') })
+    await expect(auth.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential('one', 'account-1'))))
+      .resolves.toMatchObject({ accountId: 'account-1' })
+    stop()
+    expect(await auth.read(OPENAI_CODEX_PROVIDER)).toMatchObject({ access: 'one' })
+  })
 })

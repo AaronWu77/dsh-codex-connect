@@ -101,6 +101,7 @@ const UNAVAILABLE_SNAPSHOT = {
 const CONFIG_FIELDS = [
   'models',
   'contextWindowOverrides',
+  'maxTokensOverrides',
   'enableProxy',
   'proxyUrl',
   'enableImageTool',
@@ -155,7 +156,7 @@ function sameField(
   left: OpenAICodexSettingsConfig[keyof OpenAICodexSettingsConfig],
   right: OpenAICodexSettingsConfig[keyof OpenAICodexSettingsConfig],
 ): boolean {
-  if (field === 'contextWindowOverrides') {
+  if (field === 'contextWindowOverrides' || field === 'maxTokensOverrides') {
     const leftMap = left as OpenAICodexSettingsConfig['contextWindowOverrides']
     const rightMap = right as OpenAICodexSettingsConfig['contextWindowOverrides']
     return Object.keys(leftMap ?? {}).length === Object.keys(rightMap ?? {}).length
@@ -387,12 +388,15 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     && snapshot.value?.enableProxy === true
     && normalizeOpenAICodexProxyUrl(draft.proxyUrl) === normalizeOpenAICodexProxyUrl(snapshot.value.proxyUrl)
   const validProxySelection = draft?.enableProxy !== true || acceptedProxyUnchanged || testedProxy
-  const validContexts = draft !== undefined && isValidOpenAICodexContextWindowOverrides(draft.contextWindowOverrides ?? {})
-    && Object.entries(draft.contextWindowOverrides ?? {}).every(([id, budget]) => {
+  const validOverrides = (overrides: Readonly<Record<string, number>> | undefined): boolean =>
+    isValidOpenAICodexContextWindowOverrides(overrides ?? {})
+    && Object.entries(overrides ?? {}).every(([id, budget]) => {
       const model = modelCatalog?.find(entry => entry.id === id)
       return model !== undefined && isValidOpenAICodexContextBudget(budget, model.maxContextWindow)
     })
-  const valid = validModel && validTokens && validProxy && validImageModelHint && validContexts && validProxySelection
+  const validContexts = draft !== undefined && validOverrides(draft.contextWindowOverrides)
+  const validMaxTokens = draft !== undefined && validOverrides(draft.maxTokensOverrides)
+  const valid = validModel && validTokens && validProxy && validImageModelHint && validContexts && validMaxTokens && validProxySelection
 
   const save = async (): Promise<void> => {
     if (scope === undefined || draft === undefined || !snapshot.writable || !valid) return
@@ -414,7 +418,9 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
         // Null masks prevent a reset row from silently re-inheriting a composition override.
         const value = field === 'contextWindowOverrides'
           ? { ...Object.fromEntries((modelCatalog ?? []).map(model => [model.id, null])), ...desired.contextWindowOverrides }
-          : desired[field]
+          : field === 'maxTokensOverrides'
+            ? { ...Object.fromEntries((modelCatalog ?? []).map(model => [model.id, null])), ...desired.maxTokensOverrides }
+            : desired[field]
         return value === undefined ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value }
       })
       if (ops.length > 0) await scope.mutate(ops, current.revision)
@@ -507,6 +513,12 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
                 const changeBudget = (value: number): void => {
                   update('contextWindowOverrides', { ...draft.contextWindowOverrides, [model.id]: value })
                 }
+                const maxTokens = draft.maxTokensOverrides?.[model.id]
+                const invalidMaxTokens = maxTokens !== undefined && !isValidOpenAICodexContextBudget(maxTokens, model.maxContextWindow)
+                const effectiveMaxTokens = maxTokens ?? model.maxTokens
+                const changeMaxTokens = (value: number): void => {
+                  update('maxTokensOverrides', { ...draft.maxTokensOverrides, [model.id]: value })
+                }
                 return (
                   <div key={model.id} role="group" aria-label={model.name} style={{ minWidth: 0, padding: '10px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -534,6 +546,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
                       </div>
                     </div>
                     {expandedModels[model.id] === true ? (
+                      <>
                       <div role="group" aria-label={t('contextTokens')} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
                         <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                           <span style={labelStyle}>{t('contextTokens')}</span>
@@ -568,6 +581,26 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
                           ? <p style={bodyStyle} role="status">{t('contextAboveDefault')}</p> : null}
                         {invalidBudget ? <p style={errorStyle} role="alert">{t('contextInvalid')} (1–{model.maxContextWindow.toLocaleString()})</p> : null}
                       </div>
+                      <div role="group" aria-label={t('maxTokensLabel')} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <span style={labelStyle}>{t('maxTokensLabel')}</span>
+                          <input type="number" min={1} step={1} max={model.maxContextWindow} style={{ ...controlStyle, width: 112, flexShrink: 0, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                            value={Number.isNaN(effectiveMaxTokens) ? '' : effectiveMaxTokens}
+                            aria-invalid={invalidMaxTokens}
+                            onChange={event => { changeMaxTokens(event.currentTarget.valueAsNumber) }}
+                          />
+                        </label>
+                        <div style={{ ...bodyStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                          <span>{t('maxTokensDefault')}: <span style={{ fontVariantNumeric: 'tabular-nums' }}>{model.maxTokens.toLocaleString()}</span> tokens</span>
+                          <button type="button" title={`${t('maxTokensDefault')}: ${model.maxTokens.toLocaleString()} tokens`} style={{ ...bodyStyle, padding: '2px 0', border: 0, background: 'transparent', font: 'inherit', fontSize: 12, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }} onClick={() => {
+                            const overrides = { ...draft.maxTokensOverrides }
+                            delete overrides[model.id]
+                            update('maxTokensOverrides', overrides)
+                          }}>{t('contextReset')}</button>
+                        </div>
+                        {invalidMaxTokens ? <p style={errorStyle} role="alert">{t('maxTokensInvalid')} (1–{model.maxContextWindow.toLocaleString()})</p> : null}
+                      </div>
+                      </>
                     ) : null}
                   </div>
                 )
@@ -575,7 +608,9 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
             </div>
           )}
           <p style={bodyStyle}>{t('contextWarning')}</p>
+          <p style={bodyStyle}>{t('maxTokensHelp')}</p>
           {!validContexts ? <p style={errorStyle} role="alert">{t('contextInvalid')}</p> : null}
+          {!validMaxTokens ? <p style={errorStyle} role="alert">{t('maxTokensInvalid')}</p> : null}
           </div>
           <div id={`${panelPrefix}-network`} role="tabpanel" aria-labelledby={`${panelPrefix}-network-tab`} hidden={visibleModule !== 'network'} style={{ ...fieldsetStyle, display: visibleModule === 'network' ? fieldsetStyle.display : 'none' }}>
           <div style={{ paddingTop: 4 }}>

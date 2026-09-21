@@ -8,6 +8,7 @@ import type { AuthInteraction, CredentialStore } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { openaiCodexOAuth, OpenAICodexRefreshRejectedError } from '../vendor/pi-ai-oauth/auth/oauth/openai-codex.js'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.ts'
+import type { CapturedOpenAICodexAccount } from './store.ts'
 import { OpenAICodexRequestAuthError } from './auth-error.ts'
 
 /** Non-secret login state shown by the launcher. */
@@ -69,14 +70,17 @@ export async function openAICodexAuthStatus(
 /**
  * Resolve a nonempty token and identity from one captured account, including refresh.
  * Missing credentials and authentication failures throw safe errors without upstream causes.
+ * @param capture - captures this request's credential store before auth resolution.
+ * @param signal - optional cancellation for the capture and the refresh.
+ * @returns the request bearer token and its provider account id.
  */
-export async function readOpenAICodexRequestAuth(
-  store: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>,
+async function resolveOpenAICodexRequestAuth(
+  capture: () => Promise<CapturedOpenAICodexAccount>,
   signal?: AbortSignal,
 ): Promise<{ access: string; accountId: string }> {
   try {
     signal?.throwIfAborted()
-    const credentials = await store.captureActiveAccount()
+    const credentials = await capture()
     const models = createModels({ credentials })
     const provider = openaiCodexProvider()
     models.setProvider({ ...provider, auth: { ...provider.auth, oauth: openaiCodexOAuth } })
@@ -97,4 +101,33 @@ export async function readOpenAICodexRequestAuth(
     }
     throw new OpenAICodexRequestAuthError('AUTH_FAILED')
   }
+}
+
+/**
+ * Resolve the current selection's token for one request.
+ * @param store - credential store to capture the active account from.
+ * @param signal - optional cancellation for the capture and the refresh.
+ * @returns the request bearer token and its provider account id.
+ */
+export async function readOpenAICodexRequestAuth(
+  store: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>,
+  signal?: AbortSignal,
+): Promise<{ access: string; accountId: string }> {
+  return await resolveOpenAICodexRequestAuth(async () => await store.captureActiveAccount(), signal)
+}
+
+/**
+ * Resolve one exact stored account's token for one request, never the current
+ * selection, so a route bound to that account keeps serving it across a switch.
+ * @param store - credential store to capture the account from.
+ * @param accountKey - browser-safe account key from the store's account list.
+ * @param signal - optional cancellation for the capture and the refresh.
+ * @returns the request bearer token and its provider account id.
+ */
+export async function readOpenAICodexAccountRequestAuth(
+  store: Pick<OpenAICodexCredentialStore, 'captureAccount'>,
+  accountKey: string,
+  signal?: AbortSignal,
+): Promise<{ access: string; accountId: string }> {
+  return await resolveOpenAICodexRequestAuth(async () => await store.captureAccount(accountKey), signal)
 }

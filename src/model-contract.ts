@@ -38,6 +38,8 @@ export interface OpenAICodexModelCatalogEntry {
   name: string
   /** Unmodified provider-catalog default, even when an override is active. */
   contextWindow: number
+  /** Installed catalog default maximum output tokens, even when an override is active. */
+  maxTokens: number
   /** Local configuration ceiling; account/route capacity can differ. */
   maxContextWindow: number
   contextLimitSource: 'codex-catalog' | 'catalog-default'
@@ -54,15 +56,17 @@ export function decodeOpenAICodexModelCatalog(value: unknown): OpenAICodexModelC
     const id = record['id']
     const name = record['name']
     const contextWindow = record['contextWindow']
+    const maxTokens = record['maxTokens']
     const maxContextWindow = record['maxContextWindow']
     const contextLimitSource = record['contextLimitSource']
     if (typeof id !== 'string' || id.length === 0 || typeof name !== 'string' || name.length === 0 || ids.has(id)) return undefined
-    if (typeof contextWindow !== 'number' || typeof maxContextWindow !== 'number'
+    if (typeof contextWindow !== 'number' || typeof maxTokens !== 'number' || typeof maxContextWindow !== 'number'
       || !isValidOpenAICodexContextBudget(maxContextWindow, Number.MAX_SAFE_INTEGER)
       || !isValidOpenAICodexContextBudget(contextWindow, maxContextWindow)
+      || !isValidOpenAICodexContextBudget(maxTokens, maxContextWindow)
       || (contextLimitSource !== 'codex-catalog' && contextLimitSource !== 'catalog-default')) return undefined
     ids.add(id)
-    catalog.push({ id, name, contextWindow, maxContextWindow, contextLimitSource })
+    catalog.push({ id, name, contextWindow, maxTokens, maxContextWindow, contextLimitSource })
   }
   return catalog
 }

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { loginOpenAICodex, readOpenAICodexRequestAuth } from '../src/auth.ts'
+import { loginOpenAICodex, readOpenAICodexAccountRequestAuth, readOpenAICodexRequestAuth } from '../src/auth.ts'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from '../src/store.ts'
 
 let root: string | undefined
@@ -68,3 +68,38 @@ for (const flow of ['login', 'refresh'] as const) {
     expect(await store.accounts()).toHaveLength(1)
   })
 }
+
+it('resolves and refreshes one named account instead of the active selection', async () => {
+  root = await mkdtemp(join(tmpdir(), 'codex-jwt-named-'))
+  const store = new OpenAICodexCredentialStore(join(root, 'auth.json'))
+  await store.modify(OPENAI_CODEX_PROVIDER, async () => ({
+    type: 'oauth' as const,
+    accountId: 'named-account',
+    access: 'expired-named-access',
+    refresh: 'named-refresh',
+    expires: 1,
+  }))
+  await store.modify(OPENAI_CODEX_PROVIDER, async () => ({
+    type: 'oauth' as const,
+    accountId: 'active-account',
+    access: jwt(claims('active-account')),
+    refresh: 'active-refresh',
+    expires: Date.now() + 3_600_000,
+  }))
+  const named = (await store.accounts()).find(account => !account.active)!
+
+  const token = jwt(claims('named-account'))
+  const fetchMock = vi.fn(async () => Response.json({ access_token: token, refresh_token: 'named-refresh-2', expires_in: 3600 }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(readOpenAICodexAccountRequestAuth(store, named.accountKey))
+    .resolves.toEqual({ access: token, accountId: 'named-account' })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const accounts = await store.accounts()
+  expect(accounts.find(account => account.accountKey === named.accountKey)).toMatchObject({ active: false })
+  expect(await store.read(OPENAI_CODEX_PROVIDER)).toMatchObject({ accountId: 'active-account' })
+  expect(await store.accountIdForAccess(token)).toBe('named-account')
+
+  await expect(readOpenAICodexAccountRequestAuth(store, 'acct_0000000000000000000000000000000000000000000'))
+    .rejects.toMatchObject({ code: 'MISSING_CREDENTIAL' })
+})
