@@ -130,6 +130,9 @@ describe('live Codex model catalog', () => {
     expect((calls[0]?.headers as Record<string, string>)['if-none-match']).toBe('W/"v1"')
     expect(second.source()).toBe('cache')
     expect(second.models().map(model => model.slug)).toEqual(['gpt-5.6-sol'])
+    // The 304 confirmed the layer in hand, so it starts the TTL like a 200 body.
+    await second.refresh()
+    expect(calls).toHaveLength(1)
   })
 
   it('falls back to the Codex CLI cache when the live read fails', async () => {
@@ -146,6 +149,37 @@ describe('live Codex model catalog', () => {
     expect(catalog.updatedAt()).toBe(42)
     expect(catalog.models().map(model => model.slug)).toEqual(['gpt-reserve', 'gpt-5.6-terra'])
     expect(catalog.models()[1]).toMatchObject({ contextWindow: 1_000, maxContextWindow: 2_000 })
+  })
+
+  it('reads the official client\'s ISO-8601 fetched_at as the fallback timestamp', async () => {
+    // The Codex CLI writes nanosecond digits: ~/.codex/models_cache.json.
+    const stamp = '2026-09-21T21:37:47.186693100Z'
+    const store = await authenticatedStore()
+    await writeFile(join(root!, 'cli-models_cache.json'), JSON.stringify({
+      fetched_at: stamp,
+      models: [liveModel('gpt-reserve')],
+    }))
+    const catalog = catalogFor(store, vi.fn(async () => { throw new Error('offline') }) as unknown as typeof fetch)
+
+    await catalog.initialize()
+
+    expect(catalog.source()).toBe('cli-cache')
+    expect(catalog.updatedAt()).toBe(Date.parse(stamp))
+  })
+
+  it('retries a failed live read instead of suppressing it for the TTL', async () => {
+    const store = await authenticatedStore()
+    await writeFile(join(root!, 'cli-models_cache.json'), JSON.stringify({
+      fetched_at: 42,
+      models: [liveModel('gpt-reserve')],
+    }))
+    const fetchImpl = vi.fn(async () => { throw new Error('offline') }) as unknown as typeof fetch
+    const catalog = catalogFor(store, fetchImpl)
+
+    await catalog.initialize()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    await catalog.refresh()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('ends at the bundled catalog without throwing when no layer is reachable', async () => {

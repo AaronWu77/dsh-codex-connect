@@ -57,11 +57,13 @@ export const inject = ['slots', 'locale', 'connection', 'remote', 'remote.sessio
  * @returns the injected field, or an empty object.
  */
 function dashboardJumpOf(ctx: ClientContext): { onOpenUsage?: () => void } {
-  const probe = ctx as unknown as { get?: (name: string) => unknown }
-  if (typeof probe.get !== 'function') return {}
-  const face = probe.get('contextOverview') as { open?: (day?: string) => void } | undefined
-  if (face === undefined || typeof face.open !== 'function') return {}
-  return { onOpenUsage: () => { (probe.get('contextOverview') as { open?: (day?: string) => void } | undefined)?.open?.() } }
+  // Resolve the service on every call: the presence check decides once whether
+  // the card shows the button, the click reads the handle as it is then.
+  const read = (): { open?: (day?: string) => void } | undefined =>
+    (ctx as unknown as { get?: (name: string) => unknown }).get?.('contextOverview') as
+      { open?: (day?: string) => void } | undefined
+  if (typeof read()?.open !== 'function') return {}
+  return { onOpenUsage: () => { read()?.open?.() } }
 }
 
 export function apply(ctx: ClientContext): void {
@@ -87,9 +89,11 @@ export function apply(ctx: ClientContext): void {
     key: OPENAI_CODEX_SETTINGS_NAMESPACE,
     inject: (): OpenAICodexPluginCardInjected => ({
       t, configScope, updater, account,
-      // dsh-context publishes the dashboard handle; without that plugin the
-      // card simply keeps its own summary line and no jump. Read per render so
-      // a plugin loaded later is picked up.
+      // dsh-context publishes the dashboard handle in its own apply, ahead of
+      // this card's first render; without that plugin the card keeps its own
+      // summary line and no jump button. The renderer caches this inject per
+      // entry, so the presence check settles once while the click resolves the
+      // service live.
       ...dashboardJumpOf(ctx),
     }),
   }, OpenAICodexPluginCard))

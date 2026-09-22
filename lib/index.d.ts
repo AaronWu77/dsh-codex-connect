@@ -743,6 +743,7 @@ declare class OpenAICodexModelCatalog {
   private readonly options;
   private snapshot;
   private revisionCounter;
+  /** When the last live layer was accepted (a 200 body or a 304); 0 means never. */
   private checkedAt;
   private failureLogged;
   private inflight;

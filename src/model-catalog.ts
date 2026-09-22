@@ -111,6 +111,20 @@ function optionalTokenCount(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
+/**
+ * One cache `fetched_at`: epoch milliseconds as this plugin writes them, or the
+ * official Codex CLI's ISO-8601 string, which carries nanosecond digits.
+ * @param value - the raw document field.
+ * @returns epoch milliseconds, or undefined when unreadable.
+ */
+function optionalTimestamp(value: unknown): number | undefined {
+  const count = optionalTokenCount(value)
+  if (count !== undefined) return count
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  const parsed = Date.parse(value)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
 /** Read one bounded list of `{effort, description}` server records. */
 function parseReasoningLevels(value: unknown): OpenAICodexModelReasoningLevel[] {
   if (!Array.isArray(value)) return []
@@ -263,6 +277,7 @@ export function openAICodexCliModelCachePath(): string {
 export class OpenAICodexModelCatalog {
   private snapshot: OpenAICodexCatalogSnapshot
   private revisionCounter = 0
+  /** When the last live layer was accepted (a 200 body or a 304); 0 means never. */
   private checkedAt = 0
   private failureLogged = false
   private inflight: Promise<void> | undefined
@@ -316,7 +331,10 @@ export class OpenAICodexModelCatalog {
 
   /** Whether the last accepted layer is still inside the TTL. */
   isFresh(): boolean {
-    return this.snapshot.models.length > 0 && this.now() - this.checkedAt < OPENAI_CODEX_MODEL_CATALOG_TTL_MS
+    // 'Never accepted' is its own state: the 0 sentinel is not a recent check.
+    return this.checkedAt > 0
+      && this.snapshot.models.length > 0
+      && this.now() - this.checkedAt < OPENAI_CODEX_MODEL_CATALOG_TTL_MS
   }
 
   /** Stop accepting further reads; the current snapshot stays readable. */
@@ -354,7 +372,6 @@ export class OpenAICodexModelCatalog {
   }
 
   private async runRefresh(): Promise<void> {
-    this.checkedAt = this.now()
     const operation = async (): Promise<void> => {
       const signal = AbortSignal.timeout(CATALOG_REQUEST_TIMEOUT_MS)
       const auth = await readOpenAICodexRequestAuth(this.options.credentials, signal)
@@ -366,6 +383,8 @@ export class OpenAICodexModelCatalog {
       })
       if (response.status === 304) {
         await cancelDiscardedResponseBody(response)
+        // A 304 confirms the layer in hand, so it starts the TTL.
+        this.checkedAt = this.now()
         this.failureLogged = false
         return
       }
@@ -381,6 +400,7 @@ export class OpenAICodexModelCatalog {
         models,
         ...etag === null || etag.length === 0 ? {} : { etag },
       })
+      this.checkedAt = this.now()
       this.failureLogged = false
       await this.writeCacheFile()
     }
@@ -398,7 +418,7 @@ export class OpenAICodexModelCatalog {
     try {
       const document = JSON.parse(await readFile(path, 'utf8')) as unknown
       const models = parseOpenAICodexModelsPayload(document)
-      const fetchedAt = isRecord(document) ? optionalTokenCount(document['fetched_at']) : undefined
+      const fetchedAt = isRecord(document) ? optionalTimestamp(document['fetched_at']) : undefined
       this.accept({ source: 'cli-cache', models, ...fetchedAt === undefined ? {} : { updatedAt: fetchedAt } })
     } catch (error: unknown) {
       // No on-disk catalog answered; the bundled pi-ai records remain the picker.
@@ -428,7 +448,7 @@ export class OpenAICodexModelCatalog {
       const document = JSON.parse(await readFile(this.options.cachePath, 'utf8')) as unknown
       if (!isRecord(document) || document['version'] !== CATALOG_CACHE_VERSION) return undefined
       const models = parseStoredOpenAICodexModels(document)
-      const fetchedAt = optionalTokenCount(document['fetched_at'])
+      const fetchedAt = optionalTimestamp(document['fetched_at'])
       const etag = optionalString(document, 'etag')
       return {
         snapshot: {
