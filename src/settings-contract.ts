@@ -178,6 +178,11 @@ export interface OpenAICodexSettingsConfig {
   contextWindowMode: OpenAICodexContextWindowMode
   /** Official client version sent as the model catalog's `client_version` gate. */
   modelCatalogClientVersion: string
+  /**
+   * Log the payload field names of each Codex request. Development-only: it
+   * records field names, never payload content, and the default is off.
+   */
+  debugLogPayloadFields: boolean
   enableSearch: boolean
   enableImageTool: boolean
   enableImageGeneration: boolean
@@ -201,6 +206,7 @@ export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> 
   maxTokensOverrides: undefined,
   contextWindowMode: DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
   modelCatalogClientVersion: DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
+  debugLogPayloadFields: false,
   enableSearch: false,
   enableImageTool: false,
   enableImageGeneration: false,
@@ -262,6 +268,7 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   const maxTokensOverrides = value['maxTokensOverrides']
   const contextWindowMode = value['contextWindowMode']
   const modelCatalogClientVersion = value['modelCatalogClientVersion']
+  const debugLogPayloadFields = value['debugLogPayloadFields']
   const enableSearch = value['enableSearch']
   const enableImageTool = value['enableImageTool']
   const enableImageGeneration = value['enableImageGeneration']
@@ -280,6 +287,8 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   // Older Host snapshots predate the context-window mode; absence maps to its safe default.
   if (contextWindowMode !== undefined && contextWindowMode !== 'default' && contextWindowMode !== 'extended') return undefined
   if (modelCatalogClientVersion !== undefined && !isValidOpenAICodexModelCatalogClientVersion(modelCatalogClientVersion)) return undefined
+  // Older Host snapshots predate payload-field logging; absence maps to its safe default.
+  if (debugLogPayloadFields !== undefined && typeof debugLogPayloadFields !== 'boolean') return undefined
   if (typeof enableSearch !== 'boolean' || typeof enableImageTool !== 'boolean') return undefined
   // Older Host snapshots predate image generation; absence maps to its safe default.
   if (enableImageGeneration !== undefined && typeof enableImageGeneration !== 'boolean') return undefined
@@ -302,6 +311,7 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
     maxTokensOverrides: tokenOverrides === undefined ? undefined : Object.freeze(tokenOverrides),
     contextWindowMode: (contextWindowMode as OpenAICodexContextWindowMode | undefined) ?? DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
     modelCatalogClientVersion: modelCatalogClientVersion ?? DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
+    debugLogPayloadFields: debugLogPayloadFields ?? false,
     enableSearch,
     enableImageTool,
     enableImageGeneration: enableImageGeneration ?? false,

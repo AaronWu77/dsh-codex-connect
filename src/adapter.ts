@@ -1,5 +1,6 @@
 /** OpenAI Codex adapter assembled from public dsh-llm-pi-ai extension points. */
 
+import { createHash } from 'node:crypto'
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
@@ -27,6 +28,14 @@ import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 
 /** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
 export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
+
+/** Optional adapter collaborators beyond the positional profile inputs. */
+export interface OpenAICodexAdapterExtras {
+  /** Live catalog layer and context-window mode feeding the effective picker. */
+  catalogLayer?: () => OpenAICodexCatalogLayer
+  /** Resolve the payload field-name logger for each request; undefined disables logging. */
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined
+}
 
 /** One LLM route this adapter registers and the store account it authenticates as. */
 export interface OpenAICodexRouteBinding {
@@ -238,30 +247,101 @@ function isPayloadRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Add the request-scoped Fast Mode hint without changing auth or other options. */
-export function withOpenAICodexFastMode(
-  provider: Provider,
-  fastMode: FastModeRegistry | undefined,
-): Provider {
+/** Maximum prompt-cache key length accepted by the Codex Responses API. */
+export const OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH = 64
+
+/** Bound one prompt-cache key exactly as the vendored provider does. */
+function clampOpenAICodexPromptCacheKey(value: string): string {
+  const characters = Array.from(value)
+  return characters.length <= OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH
+    ? value
+    : characters.slice(0, OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH).join('')
+}
+
+/** Concatenate the text parts of one pi-ai message content value. */
+function openAICodexContentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map(part => isPayloadRecord(part) && typeof part['text'] === 'string' ? part['text'] : '')
+    .join('')
+}
+
+/**
+ * Derive the prompt-cache key for one request. The Harness session id is the
+ * stable per-session identity, so it is used whenever the request supplies one.
+ * Without it, a hash of the system prompt and the first user message keeps
+ * requests from the same conversation together. A different key only causes a
+ * prompt-cache miss; it never changes the model's answer.
+ * @param context - exact pi-ai request context.
+ * @param sessionId - Harness session id from the request options, when present.
+ * @returns the key to send, or undefined when no stable key can be derived.
+ */
+export function deriveOpenAICodexPromptCacheKey(
+  context: PiContext,
+  sessionId: string | undefined,
+): string | undefined {
+  if (sessionId !== undefined && sessionId.trim().length > 0) return clampOpenAICodexPromptCacheKey(sessionId.trim())
+  const system = typeof context.systemPrompt === 'string' ? context.systemPrompt : ''
+  const firstUser = (context.messages ?? [])
+    .filter(message => message.role === 'user')
+    .map(message => openAICodexContentText(message.content))
+    .find(text => text.length > 0)
+  if (system.length === 0 && firstUser === undefined) return undefined
+  const digest = createHash('sha1')
+    .update(system)
+    .update('\u0000')
+    .update((firstUser ?? '').slice(0, 4096))
+    .digest('hex')
+  return `codex-${digest}`
+}
+
+/** Request-scoped payload additions applied by one provider wrapper. */
+export interface OpenAICodexPayloadPolicy {
+  /** Fast Mode registry; absent never adds the priority tier. */
+  fastMode?: FastModeRegistry | undefined
+  /** Derive the prompt-cache key; absent never adds one. */
+  derivePromptCacheKey?: ((context: PiContext, sessionId: string | undefined) => string | undefined) | undefined
+  /** Resolve the field-name logger for each request; undefined disables logging. */
+  onPayloadFields?: (() => ((names: readonly string[]) => void) | undefined) | undefined
+}
+
+/**
+ * Apply the Codex request payload policy in one transform: the Fast Mode
+ * priority tier, the prompt-cache key, and optional field-name logging. A
+ * request that adds nothing and logs nothing keeps the caller's options object.
+ * @param provider - provider whose streamSimple is wrapped.
+ * @param policy - request-scoped additions; each is skipped when absent.
+ * @returns a detached provider applying the policy.
+ */
+export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAICodexPayloadPolicy): Provider {
   const streamSimple = provider.streamSimple
   return {
     ...provider,
     streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
       const sessionId = options?.sessionId
-      const enabled = provider.id === model.provider
-        && isOpenAICodexRouteId(provider.id)
-        && fastMode !== undefined
-        && fastMode.isEnabled(sessionId)
-      if (!enabled) return streamSimple.call(provider, model, context, options)
+      const codexRoute = provider.id === model.provider && isOpenAICodexRouteId(provider.id)
+      const fastEnabled = codexRoute && policy.fastMode?.isEnabled(sessionId) === true
+      const cacheKey = codexRoute && options?.cacheRetention !== 'none'
+        ? policy.derivePromptCacheKey?.(context, sessionId)
+        : undefined
+      const logFields = codexRoute ? policy.onPayloadFields?.() : undefined
+      if (!fastEnabled && cacheKey === undefined && logFields === undefined) {
+        return streamSimple.call(provider, model, context, options)
+      }
       const previousOnPayload = options?.onPayload
       const nextOptions: SimpleStreamOptions = {
         ...options,
         async onPayload(payload, payloadModel) {
           const replaced = await previousOnPayload?.(payload, payloadModel)
           const nextPayload = replaced === undefined ? payload : replaced
-          return isPayloadRecord(nextPayload)
-            ? { ...nextPayload, service_tier: 'priority' }
-            : nextPayload
+          if (!isPayloadRecord(nextPayload)) return nextPayload
+          const additions: Record<string, unknown> = {}
+          if (fastEnabled) additions['service_tier'] = 'priority'
+          if (cacheKey !== undefined) additions['prompt_cache_key'] = cacheKey
+          const result = { ...nextPayload, ...additions }
+          logFields?.(Object.keys(result))
+          return result
         },
       }
       return streamSimple.call(provider, model, context, nextOptions)
@@ -269,13 +349,26 @@ export function withOpenAICodexFastMode(
   }
 }
 
+/** Add the request-scoped Fast Mode hint without changing auth or other options. */
+export function withOpenAICodexFastMode(
+  provider: Provider,
+  fastMode: FastModeRegistry | undefined,
+): Provider {
+  return withOpenAICodexPayloadPolicy(provider, { fastMode })
+}
+
 function requestProvider(
   provider: Provider,
   fastMode?: FastModeRegistry,
   proxyManager?: OpenAICodexProxyManager,
   resolveProxyUrl?: () => string | undefined,
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
 ): Provider {
-  const configured = withOpenAICodexFastMode(provider, fastMode)
+  const configured = withOpenAICodexPayloadPolicy(provider, {
+    fastMode,
+    derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
+    ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
+  })
   const streamSimple = configured.streamSimple
   return {
     ...configured,
@@ -309,6 +402,7 @@ export function createOpenAICodexProfile(
   maxTokensOverrides?: Readonly<Record<string, number>> | undefined,
   route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
   layer?: OpenAICodexCatalogLayer | undefined,
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
 ): OpenAICodexRouteProfile & { piProvider: Provider } {
   const layeredProvider = layer === undefined
     ? provider
@@ -326,7 +420,7 @@ export function createOpenAICodexProfile(
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-connect retryPolicy'),
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
     modelErrors: new Map<string, string>(),
-    piProvider: requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl),
+    piProvider: requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -442,7 +536,7 @@ export function createOpenAICodexAdapter(
   contextWindowOverrides?: () => Readonly<Record<string, number>> | undefined,
   maxTokensOverrides?: () => Readonly<Record<string, number>> | undefined,
   routeBindings?: () => readonly OpenAICodexRouteBinding[],
-  catalogLayer?: () => OpenAICodexCatalogLayer,
+  extras?: OpenAICodexAdapterExtras,
 ): PiAiAdapter {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
   let profiles: Map<string, ResolvedPiAiProviderProfile> | undefined
@@ -451,7 +545,7 @@ export function createOpenAICodexAdapter(
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
-    const layer = catalogLayer?.()
+    const layer = extras?.catalogLayer?.()
     const key = {
       window: windowOverrides === undefined ? null : { ...windowOverrides },
       tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
@@ -463,7 +557,7 @@ export function createOpenAICodexAdapter(
       // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
       profiles = new Map(bindings.map(route => [
         route.routeId,
-        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layer),
+        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layer, extras?.resolveOnPayloadFields),
       ] as const))
     }
     return profiles

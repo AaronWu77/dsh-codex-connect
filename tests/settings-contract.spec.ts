@@ -191,6 +191,26 @@ describe('OpenAI Codex model catalog settings contract', () => {
     })?.contextWindowMode).toBe('default')
   })
 
+  it('defaults payload-field logging off and rejects non-boolean values', () => {
+    expect(DEFAULT_OPENAI_CODEX_SETTINGS.debugLogPayloadFields).toBe(false)
+    expect(Config({}).debugLogPayloadFields).toBe(false)
+    expect(Config({ debugLogPayloadFields: true }).debugLogPayloadFields).toBe(true)
+    expect(resolveOpenAICodexSettings({}).debugLogPayloadFields).toBe(false)
+    expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, debugLogPayloadFields: true })?.debugLogPayloadFields).toBe(true)
+    expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, debugLogPayloadFields: 'yes' })).toBeUndefined()
+    expect(resolveOpenAICodexSettings({
+      models: undefined,
+      enableProxy: false,
+      proxyUrl: DEFAULT_OPENAI_CODEX_PROXY_URL,
+      enableSearch: false,
+      enableImageTool: false,
+      searchModel: 'gpt-5.6-sol',
+      searchMode: 'cached',
+      searchContextSize: 'medium',
+      searchMaxOutputTokens: 10_000,
+    }).debugLogPayloadFields).toBe(false)
+  })
+
   it('defaults and validates the model catalog client version gate', () => {
     expect(DEFAULT_OPENAI_CODEX_SETTINGS.modelCatalogClientVersion).toBe(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION)
     expect(Config({}).modelCatalogClientVersion).toBe('0.155.0')

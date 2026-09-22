@@ -113,6 +113,7 @@ const CONFIG_FIELDS = [
   'contextWindowOverrides',
   'maxTokensOverrides',
   'contextWindowMode',
+  'debugLogPayloadFields',
   'enableProxy',
   'proxyUrl',
   'enableImageTool',
@@ -913,6 +914,17 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
               onChange={event => { update('imageModelHint', event.currentTarget.value) }}
             />
             <span style={bodyStyle}>{t('imageModelHintHelp')}</span>
+          </label>
+          <label style={toggleRowStyle}>
+            <input
+              type="checkbox"
+              checked={draft.debugLogPayloadFields}
+              onChange={event => { update('debugLogPayloadFields', event.currentTarget.checked) }}
+            />
+            <span style={toggleCopyStyle}>
+              <span style={labelStyle}>{t('debugPayloadFields')}</span>
+              <span style={bodyStyle}>{t('debugPayloadFieldsHelp')}</span>
+            </span>
           </label>
           <label style={toggleRowStyle}>
             <input

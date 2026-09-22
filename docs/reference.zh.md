@@ -107,6 +107,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 | `maxTokensOverrides` | 无 | 按模型设置默认最大输出 Tokens |
 | `contextWindowMode` | `default` | `default` 使用服务端默认窗口，`extended` 使用其最大值 |
 | `modelCatalogClientVersion` | `0.155.0` | 作为模型目录 `client_version` 校验值发送的官方客户端版本 |
+| `debugLogPayloadFields` | `false` | 记录每次 Codex 请求的字段名，不记录内容 |
 | `enableSearch` | `false` | 注册 Codex 搜索，并在保存时将它选为搜索提供方 |
 | `enableImageTool` | `false` | 注册 `view_image` |
 | `enableImageGeneration` | `false` | 注册 GPT Image 图片生成 |
@@ -133,6 +134,10 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 4. 已安装 pi-ai 包内置的目录。
 
 任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。
+
+### 提示缓存
+
+每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用系统提示词与首条用户消息生成稳定键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
 
 ## 诊断与恢复
 

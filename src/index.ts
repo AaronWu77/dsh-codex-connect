@@ -321,6 +321,11 @@ export interface Config {
    * below the client's floor, so this stays a known-good default.
    */
   modelCatalogClientVersion?: string
+  /**
+   * Log the payload field names of each Codex request. Development-only: it
+   * writes field names, never payload content, and is off by default.
+   */
+  debugLogPayloadFields?: boolean
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean
   /** Register the optional image-loading tool. */
@@ -359,6 +364,7 @@ export const Config: z<Config> = z.object({
   contextWindowMode: z.union(['default', 'extended'] as const).default(DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE),
   modelCatalogClientVersion: z.transform(z.string(), parseOpenAICodexModelCatalogClientVersion)
     .default(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION),
+  debugLogPayloadFields: z.boolean().default(false),
   enableSearch: z.boolean().default(false),
   enableImageTool: z.boolean().default(false),
   enableImageGeneration: z.boolean().default(false),
@@ -448,7 +454,13 @@ export function apply(ctx: Context, config: Config): void {
       () => resolveOpenAICodexSettings(current()).contextWindowOverrides,
       () => resolveOpenAICodexSettings(current()).maxTokensOverrides,
       () => routeBindings,
-      catalogLayer,
+      {
+        catalogLayer,
+        resolveOnPayloadFields: () => resolveOpenAICodexSettings(current()).debugLogPayloadFields
+          // Payload field names only; never the request or response content.
+          ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
+          : undefined,
+      },
     ),
   )
   ctx.inject(['webServer'], webCtx => {

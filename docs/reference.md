@@ -107,6 +107,7 @@ The main plugin options are:
 | `maxTokensOverrides` | none | Per-model default maximum output tokens |
 | `contextWindowMode` | `default` | `default` advertises the server default window; `extended` advertises its maximum |
 | `modelCatalogClientVersion` | `0.155.0` | Official client version sent as the model catalog's `client_version` gate |
+| `debugLogPayloadFields` | `false` | Log each Codex request's payload field names, never its content |
 | `enableSearch` | `false` | Register Codex search and select it when the setting is saved |
 | `enableImageTool` | `false` | Register `view_image` |
 | `enableImageGeneration` | `false` | Register GPT Image generation |
@@ -133,6 +134,10 @@ Fallback order, each layer only filling what the previous one could not:
 4. The catalog bundled with the installed pi-ai package.
 
 A failure at any layer is logged at most once per failure streak and never throws into plugin activation, removes a model, or empties the picker. An empty or malformed live payload is treated as a failed read, because the endpoint returns an empty list for a version below its gate. A live model whose slug family is not already present in the installed catalog is reported as known but not enabled and stays out of the selector; a slug that extends a known family joins it. `contextWindowMode` selects `context_window` (`default`) or `max_context_window` (`extended`) as the advertised budget; an explicit `contextWindowOverrides` entry still wins, and the extended ceiling is what override validation accepts. The settings card shows the active source and time and offers a manual **Refresh from ChatGPT**.
+
+### Prompt caching
+
+Every Codex request carries a `prompt_cache_key` so OpenAI can reuse a cached prefix across turns. The key is the Harness session id; `cacheRetention: "none"` on a request suppresses both the key and the cache. When no session id is available, the plugin derives a stable key from the system prompt and the first user message instead. A different key only causes a prompt-cache miss; it never changes the answer. `store: false` and `include: ["reasoning.encrypted_content"]` remain in the request body. Set `debugLogPayloadFields: true` to write the field names of each Codex request to the plugin log for verification; it records names only, never request or response content, and is off by default.
 
 ## Diagnostics and recovery
 

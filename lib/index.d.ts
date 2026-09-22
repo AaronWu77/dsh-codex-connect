@@ -555,6 +555,11 @@ interface OpenAICodexSettingsConfig {
   contextWindowMode: OpenAICodexContextWindowMode;
   /** Official client version sent as the model catalog's `client_version` gate. */
   modelCatalogClientVersion: string;
+  /**
+   * Log the payload field names of each Codex request. Development-only: it
+   * records field names, never payload content, and the default is off.
+   */
+  debugLogPayloadFields: boolean;
   enableSearch: boolean;
   enableImageTool: boolean;
   enableImageGeneration: boolean;
@@ -994,6 +999,11 @@ interface Config {
    * below the client's floor, so this stays a known-good default.
    */
   modelCatalogClientVersion?: string;
+  /**
+   * Log the payload field names of each Codex request. Development-only: it
+   * writes field names, never payload content, and is off by default.
+   */
+  debugLogPayloadFields?: boolean;
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean;
   /** Register the optional image-loading tool. */
