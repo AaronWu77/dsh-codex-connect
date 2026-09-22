@@ -256,18 +256,20 @@ describe('OpenAI Codex Plugin configuration card', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<OpenAICodexSettings t={t} embedded />)
-    const progress = await screen.findByRole('progressbar', { name: `Codex · ${en.fiveHourLimit}` })
-    expect(progress.getAttribute('aria-valuenow')).toBe('72.5')
-    expect(progress.getAttribute('aria-valuetext')).toBe('72.5% remaining')
-    expect(screen.getByRole('progressbar', { name: `GPT-5.3-Codex-Spark · ${en.fiveHourLimit}` })).toBeTruthy()
-    expect(screen.getByRole('progressbar', { name: `GPT-5.3-Codex-Spark · ${en.weeklyLimit}` })).toBeTruthy()
+    // The account card keeps ONE summary line: the most constrained value per
+    // window length, shortest first. The full per-bucket list lives in the
+    // Quota & Usage dashboard (see the Models card for the expanded rows).
+    const summary = await screen.findByText(new RegExp(`${en.fiveHourLimit} 72.5% remaining`, 'u'))
+    expect(summary.textContent).toContain(`${en.fiveHourLimit} 72.5% remaining`)
+    expect(summary.textContent).toContain(`${en.weeklyLimit} 50% remaining`)
+    expect(screen.queryByRole('progressbar')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: en.manageAccounts }))
     fireEvent.click(screen.getByRole('button', { name: en.signOutAll }))
     expect((await screen.findAllByText(en.signedOut)).length).toBeGreaterThan(0)
   })
 
-  it('renders each quota window reset in the browser locale and names missing resets unavailable', async () => {
+  it('summarises the signed-in windows on the account card instead of listing resets', async () => {
     const resetAt = 1_735_689_600
     const fetchMock = vi.fn(async (input: string | URL | Request): Promise<Response> => {
       expect(requestPath(input)).toBe(OPENAI_CODEX_AUTH_STATUS_PATH)
@@ -288,8 +290,14 @@ describe('OpenAI Codex Plugin configuration card', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<OpenAICodexSettings t={t} embedded />)
-    expect(await screen.findByText(en.resetAt.replace('{time}', formatOpenAICodexResetAt(resetAt) ?? ''))).toBeTruthy()
-    expect(screen.getAllByText(en.resetAt.replace('{time}', en.resetUnavailable))).toHaveLength(1)
+    // The card summarises; reset instants belong to the surfaces that list
+    // windows (the dashboard and the Models card), so the formatter stays
+    // exported and covered here.
+    const summary = await screen.findByText(new RegExp(`${en.fiveHourLimit} 72.5% remaining`, 'u'))
+    expect(summary.textContent).toContain(`${en.weeklyLimit} 80% remaining`)
+    expect(screen.queryByText(/Resets/u)).toBeNull()
+    expect(formatOpenAICodexResetAt(resetAt)).toBeTruthy()
+    expect(formatOpenAICodexResetAt(undefined)).toBeUndefined()
   })
 
   it('disables account actions while a login request is pending', async () => {

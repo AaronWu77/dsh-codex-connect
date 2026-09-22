@@ -216,6 +216,26 @@ describe('shared Models and Plugin account state', () => {
     unsubscribe()
   })
 
+  it('summarises usage in one line and jumps to the dashboard it does not own', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    vi.stubGlobal('fetch', async () => json({ status: 'signed-in', usage: {
+      rateLimits: [{ id: 'codex', name: 'Codex', windows: [
+        { windowSeconds: 5 * 60 * 60, remainingPercent: 62, resetAt: now + 3_600 },
+        { windowSeconds: 7 * 24 * 60 * 60, remainingPercent: 34, resetAt: now + 86_400 },
+      ] }],
+    } }))
+    const account = new OpenAICodexAccountStore()
+    const openUsage = vi.fn()
+    render(<OpenAICodexSettings t={t} account={account} embedded onOpenUsage={openUsage} />)
+    await screen.findByText(en.signedIn)
+    // One line, both windows: the card no longer repeats the dashboard list.
+    expect(screen.getByText(/5-hour limit 62% remaining/u)).toBeTruthy()
+    expect(screen.getByText(/Weekly limit 34% remaining/u)).toBeTruthy()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: en.usageOpenPanel }))
+    expect(openUsage).toHaveBeenCalledTimes(1)
+    account.dispose()
+  })
   it('shares one status read, synchronizes logout, and keeps advanced options off Models', async () => {
     const fetchMock = vi.fn(async (path: string) => path === OPENAI_CODEX_AUTH_LOGOUT_PATH
       ? json({ ok: true }) : json({ status: 'signed-in', usage: { rateLimits: [] } }))

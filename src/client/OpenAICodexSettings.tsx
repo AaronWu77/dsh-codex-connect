@@ -23,6 +23,12 @@ export interface OpenAICodexSettingsInjected {
   updater?: OpenAICodexUpdateStore
   /** Shared across Models and Plugin settings by the browser-plugin owner. */
   account?: OpenAICodexAccountStore
+  /**
+   * Opens the Quota & Usage dashboard, when that plugin provides its handle
+   * (`contextOverview`). This card owns the account actions; the dashboard owns
+   * the usage breakdown, so the card only summarises and jumps.
+   */
+  onOpenUsage?: () => void
 }
 
 /** Props delivered by the settings slot renderer. */
@@ -173,6 +179,45 @@ export function UsageLimits({ usage, quotaError, t, heading = true }: {
         </div>
       )}
       {!hasData && quotaError === undefined ? <p style={bodyStyle}>{t('quotaUnavailable')}</p> : null}
+      {quotaError === undefined ? null : <p style={errorStyle}>{t('quotaUnavailable')}</p>}
+    </div>
+  )
+}
+
+/**
+ * The account card one-line usage summary: the signed-in account two shortest
+ * rolling windows in passing, plus the jump into the dashboard that owns the
+ * full breakdown. A quota read failure keeps its own line here, because this
+ * card is where a broken account is diagnosed.
+ */
+export function UsageSummary({ usage, quotaError, onOpen, t }: {
+  usage: OpenAICodexUsage
+  quotaError?: string
+  onOpen?: () => void
+  t: OpenAICodexSettingsInjected['t']
+}) {
+  // The server reports one window per bucket, so the same length can arrive
+  // from several buckets (the main Codex bucket plus a model-specific one):
+  // keep the most CONSTRAINED value per length, then the two shortest lengths —
+  // the 5-hour and weekly windows the dashboard leads with.
+  const byLength = new Map<number, OpenAICodexUsage['rateLimits'][number]['windows'][number]>()
+  for (const window of usage.rateLimits.flatMap(limit => limit.windows)) {
+    const current = byLength.get(window.windowSeconds)
+    if (current === undefined || window.remainingPercent < current.remainingPercent) byLength.set(window.windowSeconds, window)
+  }
+  const windows = [...byLength.values()]
+    .sort((left, right) => left.windowSeconds - right.windowSeconds)
+    .slice(0, 2)
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={rowStyle}>
+        <span style={bodyStyle}>
+          {windows.length === 0 ? t('quotaUnavailable') : windows.map(window => [windowLabel(window.windowSeconds, t), t('percentRemaining', { percent: formatPercent(window.remainingPercent) })].join(' ')).join(' · ')}
+        </span>
+        {onOpen === undefined
+          ? null
+          : <button type="button" style={buttonStyle} onClick={onOpen}>{t('usageOpenPanel')}</button>}
+      </div>
       {quotaError === undefined ? null : <p style={errorStyle}>{t('quotaUnavailable')}</p>}
     </div>
   )
@@ -426,7 +471,7 @@ export function AccountFeedback({ t, snapshot, store }: {
 }
 
 /** OpenAI Codex account status and OAuth actions. */
-export function OpenAICodexSettings({ t, configScope, updater, account, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
+export function OpenAICodexSettings({ t, configScope, updater, account, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
   if (t === undefined) throw new Error('OpenAI Codex settings requires its translation function')
   const [localAccount] = useState(() => new OpenAICodexAccountStore())
   const store = account ?? localAccount
@@ -498,9 +543,10 @@ export function OpenAICodexSettings({ t, configScope, updater, account, embedded
         <AccountManager t={t} store={store} snapshot={snapshot} />
         <AccountFeedback t={t} snapshot={snapshot} store={store} />
         {status.status === 'signed-in'
-          ? <UsageLimits
+          ? <UsageSummary
               usage={status.usage}
               {...status.quotaError === undefined ? {} : { quotaError: status.quotaError }}
+              {...onOpenUsage === undefined ? {} : { onOpen: onOpenUsage }}
               t={t}
             />
           : null}

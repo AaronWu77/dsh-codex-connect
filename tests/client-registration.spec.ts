@@ -6,7 +6,9 @@ describe('OpenAI Codex browser contribution', () => {
     const client = await readFile(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
     expect(client).toContain("ctx.slots.inject('settings.models.footer'")
     expect(client).toContain("id: 'dsh-codex-connect-account'")
-    expect(client).toContain('({ t, configScope, updater, account })')
+    // The plugin card injects the SHARED owner set (account included); assert the
+    // binding set rather than one line layout, which may wrap.
+    expect(client).toMatch(/inject: \(\): OpenAICodexPluginCardInjected => \(\{[\s\S]{0,240}?t, configScope, updater, account,/u)
     expect(client).toContain('inject: () => ({ t, account, configScope })')
     expect(client).toContain('account.dispose()')
     expect(client.match(/new OpenAICodexAccountStore\(\)/g)).toHaveLength(1)

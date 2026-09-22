@@ -50,6 +50,20 @@ export const name = 'dsh-codex-connect-client'
 export const inject = ['slots', 'locale', 'connection', 'remote', 'remote.session', 'settingsScope', 'sessions']
 
 /** Register account copy and the OpenAI Codex card under Plugin configuration. */
+/**
+ * The card jump into the Quota & Usage dashboard, when the plugin that owns
+ * that surface is mounted. Optional read: the card renders without it.
+ * @param ctx - the client context (`contextOverview` is another plugin service).
+ * @returns the injected field, or an empty object.
+ */
+function dashboardJumpOf(ctx: ClientContext): { onOpenUsage?: () => void } {
+  const probe = ctx as unknown as { get?: (name: string) => unknown }
+  if (typeof probe.get !== 'function') return {}
+  const face = probe.get('contextOverview') as { open?: (day?: string) => void } | undefined
+  if (face === undefined || typeof face.open !== 'function') return {}
+  return { onOpenUsage: () => { (probe.get('contextOverview') as { open?: (day?: string) => void } | undefined)?.open?.() } }
+}
+
 export function apply(ctx: ClientContext): void {
   const namespace = 'settings.openai-codex'
   const updater = new OpenAICodexUpdateStore(CODEX_CONNECT_VERSION)
@@ -71,7 +85,13 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
     key: OPENAI_CODEX_SETTINGS_NAMESPACE,
-    inject: (): OpenAICodexPluginCardInjected => ({ t, configScope, updater, account }),
+    inject: (): OpenAICodexPluginCardInjected => ({
+      t, configScope, updater, account,
+      // dsh-context publishes the dashboard handle; without that plugin the
+      // card simply keeps its own summary line and no jump. Read per render so
+      // a plugin loaded later is picked up.
+      ...dashboardJumpOf(ctx),
+    }),
   }, OpenAICodexPluginCard))
 
   ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
