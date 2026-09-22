@@ -3,6 +3,71 @@ import { AuthInteraction, Credential, CredentialInfo, CredentialStore, OAuthCred
 import "@deepseek-ai/dsh-tools";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { WebSearchProvider, WebSearchRequest, WebSearchResult } from "@deepseek-ai/dsh-web";
+//#region src/model-contract.d.ts
+/** Node-free model catalog contract shared by the Host route and browser card. */
+/** Same-origin endpoint exposing the complete Codex model catalog. */
+declare const OPENAI_CODEX_MODEL_CATALOG_PATH = "/plugins/dsh-codex-connect/models";
+/** Same-origin endpoint exposing where the catalog came from and when it was read. */
+declare const OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH = "/plugins/dsh-codex-connect/models/status";
+/** Same-origin endpoint forcing one live catalog read through the active account. */
+declare const OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH = "/plugins/dsh-codex-connect/models/refresh";
+/**
+ * Which catalog layer supplied the live model metadata. The picker never
+ * empties: every later layer only replaces fields the earlier one declared.
+ */
+type OpenAICodexCatalogSource = 'live' | 'cache' | 'cli-cache' | 'bundled';
+/**
+ * Which server-advertised context window becomes the advertised default
+ * budget. `default` uses `context_window`; `extended` uses
+ * `max_context_window`, the same ceiling the override validation accepts.
+ */
+type OpenAICodexContextWindowMode = 'default' | 'extended';
+/** One server-advertised service tier for a Codex model. */
+interface OpenAICodexModelServiceTier {
+  /** Stable server tier id sent as `service_tier`. */
+  id: string;
+  /** Optional server-provided display name. */
+  name?: string;
+  /** Optional server-provided description. */
+  description?: string;
+}
+/** One server-advertised reasoning effort accepted by a Codex model. */
+interface OpenAICodexModelReasoningLevel {
+  /** Effort id accepted by the provider. */
+  effort: string;
+  /** Optional server-provided description. */
+  description?: string;
+}
+/**
+ * Keep unlisted or newer provider defaults usable without inventing a larger
+ * limit. A live `max_context_window` is the authoritative ceiling when present;
+ * the shipped table only covers installed models the live catalog did not reach.
+ * @param id - catalog model id.
+ * @param contextWindow - advertised default budget for this model.
+ * @param liveMaxContextWindow - server `max_context_window`, when the live catalog declared one.
+ * @returns the ceiling accepted by override validation and its provenance.
+ */
+declare function openAICodexContextLimit(id: string, contextWindow: number, liveMaxContextWindow?: number): {
+  maxContextWindow: number;
+  contextLimitSource: 'codex-catalog' | 'catalog-default';
+};
+/** Resolve the advertised budget for one model from the selected context-window mode. */
+declare function openAICodexModeContextWindow(defaultWindow: number, extendedWindow: number, mode: OpenAICodexContextWindowMode): number;
+/** Where the effective catalog came from and when it was last replaced. */
+interface OpenAICodexModelCatalogStatus {
+  source: OpenAICodexCatalogSource;
+  /** Epoch milliseconds of the last accepted catalog payload; absent when only the bundled catalog answered. */
+  updatedAt?: number;
+  /** Official client version sent as the `client_version` gate. */
+  clientVersion: string;
+  /** Number of models in the effective catalog. */
+  modelCount: number;
+  /** Live slugs whose family the installed catalog does not know; kept out of the picker. */
+  unavailableModels: readonly string[];
+}
+/** Validate the catalog-source status before it enters React state. */
+declare function decodeOpenAICodexModelCatalogStatus(value: unknown): OpenAICodexModelCatalogStatus | undefined;
+//#endregion
 //#region src/account-profile.d.ts
 type OpenAICodexAccountProfileSource = 'oauth' | 'generated';
 //#endregion
@@ -422,9 +487,19 @@ declare function parseOpenAICodexUsage(value: unknown): OpenAICodexUsage;
 declare function readOpenAICodexRateLimits(store: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>): Promise<OpenAICodexUsage>;
 //#endregion
 //#region src/settings-contract.d.ts
-/** Node-free settings contract shared by the Host plugin and browser card. */
 /** Stable Harness settings namespace owned by this plugin. */
 declare const OPENAI_CODEX_SETTINGS_NAMESPACE = "llm-openai-codex";
+/**
+ * Official client version the model catalog endpoint requires. The endpoint is
+ * version-gated: a recent official value returns the full catalog, older
+ * values return an empty list, and omitting it fails with HTTP 400. Override
+ * only to follow a newer official client.
+ */
+declare const DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION = "0.155.0";
+/** Default context-window mode: the server's default budget, not its extended ceiling. */
+declare const DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE: "default";
+/** Whether a value is a bounded official-client version sent as `client_version`. */
+declare function isValidOpenAICodexModelCatalogClientVersion(value: unknown): value is string;
 /** Suggested local HTTP proxy shown by the settings UI; it is never enabled by default. */
 declare const DEFAULT_OPENAI_CODEX_PROXY_URL = "http://127.0.0.1:7890";
 /** Empty profile setting, which makes image requests use the default route hint. */
@@ -471,6 +546,15 @@ interface OpenAICodexSettingsConfig {
    * provider's actual capability.
    */
   maxTokensOverrides: Readonly<Record<string, number>> | undefined;
+  /**
+   * Which server-advertised window becomes the advertised budget. "default"
+   * uses the live catalog's `context_window`; "extended" uses its
+   * `max_context_window`, the same ceiling override validation accepts.
+   * An explicit per-model `contextWindowOverrides` entry still wins.
+   */
+  contextWindowMode: OpenAICodexContextWindowMode;
+  /** Official client version sent as the model catalog's `client_version` gate. */
+  modelCatalogClientVersion: string;
   enableSearch: boolean;
   enableImageTool: boolean;
   enableImageGeneration: boolean;
@@ -577,6 +661,125 @@ declare class OpenAICodexSearchProvider implements WebSearchProvider {
   /** @inheritdoc */
   search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult>;
   private searchWithoutProxy;
+}
+//#endregion
+//#region src/model-catalog.d.ts
+/** Fixed endpoint the official Codex client reads its model catalog from. */
+declare const OPENAI_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
+/** Plugin-owned cache basename inside the Harness home. */
+declare const OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME = "dsh-codex-connect-models.json";
+/** How long an accepted catalog read suppresses the next live read. */
+declare const OPENAI_CODEX_MODEL_CATALOG_TTL_MS: number;
+/** One server-advertised Codex model. */
+interface OpenAICodexLiveModel {
+  /** Server model slug, matched against the installed catalog id. */
+  slug: string;
+  /** Optional server display name. */
+  displayName?: string;
+  /** Optional server description. */
+  description?: string;
+  /** Optional server default reasoning effort. */
+  defaultReasoningLevel?: string;
+  /** Server-advertised reasoning efforts. */
+  reasoningLevels: readonly OpenAICodexModelReasoningLevel[];
+  /** Server default context window in tokens. */
+  contextWindow: number;
+  /** Server extended context ceiling in tokens; equals `contextWindow` when omitted. */
+  maxContextWindow: number;
+  /** Server maximum output tokens when the model declares one. */
+  maxOutputTokens?: number;
+  /** Server-advertised service tiers. */
+  serviceTiers: readonly OpenAICodexModelServiceTier[];
+  /** Server input modalities when the model declares them. */
+  inputModalities: readonly string[];
+}
+/** Host dependencies of the catalog service. */
+interface OpenAICodexModelCatalogOptions {
+  /** Owns the stored accounts and the request-scoped credential capture. */
+  credentials: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>;
+  /** Plugin-owned cache file path under the Harness home. */
+  cachePath: string;
+  /** Official client version sent as the `client_version` gate. */
+  clientVersion: string;
+  /** Owns Codex-only proxy dispatch; absent uses the direct connection. */
+  proxyManager?: OpenAICodexProxyManager | undefined;
+  /** Resolve the explicitly activated proxy for each read. */
+  resolveProxyUrl?: (() => string | undefined) | undefined;
+  /** Codex CLI cache path; defaults to `$CODEX_HOME/models_cache.json`. */
+  cliCachePath?: string | undefined;
+  /** Override the HTTP implementation in tests. */
+  fetchImpl?: typeof fetch | undefined;
+  /** Monotonic clock override in tests. */
+  now?: (() => number) | undefined;
+  /** Structured logger for the once-per-streak failure report. */
+  logError?: ((message: string, error?: unknown) => void) | undefined;
+}
+/** One resolved view of the catalog plus where it came from. */
+interface OpenAICodexCatalogSnapshot {
+  source: OpenAICodexCatalogSource;
+  updatedAt?: number;
+  etag?: string;
+  models: readonly OpenAICodexLiveModel[];
+}
+/**
+ * Decode the catalog payload shared by the live endpoint and the Codex CLI cache.
+ * @param value - parsed JSON body.
+ * @returns every decodable model, in server order.
+ */
+declare function parseOpenAICodexModelsPayload(value: unknown): OpenAICodexLiveModel[];
+/** Resolve the Codex CLI cache path without writing anything under it. */
+declare function openAICodexCliModelCachePath(): string;
+/**
+ * Read, cache, and fall back through the Codex model catalog. Construction
+ * never touches the network or disk; {@link initialize} loads the plugin cache,
+ * and {@link refresh} performs at most one live read per TTL.
+ */
+declare class OpenAICodexModelCatalog {
+  private readonly options;
+  private snapshot;
+  private revisionCounter;
+  private checkedAt;
+  private failureLogged;
+  private inflight;
+  private disposed;
+  private clientVersion;
+  /**
+   * @param options - credential store, cache path, and optional proxy and clock overrides.
+   */
+  constructor(options: OpenAICodexModelCatalogOptions);
+  /** Follow a settings change; a different gate invalidates the current TTL. */
+  setClientVersion(value: string): void;
+  /** Monotonic identity of the current layer; profile caches key on it. */
+  get revision(): number;
+  /** The effective live-model layer; empty means the bundled catalog answers. */
+  models(): readonly OpenAICodexLiveModel[];
+  /** Where the current layer came from and when it was accepted. */
+  source(): OpenAICodexCatalogSource;
+  /** Epoch milliseconds of the last accepted payload, when one exists. */
+  updatedAt(): number | undefined;
+  /** Load the plugin cache file, then start one live read when it is stale. */
+  initialize(): Promise<void>;
+  /** Whether the last accepted layer is still inside the TTL. */
+  isFresh(): boolean;
+  /** Stop accepting further reads; the current snapshot stays readable. */
+  dispose(): void;
+  /**
+   * Read the live catalog unless a fresh layer exists, coalescing callers.
+   * Never rejects: every failure keeps the previous layer and is logged once
+   * per failure streak.
+   * @param force - bypass the TTL, as the manual refresh affordance does.
+   */
+  refresh(force?: boolean): Promise<void>;
+  private now;
+  private accept;
+  private logFailure;
+  private runRefresh;
+  /** Second fallback: the official client's own cache, read but never written. */
+  private fallbackToCliCache;
+  private requestUrl;
+  private requestHeaders;
+  private readCacheFile;
+  private writeCacheFile;
 }
 //#endregion
 //#region src/proxy-paths.d.ts
@@ -779,6 +982,18 @@ interface Config {
    * Whole-map or per-model null disables inherited overrides; omitted keys inherit lower layers.
    */
   maxTokensOverrides?: Record<string, number | null> | null | undefined;
+  /**
+   * Which server-advertised context window becomes the advertised budget.
+   * "default" uses the live catalog's `context_window`; "extended" uses its
+   * `max_context_window`. An explicit `contextWindowOverrides` entry still wins.
+   */
+  contextWindowMode?: OpenAICodexContextWindowMode;
+  /**
+   * Official client version sent as the model catalog's `client_version` gate.
+   * The endpoint rejects an omitted value and returns an empty list for one
+   * below the client's floor, so this stays a known-good default.
+   */
+  modelCatalogClientVersion?: string;
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean;
   /** Register the optional image-loading tool. */
@@ -810,4 +1025,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { COMPATIBILITY_CONTRACT, COMPATIBILITY_PACKAGES, COMPATIBILITY_SCHEMA_VERSION, type CompatibilityDetectionOptions, type CompatibilityEntry, type CompatibilityEvaluationInput, type CompatibilityPackageName, type CompatibilityReport, type CompatibilityStatus, Config, DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT, DEFAULT_OPENAI_CODEX_PROXY_URL, DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE, DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS, DEFAULT_OPENAI_CODEX_SEARCH_MODE, DEFAULT_OPENAI_CODEX_SEARCH_MODEL, DEFAULT_OPENAI_CODEX_SETTINGS, DSH_PLUGIN_API_PACKAGES, FastModeRegistry, FastModeRegistry as OpenAICodexFastModeRegistry, type GeneratedImagePayload, IMAGE_GENERATE_TOOL_NAME, type ImageGenerationRequest, type ImageGenerationResponse, type ImageRequestContext, OPENAI_CODEX_ACCOUNT_LIMIT, OPENAI_CODEX_AUTH_DOCUMENT_LIMIT, OPENAI_CODEX_AUTH_FILENAME, OPENAI_CODEX_AUTH_V1_BACKUP_SUFFIX, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_FAST_MODE_MAX_SESSIONS, OPENAI_CODEX_FAST_MODE_MAX_SESSION_ID_LENGTH, OPENAI_CODEX_FAST_MODE_PATH, OPENAI_CODEX_HISTORY_BACKUP_SUFFIX, OPENAI_CODEX_IMAGE_GENERATION_URL, OPENAI_CODEX_IMAGE_MAX_COUNT, OPENAI_CODEX_IMAGE_MAX_ERROR_BYTES, OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES, OPENAI_CODEX_IMAGE_PROMPT_MAX_LENGTH, OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS, OPENAI_CODEX_LOCAL_PROXY_CANDIDATES, OPENAI_CODEX_PROVIDER, OPENAI_CODEX_PROXY_CANDIDATE_LIMIT, OPENAI_CODEX_PROXY_DETECT_PATH, OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS, OPENAI_CODEX_PROXY_PROBE_URL, OPENAI_CODEX_PROXY_TEST_PATH, OPENAI_CODEX_SEARCH_MODEL_REQUEST_EVENT, OPENAI_CODEX_SEARCH_PROVIDER, OPENAI_CODEX_SEARCH_URL, OPENAI_CODEX_SETTINGS_NAMESPACE, OPENAI_CODEX_SETTINGS_NS, OPENAI_CODEX_TRANSPORT_API_VERSION, OPENAI_CODEX_TRANSPORT_ERROR_CODES, OPENAI_CODEX_TRANSPORT_SERVICE, OPENAI_CODEX_UPDATE_PATH, OPENAI_CODEX_USAGE_URL, type OpenAICodexAccountSummary, type OpenAICodexAuthStatus, OpenAICodexCredentialStore, type OpenAICodexCredits, type OpenAICodexDiagnosticOptions, type OpenAICodexDiagnosticReport, type OpenAICodexHistoryMigrationFile, type OpenAICodexHistoryMigrationOptions, type OpenAICodexHistoryMigrationResult, type OpenAICodexIndividualLimit, OpenAICodexProxyManager, type OpenAICodexProxyProbeClassification, type OpenAICodexProxyProbeResult, type OpenAICodexRateLimit, type OpenAICodexRateLimitWindow, type OpenAICodexSearchContextSize, type OpenAICodexSearchMode, OpenAICodexSearchProvider, type OpenAICodexSearchProviderOptions, type OpenAICodexSearchRequestRecord, type OpenAICodexSettingsConfig, OpenAICodexTransport, OpenAICodexTransportError, type OpenAICodexTransportErrorCode, type OpenAICodexTransportV1, type OpenAICodexUpdateResult, type OpenAICodexUsage, PI_AI_PACKAGE, SUPPORTED_DSH_PLUGIN_API_RANGE, SUPPORTED_DSH_PLUGIN_API_VERSION, SUPPORTED_DSH_PLUGIN_API_VERSIONS, SUPPORTED_NODE_RANGE, SUPPORTED_PI_AI_RANGE, VIEW_IMAGE_TOOL_NAME, apply, assertNoOpenAICodexProviderConflict, assessCompatibility, checkForOpenAICodexUpdate, compareOpenAICodexVersions, decodeOpenAICodexSettings, detectCompatibility, detectOpenAICodexProxies, diagnoseOpenAICodex, evaluateCompatibility, inject, isFastModeSessionId, isOpenAICodexTransportError, isValidOpenAICodexContextWindowOverrides, isValidOpenAICodexImageModelHint, isValidOpenAICodexMaxTokensOverrides, isValidOpenAICodexProxyUrl, listOpenAICodexProxyCandidates, loginOpenAICodex, logoutOpenAICodex, mapOpenAICodexSearchResponse, migrateOpenAICodexSearchHistory, name, openAICodexAuthPath, openAICodexAuthStatus, openAICodexConflictMessage, parseOpenAICodexUpdateResult, parseOpenAICodexUsage, parseOpenAICodexVersion, readOpenAICodexRateLimits, resolveOpenAICodexProxyUrl, resolveOpenAICodexSettings };
+export { COMPATIBILITY_CONTRACT, COMPATIBILITY_PACKAGES, COMPATIBILITY_SCHEMA_VERSION, type CompatibilityDetectionOptions, type CompatibilityEntry, type CompatibilityEvaluationInput, type CompatibilityPackageName, type CompatibilityReport, type CompatibilityStatus, Config, DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE, DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT, DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION, DEFAULT_OPENAI_CODEX_PROXY_URL, DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE, DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS, DEFAULT_OPENAI_CODEX_SEARCH_MODE, DEFAULT_OPENAI_CODEX_SEARCH_MODEL, DEFAULT_OPENAI_CODEX_SETTINGS, DSH_PLUGIN_API_PACKAGES, FastModeRegistry, FastModeRegistry as OpenAICodexFastModeRegistry, type GeneratedImagePayload, IMAGE_GENERATE_TOOL_NAME, type ImageGenerationRequest, type ImageGenerationResponse, type ImageRequestContext, OPENAI_CODEX_ACCOUNT_LIMIT, OPENAI_CODEX_AUTH_DOCUMENT_LIMIT, OPENAI_CODEX_AUTH_FILENAME, OPENAI_CODEX_AUTH_V1_BACKUP_SUFFIX, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_FAST_MODE_MAX_SESSIONS, OPENAI_CODEX_FAST_MODE_MAX_SESSION_ID_LENGTH, OPENAI_CODEX_FAST_MODE_PATH, OPENAI_CODEX_HISTORY_BACKUP_SUFFIX, OPENAI_CODEX_IMAGE_GENERATION_URL, OPENAI_CODEX_IMAGE_MAX_COUNT, OPENAI_CODEX_IMAGE_MAX_ERROR_BYTES, OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES, OPENAI_CODEX_IMAGE_PROMPT_MAX_LENGTH, OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS, OPENAI_CODEX_LOCAL_PROXY_CANDIDATES, OPENAI_CODEX_MODELS_URL, OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OPENAI_CODEX_MODEL_CATALOG_PATH, OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, OPENAI_CODEX_MODEL_CATALOG_TTL_MS, OPENAI_CODEX_PROVIDER, OPENAI_CODEX_PROXY_CANDIDATE_LIMIT, OPENAI_CODEX_PROXY_DETECT_PATH, OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS, OPENAI_CODEX_PROXY_PROBE_URL, OPENAI_CODEX_PROXY_TEST_PATH, OPENAI_CODEX_SEARCH_MODEL_REQUEST_EVENT, OPENAI_CODEX_SEARCH_PROVIDER, OPENAI_CODEX_SEARCH_URL, OPENAI_CODEX_SETTINGS_NAMESPACE, OPENAI_CODEX_SETTINGS_NS, OPENAI_CODEX_TRANSPORT_API_VERSION, OPENAI_CODEX_TRANSPORT_ERROR_CODES, OPENAI_CODEX_TRANSPORT_SERVICE, OPENAI_CODEX_UPDATE_PATH, OPENAI_CODEX_USAGE_URL, type OpenAICodexAccountSummary, type OpenAICodexAuthStatus, type OpenAICodexCatalogSnapshot, type OpenAICodexCatalogSource, type OpenAICodexContextWindowMode, OpenAICodexCredentialStore, type OpenAICodexCredits, type OpenAICodexDiagnosticOptions, type OpenAICodexDiagnosticReport, type OpenAICodexHistoryMigrationFile, type OpenAICodexHistoryMigrationOptions, type OpenAICodexHistoryMigrationResult, type OpenAICodexIndividualLimit, type OpenAICodexLiveModel, OpenAICodexModelCatalog, type OpenAICodexModelCatalogOptions, type OpenAICodexModelCatalogStatus, type OpenAICodexModelReasoningLevel, type OpenAICodexModelServiceTier, OpenAICodexProxyManager, type OpenAICodexProxyProbeClassification, type OpenAICodexProxyProbeResult, type OpenAICodexRateLimit, type OpenAICodexRateLimitWindow, type OpenAICodexSearchContextSize, type OpenAICodexSearchMode, OpenAICodexSearchProvider, type OpenAICodexSearchProviderOptions, type OpenAICodexSearchRequestRecord, type OpenAICodexSettingsConfig, OpenAICodexTransport, OpenAICodexTransportError, type OpenAICodexTransportErrorCode, type OpenAICodexTransportV1, type OpenAICodexUpdateResult, type OpenAICodexUsage, PI_AI_PACKAGE, SUPPORTED_DSH_PLUGIN_API_RANGE, SUPPORTED_DSH_PLUGIN_API_VERSION, SUPPORTED_DSH_PLUGIN_API_VERSIONS, SUPPORTED_NODE_RANGE, SUPPORTED_PI_AI_RANGE, VIEW_IMAGE_TOOL_NAME, apply, assertNoOpenAICodexProviderConflict, assessCompatibility, checkForOpenAICodexUpdate, compareOpenAICodexVersions, decodeOpenAICodexModelCatalogStatus, decodeOpenAICodexSettings, detectCompatibility, detectOpenAICodexProxies, diagnoseOpenAICodex, evaluateCompatibility, inject, isFastModeSessionId, isOpenAICodexTransportError, isValidOpenAICodexContextWindowOverrides, isValidOpenAICodexImageModelHint, isValidOpenAICodexMaxTokensOverrides, isValidOpenAICodexModelCatalogClientVersion, isValidOpenAICodexProxyUrl, listOpenAICodexProxyCandidates, loginOpenAICodex, logoutOpenAICodex, mapOpenAICodexSearchResponse, migrateOpenAICodexSearchHistory, name, openAICodexAuthPath, openAICodexAuthStatus, openAICodexCliModelCachePath, openAICodexConflictMessage, openAICodexContextLimit, openAICodexModeContextWindow, parseOpenAICodexModelsPayload, parseOpenAICodexUpdateResult, parseOpenAICodexUsage, parseOpenAICodexVersion, readOpenAICodexRateLimits, resolveOpenAICodexProxyUrl, resolveOpenAICodexSettings };

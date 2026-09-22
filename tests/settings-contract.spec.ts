@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
   DEFAULT_OPENAI_CODEX_PROXY_URL,
   DEFAULT_OPENAI_CODEX_SETTINGS,
   decodeOpenAICodexSettings,
@@ -165,5 +166,39 @@ describe('OpenAI Codex proxy settings contract', () => {
     expect(decodeOpenAICodexSettings(host)?.contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 300_000 })
     expect(isValidOpenAICodexContextWindowOverrides({ '': null })).toBe(false)
     expect(isValidOpenAICodexContextWindowOverrides(Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`model-${i}`, null])))).toBe(false)
+  })
+})
+
+describe('OpenAI Codex model catalog settings contract', () => {
+  it('defaults the context-window mode to the server default budget', () => {
+    expect(DEFAULT_OPENAI_CODEX_SETTINGS.contextWindowMode).toBe('default')
+    expect(Config({}).contextWindowMode).toBe('default')
+    expect(resolveOpenAICodexSettings({}).contextWindowMode).toBe('default')
+    expect(Config({ contextWindowMode: 'extended' }).contextWindowMode).toBe('extended')
+    expect(() => resolveOpenAICodexSettings({ contextWindowMode: 'huge' } as never)).toThrow()
+    expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, contextWindowMode: 'huge' })).toBeUndefined()
+    // A legacy snapshot without the field keeps the safe default.
+    expect(decodeOpenAICodexSettings({
+      models: undefined,
+      enableProxy: false,
+      proxyUrl: DEFAULT_OPENAI_CODEX_PROXY_URL,
+      enableSearch: false,
+      enableImageTool: false,
+      searchModel: 'gpt-5.6-sol',
+      searchMode: 'cached',
+      searchContextSize: 'medium',
+      searchMaxOutputTokens: 10_000,
+    })?.contextWindowMode).toBe('default')
+  })
+
+  it('defaults and validates the model catalog client version gate', () => {
+    expect(DEFAULT_OPENAI_CODEX_SETTINGS.modelCatalogClientVersion).toBe(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION)
+    expect(Config({}).modelCatalogClientVersion).toBe('0.155.0')
+    expect(Config({ modelCatalogClientVersion: '1.0.0' }).modelCatalogClientVersion).toBe('1.0.0')
+    for (const invalid of ['', 'latest', '0.155', '0.155.0.1', '0.155.0\n', 'a'.repeat(40)]) {
+      expect(() => Config({ modelCatalogClientVersion: invalid })).toThrow()
+      expect(() => resolveOpenAICodexSettings({ modelCatalogClientVersion: invalid })).toThrow()
+      expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, modelCatalogClientVersion: invalid })).toBeUndefined()
+    }
   })
 })

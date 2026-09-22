@@ -1,9 +1,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
-import { OPENAI_CODEX_MODEL_CATALOG_PATH } from '../src/model-contract.ts'
-import type { OpenAICodexModelCatalogEntry } from '../src/model-contract.ts'
-import { registerOpenAICodexModelCatalogRoute } from '../src/model-routes.ts'
+import {
+  OPENAI_CODEX_MODEL_CATALOG_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH,
+} from '../src/model-contract.ts'
+import type { OpenAICodexModelCatalogEntry, OpenAICodexModelCatalogStatus } from '../src/model-contract.ts'
+import { registerOpenAICodexModelCatalogRoute, registerOpenAICodexModelCatalogStatusRoutes } from '../src/model-routes.ts'
 import type { OpenAICodexTrustedOriginsStore } from '../src/trusted-origins.ts'
 
 interface CapturedRoute {
@@ -80,5 +84,77 @@ describe('Codex Connect model catalog route', () => {
     await route.handler(request('GET', '192.168.1.9'), remote)
     expect(remote.observed.status).toBe(403)
     expect(resolveCatalog).not.toHaveBeenCalled()
+  })
+})
+
+const catalogStatus: OpenAICodexModelCatalogStatus = {
+  source: 'cache',
+  updatedAt: 1_700_000_000_000,
+  clientVersion: '0.155.0',
+  modelCount: 7,
+  unavailableModels: ['gpt-reserve'],
+}
+
+function captureStatusRoutes(options: {
+  status: () => OpenAICodexModelCatalogStatus
+  refresh: () => Promise<void>
+}, trusted = true): CapturedRoute[] {
+  const routes: CapturedRoute[] = []
+  const ctx = {
+    webServer: {
+      register(route: CapturedRoute) {
+        routes.push(route)
+        return () => undefined
+      },
+    },
+    effect(factory: () => void | (() => void | Promise<void>)) {
+      return factory()
+    },
+  } as unknown as Context
+  registerOpenAICodexModelCatalogStatusRoutes(
+    ctx,
+    options,
+    { has: async () => trusted } as unknown as OpenAICodexTrustedOriginsStore,
+  )
+  return routes
+}
+
+describe('Codex Connect model catalog status routes', () => {
+  it('serves provenance to a trusted GET and returns the refreshed status from POST', async () => {
+    const refresh = vi.fn(async () => undefined)
+    const routes = captureStatusRoutes({ status: () => catalogStatus, refresh })
+    const statusRoute = routes.find(route => route.path === OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH)!
+    const refreshRoute = routes.find(route => route.path === OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH)!
+
+    const status = response()
+    await statusRoute.handler(request(), status)
+    expect(status.observed.status).toBe(200)
+    expect(JSON.parse(status.observed.body ?? 'null')).toEqual(catalogStatus)
+
+    const refreshed = response()
+    await refreshRoute.handler(request('POST'), refreshed)
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(refreshed.observed.status).toBe(200)
+    expect(JSON.parse(refreshed.observed.body ?? 'null')).toEqual(catalogStatus)
+  })
+
+  it('rejects wrong methods and untrusted peers before reading or refreshing', async () => {
+    const refresh = vi.fn(async () => undefined)
+    const routes = captureStatusRoutes({ status: () => catalogStatus, refresh })
+    const statusRoute = routes.find(route => route.path === OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH)!
+    const refreshRoute = routes.find(route => route.path === OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH)!
+
+    const statusWrongMethod = response()
+    await statusRoute.handler(request('POST'), statusWrongMethod)
+    expect(statusWrongMethod.observed.status).toBe(405)
+    const wrongMethod = response()
+    await refreshRoute.handler(request('GET'), wrongMethod)
+    expect(wrongMethod.observed.status).toBe(405)
+
+    const untrusted = captureStatusRoutes({ status: () => catalogStatus, refresh }, false)
+    const blocked = response()
+    await untrusted.find(route => route.path === OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH)!.handler(request('POST', '192.168.1.9'), blocked)
+    expect(blocked.observed.status).toBe(403)
+    expect(refresh).not.toHaveBeenCalled()
   })
 })

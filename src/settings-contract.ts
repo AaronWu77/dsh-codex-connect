@@ -1,7 +1,33 @@
 /** Node-free settings contract shared by the Host plugin and browser card. */
 
+import type { OpenAICodexContextWindowMode } from './model-contract.ts'
+
 /** Stable Harness settings namespace owned by this plugin. */
 export const OPENAI_CODEX_SETTINGS_NAMESPACE = 'llm-openai-codex'
+
+/**
+ * Official client version the model catalog endpoint requires. The endpoint is
+ * version-gated: a recent official value returns the full catalog, older
+ * values return an empty list, and omitting it fails with HTTP 400. Override
+ * only to follow a newer official client.
+ */
+export const DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION = '0.155.0'
+
+/** Default context-window mode: the server's default budget, not its extended ceiling. */
+export const DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE = 'default' as const
+
+/** Whether a value is a bounded official-client version sent as `client_version`. */
+export function isValidOpenAICodexModelCatalogClientVersion(value: unknown): value is string {
+  return typeof value === 'string' && /^(?=.{1,32}$)\d+\.\d+\.\d+$/u.test(value)
+}
+
+/** Parse a bounded official-client version without exposing malformed input. */
+export function parseOpenAICodexModelCatalogClientVersion(value: unknown): string {
+  if (!isValidOpenAICodexModelCatalogClientVersion(value)) {
+    throw new TypeError('OpenAI Codex modelCatalogClientVersion must be a dotted numeric client version such as 0.155.0')
+  }
+  return value
+}
 
 /** Suggested local HTTP proxy shown by the settings UI; it is never enabled by default. */
 export const DEFAULT_OPENAI_CODEX_PROXY_URL = 'http://127.0.0.1:7890'
@@ -143,6 +169,15 @@ export interface OpenAICodexSettingsConfig {
    * provider's actual capability.
    */
   maxTokensOverrides: Readonly<Record<string, number>> | undefined
+  /**
+   * Which server-advertised window becomes the advertised budget. "default"
+   * uses the live catalog's `context_window`; "extended" uses its
+   * `max_context_window`, the same ceiling override validation accepts.
+   * An explicit per-model `contextWindowOverrides` entry still wins.
+   */
+  contextWindowMode: OpenAICodexContextWindowMode
+  /** Official client version sent as the model catalog's `client_version` gate. */
+  modelCatalogClientVersion: string
   enableSearch: boolean
   enableImageTool: boolean
   enableImageGeneration: boolean
@@ -164,6 +199,8 @@ export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> 
   proxyUrl: DEFAULT_OPENAI_CODEX_PROXY_URL,
   contextWindowOverrides: undefined,
   maxTokensOverrides: undefined,
+  contextWindowMode: DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
+  modelCatalogClientVersion: DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
   enableSearch: false,
   enableImageTool: false,
   enableImageGeneration: false,
@@ -192,6 +229,10 @@ export function resolveOpenAICodexSettings(
     throw new TypeError('OpenAI Codex proxyUrl must be an HTTP(S) origin without credentials or a path')
   }
   parseOpenAICodexImageModelHint(resolved.imageModelHint)
+  parseOpenAICodexModelCatalogClientVersion(resolved.modelCatalogClientVersion)
+  if (resolved.contextWindowMode !== 'default' && resolved.contextWindowMode !== 'extended') {
+    throw new TypeError('OpenAI Codex contextWindowMode must be "default" or "extended"')
+  }
   return {
     ...resolved,
     contextWindowOverrides: resolveOpenAICodexContextWindowOverrides(resolved.contextWindowOverrides),
@@ -219,6 +260,8 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   const proxyUrl = value['proxyUrl']
   const contextWindowOverrides = value['contextWindowOverrides']
   const maxTokensOverrides = value['maxTokensOverrides']
+  const contextWindowMode = value['contextWindowMode']
+  const modelCatalogClientVersion = value['modelCatalogClientVersion']
   const enableSearch = value['enableSearch']
   const enableImageTool = value['enableImageTool']
   const enableImageGeneration = value['enableImageGeneration']
@@ -234,6 +277,9 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   if (proxyUrl !== undefined && (typeof proxyUrl !== 'string' || !isValidOpenAICodexProxyUrl(proxyUrl))) return undefined
   if (contextWindowOverrides !== undefined && contextWindowOverrides !== null && !isValidOpenAICodexContextWindowOverrides(contextWindowOverrides)) return undefined
   if (maxTokensOverrides !== undefined && maxTokensOverrides !== null && !isValidOpenAICodexMaxTokensOverrides(maxTokensOverrides)) return undefined
+  // Older Host snapshots predate the context-window mode; absence maps to its safe default.
+  if (contextWindowMode !== undefined && contextWindowMode !== 'default' && contextWindowMode !== 'extended') return undefined
+  if (modelCatalogClientVersion !== undefined && !isValidOpenAICodexModelCatalogClientVersion(modelCatalogClientVersion)) return undefined
   if (typeof enableSearch !== 'boolean' || typeof enableImageTool !== 'boolean') return undefined
   // Older Host snapshots predate image generation; absence maps to its safe default.
   if (enableImageGeneration !== undefined && typeof enableImageGeneration !== 'boolean') return undefined
@@ -254,6 +300,8 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
     proxyUrl: proxyUrl === undefined ? DEFAULT_OPENAI_CODEX_PROXY_URL : normalizeOpenAICodexProxyUrl(proxyUrl)!,
     contextWindowOverrides: overrides === undefined ? undefined : Object.freeze(overrides),
     maxTokensOverrides: tokenOverrides === undefined ? undefined : Object.freeze(tokenOverrides),
+    contextWindowMode: (contextWindowMode as OpenAICodexContextWindowMode | undefined) ?? DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
+    modelCatalogClientVersion: modelCatalogClientVersion ?? DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
     enableSearch,
     enableImageTool,
     enableImageGeneration: enableImageGeneration ?? false,

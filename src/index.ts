@@ -22,8 +22,10 @@ import {
   assertOpenAICodexContextWindowOverrides,
   assertOpenAICodexMaxTokensOverrides,
   createOpenAICodexAdapter,
-  openAICodexModelCatalog,
+  openAICodexModelCatalogFrom,
+  openAICodexUnavailableModels,
 } from './adapter.ts'
+import type { OpenAICodexCatalogLayer } from './adapter.ts'
 import { OPENAI_CODEX_PRIMARY_ROUTE } from './adapter.ts'
 import type { OpenAICodexRouteBinding } from './adapter.ts'
 import type { OpenAICodexAccountRoute } from './account-routes.ts'
@@ -32,7 +34,9 @@ import { OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS, registerOpenAICodexAuthRoutes } 
 import { registerOpenAICodexProxyRoutes } from './proxy-routes.ts'
 import { OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME, OpenAICodexTrustedOriginsStore } from './trusted-origins.ts'
 import { registerOpenAICodexUpdateRoutes } from './update-routes.ts'
-import { registerOpenAICodexModelCatalogRoute } from './model-routes.ts'
+import { registerOpenAICodexModelCatalogRoute, registerOpenAICodexModelCatalogStatusRoutes } from './model-routes.ts'
+import { OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OpenAICodexModelCatalog } from './model-catalog.ts'
+import type { OpenAICodexContextWindowMode, OpenAICodexModelCatalogStatus } from './model-contract.ts'
 import { registerOpenAICodexQuotaRoute } from './quota-routes.ts'
 import { registerOpenAICodexOriginalImageRoute } from './image-asset-routes.ts'
 import {
@@ -112,8 +116,11 @@ import {
 import type { OpenAICodexSearchContextSize, OpenAICodexSearchMode } from './search.ts'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.ts'
 import {
+  DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
+  DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
   DEFAULT_OPENAI_CODEX_PROXY_URL,
   parseOpenAICodexImageModelHint,
+  parseOpenAICodexModelCatalogClientVersion,
   OPENAI_CODEX_SETTINGS_NAMESPACE,
   isValidOpenAICodexProxyUrl,
   resolveOpenAICodexProxyUrl,
@@ -136,6 +143,39 @@ export {
   resolveOpenAICodexSettings,
 } from './settings-contract.ts'
 export type { OpenAICodexSettingsConfig } from './settings-contract.ts'
+export {
+  DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE,
+  DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
+  isValidOpenAICodexModelCatalogClientVersion,
+} from './settings-contract.ts'
+export {
+  decodeOpenAICodexModelCatalogStatus,
+  openAICodexContextLimit,
+  openAICodexModeContextWindow,
+  OPENAI_CODEX_MODEL_CATALOG_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH,
+} from './model-contract.ts'
+export type {
+  OpenAICodexCatalogSource,
+  OpenAICodexContextWindowMode,
+  OpenAICodexModelCatalogStatus,
+  OpenAICodexModelReasoningLevel,
+  OpenAICodexModelServiceTier,
+} from './model-contract.ts'
+export {
+  OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME,
+  OPENAI_CODEX_MODEL_CATALOG_TTL_MS,
+  OPENAI_CODEX_MODELS_URL,
+  OpenAICodexModelCatalog,
+  openAICodexCliModelCachePath,
+  parseOpenAICodexModelsPayload,
+} from './model-catalog.ts'
+export type {
+  OpenAICodexCatalogSnapshot,
+  OpenAICodexLiveModel,
+  OpenAICodexModelCatalogOptions,
+} from './model-catalog.ts'
 
 export {
   isOpenAICodexTransportError,
@@ -269,6 +309,18 @@ export interface Config {
    * Whole-map or per-model null disables inherited overrides; omitted keys inherit lower layers.
    */
   maxTokensOverrides?: Record<string, number | null> | null | undefined
+  /**
+   * Which server-advertised context window becomes the advertised budget.
+   * "default" uses the live catalog's `context_window`; "extended" uses its
+   * `max_context_window`. An explicit `contextWindowOverrides` entry still wins.
+   */
+  contextWindowMode?: OpenAICodexContextWindowMode
+  /**
+   * Official client version sent as the model catalog's `client_version` gate.
+   * The endpoint rejects an omitted value and returns an empty list for one
+   * below the client's floor, so this stays a known-good default.
+   */
+  modelCatalogClientVersion?: string
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean
   /** Register the optional image-loading tool. */
@@ -304,6 +356,9 @@ export const Config: z<Config> = z.object({
     z.union([z.const(undefined), z.dict(z.union([z.const(null), z.number()]))]),
     parseOpenAICodexMaxTokensOverrides,
   ),
+  contextWindowMode: z.union(['default', 'extended'] as const).default(DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE),
+  modelCatalogClientVersion: z.transform(z.string(), parseOpenAICodexModelCatalogClientVersion)
+    .default(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION),
   enableSearch: z.boolean().default(false),
   enableImageTool: z.boolean().default(false),
   enableImageGeneration: z.boolean().default(false),
@@ -324,18 +379,44 @@ export const Config: z<Config> = z.object({
  * @param config - capability gates and standalone-search tuning.
  */
 export function apply(ctx: Context, config: Config): void {
-  const catalog = openAICodexModelCatalog()
-  const validateSettings = (value: Config): void => {
-    resolveOpenAICodexSettings(value)
-    assertOpenAICodexContextWindowOverrides(value.contextWindowOverrides ?? undefined, catalog)
-    assertOpenAICodexMaxTokensOverrides(value.maxTokensOverrides ?? undefined, catalog)
-  }
-  validateSettings(config)
   let current = () => config
   const proxyManager = new OpenAICodexProxyManager()
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
   const credentials = new OpenAICodexCredentialStore()
+  const modelCatalog = new OpenAICodexModelCatalog({
+    credentials,
+    cachePath: join(dirname(credentials.filename), OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME),
+    clientVersion: resolveOpenAICodexSettings(config).modelCatalogClientVersion,
+    proxyManager,
+    resolveProxyUrl: resolveProviderProxyUrl,
+    logError: (message, error) => {
+      ctx.logger.error(message)
+      if (error !== undefined) ctx.logger.error(error)
+    },
+  })
+  const catalogLayer = (): OpenAICodexCatalogLayer => ({
+    live: modelCatalog.models(),
+    mode: resolveOpenAICodexSettings(current()).contextWindowMode,
+  })
+  const effectiveCatalog = () => openAICodexModelCatalogFrom(catalogLayer())
+  const catalogStatus = (): OpenAICodexModelCatalogStatus => {
+    const updatedAt = modelCatalog.updatedAt()
+    return {
+      source: modelCatalog.source(),
+      clientVersion: resolveOpenAICodexSettings(current()).modelCatalogClientVersion,
+      modelCount: effectiveCatalog().length,
+      unavailableModels: openAICodexUnavailableModels(modelCatalog.models()),
+      ...updatedAt === undefined ? {} : { updatedAt },
+    }
+  }
+  const validateSettings = (value: Config): void => {
+    const catalog = effectiveCatalog()
+    resolveOpenAICodexSettings(value)
+    assertOpenAICodexContextWindowOverrides(value.contextWindowOverrides ?? undefined, catalog)
+    assertOpenAICodexMaxTokensOverrides(value.maxTokensOverrides ?? undefined, catalog)
+  }
+  validateSettings(config)
   const imageAssets = new OpenAICodexImageAssetStore()
   const trustedOrigins = new OpenAICodexTrustedOriginsStore(
     join(dirname(credentials.filename), OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME),
@@ -367,13 +448,18 @@ export function apply(ctx: Context, config: Config): void {
       () => resolveOpenAICodexSettings(current()).contextWindowOverrides,
       () => resolveOpenAICodexSettings(current()).maxTokensOverrides,
       () => routeBindings,
+      catalogLayer,
     ),
   )
   ctx.inject(['webServer'], webCtx => {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl, config.oauthTimeoutMs)
     registerOpenAICodexProxyRoutes(webCtx, trustedOrigins, proxyManager)
     registerOpenAICodexUpdateRoutes(webCtx, { currentVersion: CODEX_CONNECT_VERSION }, trustedOrigins)
-    registerOpenAICodexModelCatalogRoute(webCtx, openAICodexModelCatalog, trustedOrigins)
+    registerOpenAICodexModelCatalogRoute(webCtx, effectiveCatalog, trustedOrigins)
+    registerOpenAICodexModelCatalogStatusRoutes(webCtx, {
+      status: catalogStatus,
+      refresh: () => modelCatalog.refresh(true),
+    }, trustedOrigins)
     registerOpenAICodexOriginalImageRoute(webCtx, trustedOrigins, imageAssets)
     registerOpenAICodexQuotaRoute(webCtx, {
       store: credentials,
@@ -392,7 +478,13 @@ export function apply(ctx: Context, config: Config): void {
   let imageGenerationFiber: Fiber | undefined
   let imageGenerationTail = Promise.resolve()
   let accountRouteTail = Promise.resolve()
+  let catalogTail = Promise.resolve()
   let registeredRouteIds: readonly string[] = [OPENAI_CODEX_PROVIDER]
+
+  /** Serialize live catalog reads behind account and settings changes. */
+  const scheduleCatalogRefresh = (): void => {
+    catalogTail = catalogTail.then(() => modelCatalog.refresh(), () => modelCatalog.refresh())
+  }
 
   const reconcileAccountRoutes = async (): Promise<void> => {
     if (stopped) return
@@ -536,11 +628,16 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
-  ctx.effect(() => credentials.onDidChange(scheduleAccountRoutes), 'dsh-codex-connect: account route reconciliation')
+  ctx.effect(() => credentials.onDidChange(() => {
+    modelCatalog.setClientVersion(resolveOpenAICodexSettings(current()).modelCatalogClientVersion)
+    scheduleAccountRoutes()
+    scheduleCatalogRefresh()
+  }), 'dsh-codex-connect: account route reconciliation')
 
   ctx.effect(() => async () => {
     stopped = true
-    await Promise.all([searchTail, imageTail, imageGenerationTail, accountRouteTail])
+    modelCatalog.dispose()
+    await Promise.all([searchTail, imageTail, imageGenerationTail, accountRouteTail, catalogTail])
     const search = searchFiber
     const image = imageFiber
     const imageGeneration = imageGenerationFiber
@@ -573,10 +670,16 @@ export function apply(ctx: Context, config: Config): void {
           })
         }
         proxyWasActive = proxyIsActive
+        modelCatalog.setClientVersion(resolveOpenAICodexSettings(current()).modelCatalogClientVersion)
+        scheduleCatalogRefresh()
         scheduleCapabilities()
       },
     })
   })
   scheduleCapabilities()
   scheduleAccountRoutes()
+  void modelCatalog.initialize().catch((error: unknown) => {
+    ctx.logger.error('dsh-codex-connect: model catalog initialization failed')
+    ctx.logger.error(error)
+  })
 }

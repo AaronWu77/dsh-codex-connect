@@ -13,8 +13,16 @@ import { readOpenAICodexAccountRequestAuth, readOpenAICodexRequestAuth } from '.
 import { OPENAI_CODEX_PROVIDER } from './store.ts'
 import { isOpenAICodexRouteId, OPENAI_CODEX_PRIMARY_DISPLAY_NAME } from './account-routes.ts'
 import type { FastModeRegistry } from './fast-mode.ts'
-import type { OpenAICodexModelCatalogEntry } from './model-contract.ts'
-import { isValidOpenAICodexContextBudget, openAICodexContextLimit } from './model-contract.ts'
+import type {
+  OpenAICodexContextWindowMode,
+  OpenAICodexModelCatalogEntry,
+} from './model-contract.ts'
+import {
+  isValidOpenAICodexContextBudget,
+  openAICodexContextLimit,
+  openAICodexModeContextWindow,
+} from './model-contract.ts'
+import type { OpenAICodexLiveModel } from './model-catalog.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 
 /** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
@@ -75,12 +83,132 @@ export function withOpenAICodexAstra(
   return { ...provider, getModels: () => models }
 }
 
+/** One live-catalog layer plus the selected context-window mode. */
+export interface OpenAICodexCatalogLayer {
+  /** Server-advertised models; empty means the bundled catalog answers. */
+  live: readonly OpenAICodexLiveModel[]
+  /** Which server window becomes the advertised budget. */
+  mode: OpenAICodexContextWindowMode
+}
+
+/**
+ * Resolve a slug's family: the id through its last dash-separated segment that
+ * contains a digit. `gpt-5.6-next` is family `gpt-5.6`; `gpt-reserve` and
+ * `codex-auto-review` carry no version segment and have no family.
+ * @param slug - server model slug.
+ * @returns the family prefix, or undefined when the slug has no version segment.
+ */
+export function openAICodexModelFamily(slug: string): string | undefined {
+  const parts = slug.split('-')
+  let end = -1
+  for (let index = 0; index < parts.length; index += 1) {
+    if (/[0-9]/u.test(parts[index] ?? '')) end = index
+  }
+  return end <= 0 ? undefined : parts.slice(0, end + 1).join('-')
+}
+
+/**
+ * Whether the installed catalog already knows a slug's family. A live model is
+ * added to the picker only when a bundled id equals the family or extends it,
+ * so an unrecognized family is reported instead of guessed into the selector.
+ * @param slug - server model slug.
+ * @param knownIds - ids the installed pi-ai catalog advertises.
+ * @returns true when the family is present in the installed catalog.
+ */
+export function isOpenAICodexKnownModelFamily(slug: string, knownIds: readonly string[]): boolean {
+  const family = openAICodexModelFamily(slug)
+  if (family === undefined) return false
+  const prefix = `${family}-`
+  return knownIds.some(id => id === family || id.startsWith(prefix))
+}
+
+/**
+ * Overlay the live catalog on the installed one. Known slugs keep their
+ * bundled record with the selected mode's window and the server output cap;
+ * only family-known new slugs are synthesized from a sibling record. Unknown
+ * slugs are returned so the Host can report them without enabling them.
+ * @param provider - installed provider catalog.
+ * @param live - server-advertised models.
+ * @param mode - selected context-window mode.
+ * @returns a detached provider plus the slugs kept out of the picker.
+ */
+export function applyOpenAICodexLiveCatalog(
+  provider: Provider,
+  live: readonly OpenAICodexLiveModel[],
+  mode: OpenAICodexContextWindowMode,
+): { provider: Provider; unavailableModels: readonly string[] } {
+  const baseline = provider.getModels()
+  const bySlug = new Map(live.map(entry => [entry.slug, entry]))
+  const knownIds = baseline.map(model => model.id)
+  const models = baseline.map(model => {
+    const entry = bySlug.get(model.id)
+    if (entry === undefined) return model
+    const contextWindow = openAICodexModeContextWindow(entry.contextWindow, entry.maxContextWindow, mode)
+    const maxTokens = entry.maxOutputTokens ?? model.maxTokens
+    return contextWindow === model.contextWindow && maxTokens === model.maxTokens
+      ? model
+      : { ...model, contextWindow, maxTokens }
+  })
+  const unavailableModels: string[] = []
+  for (const entry of live) {
+    if (baseline.some(model => model.id === entry.slug)) continue
+    const family = openAICodexModelFamily(entry.slug)
+    if (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds)) {
+      unavailableModels.push(entry.slug)
+      continue
+    }
+    const template = baseline.find(model => model.id === family || model.id.startsWith(`${family}-`)) ?? baseline[0]
+    if (template === undefined) continue
+    models.push({
+      ...template,
+      id: entry.slug,
+      name: entry.displayName ?? entry.slug,
+      contextWindow: openAICodexModeContextWindow(entry.contextWindow, entry.maxContextWindow, mode),
+      maxTokens: entry.maxOutputTokens ?? template.maxTokens,
+    })
+  }
+  return { provider: { ...provider, getModels: () => models }, unavailableModels }
+}
+
 /** Return a detached copy of the effective Codex model catalog. */
 export function openAICodexModelCatalog(): readonly OpenAICodexModelCatalogEntry[] {
-  return withOpenAICodexAstra(openaiCodexProvider()).getModels().map(model => ({
-    id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
-    ...openAICodexContextLimit(model.id, model.contextWindow),
-  }))
+  return openAICodexModelCatalogFrom()
+}
+
+/**
+ * List live slugs whose family the installed catalog does not know. They stay
+ * out of the picker and are reported through the catalog status instead.
+ * @param live - server-advertised models.
+ * @returns slugs held back from the selector.
+ */
+export function openAICodexUnavailableModels(live: readonly OpenAICodexLiveModel[]): readonly string[] {
+  return applyOpenAICodexLiveCatalog(withOpenAICodexAstra(openaiCodexProvider()), live, 'default').unavailableModels
+}
+
+/**
+ * Build the catalog the settings card reads from the selected live layer.
+ * @param layer - live models and context-window mode; omitted uses the bundled catalog.
+ * @returns detached entries carrying server tiers and reasoning levels when known.
+ */
+export function openAICodexModelCatalogFrom(
+  layer: OpenAICodexCatalogLayer = { live: [], mode: 'default' },
+): readonly OpenAICodexModelCatalogEntry[] {
+  const merged = applyOpenAICodexLiveCatalog(withOpenAICodexAstra(openaiCodexProvider()), layer.live, layer.mode).provider
+  const bySlug = new Map(layer.live.map(entry => [entry.slug, entry]))
+  return merged.getModels().map(model => {
+    const entry = bySlug.get(model.id)
+    return {
+      id: model.id,
+      name: model.name,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      ...entry === undefined
+        ? openAICodexContextLimit(model.id, model.contextWindow)
+        : openAICodexContextLimit(model.id, entry.contextWindow, entry.maxContextWindow),
+      ...entry === undefined || entry.serviceTiers.length === 0 ? {} : { serviceTiers: entry.serviceTiers },
+      ...entry === undefined || entry.reasoningLevels.length === 0 ? {} : { reasoningLevels: entry.reasoningLevels },
+    }
+  })
 }
 
 /** Provider idle ceiling used by the composite route. */
@@ -180,8 +308,12 @@ export function createOpenAICodexProfile(
   contextWindowOverrides?: Readonly<Record<string, number>> | undefined,
   maxTokensOverrides?: Readonly<Record<string, number>> | undefined,
   route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
+  layer?: OpenAICodexCatalogLayer | undefined,
 ): OpenAICodexRouteProfile & { piProvider: Provider } {
-  const effectiveProvider = applyOpenAICodexOverrides(provider, contextWindowOverrides, maxTokensOverrides)
+  const layeredProvider = layer === undefined
+    ? provider
+    : applyOpenAICodexLiveCatalog(provider, layer.live, layer.mode).provider
+  const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides)
   const routedProvider = withOpenAICodexRouteId(effectiveProvider, route.routeId)
   const profile = {
     provider: route.routeId,
@@ -310,6 +442,7 @@ export function createOpenAICodexAdapter(
   contextWindowOverrides?: () => Readonly<Record<string, number>> | undefined,
   maxTokensOverrides?: () => Readonly<Record<string, number>> | undefined,
   routeBindings?: () => readonly OpenAICodexRouteBinding[],
+  catalogLayer?: () => OpenAICodexCatalogLayer,
 ): PiAiAdapter {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
   let profiles: Map<string, ResolvedPiAiProviderProfile> | undefined
@@ -318,17 +451,19 @@ export function createOpenAICodexAdapter(
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
+    const layer = catalogLayer?.()
     const key = {
       window: windowOverrides === undefined ? null : { ...windowOverrides },
       tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
       routes: bindings.map(route => [route.routeId, route.displayName, route.accountKey ?? null]),
+      catalog: layer === undefined ? null : { mode: layer.mode, live: layer.live },
     }
     if (profiles === undefined || !deepEqualJson(previousKey, key)) {
       previousKey = key
       // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
       profiles = new Map(bindings.map(route => [
         route.routeId,
-        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route),
+        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layer),
       ] as const))
     }
     return profiles

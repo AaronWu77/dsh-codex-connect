@@ -12,11 +12,14 @@ import {
 } from '../settings-contract.ts'
 import {
   decodeOpenAICodexModelCatalog,
+  decodeOpenAICodexModelCatalogStatus,
   isValidOpenAICodexContextBudget,
   OPENAI_CODEX_CONTEXT_LIMIT_SOURCE,
   OPENAI_CODEX_MODEL_CATALOG_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH,
+  OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH,
 } from '../model-contract.ts'
-import type { OpenAICodexModelCatalogEntry } from '../model-contract.ts'
+import type { OpenAICodexModelCatalogEntry, OpenAICodexModelCatalogStatus } from '../model-contract.ts'
 import type { OpenAICodexSettingsKey } from './locales.ts'
 import {
   OPENAI_CODEX_PROXY_DETECT_PATH,
@@ -71,6 +74,13 @@ const activeModuleTabStyle: CSSProperties = { ...moduleTabStyle, border: '1px so
 
 const CONFIGURATION_MODULES = ['models', 'network', 'capabilities'] as const
 
+const CATALOG_SOURCE_KEYS = {
+  live: 'catalogSourceLive',
+  cache: 'catalogSourceCache',
+  'cli-cache': 'catalogSourceCliCache',
+  bundled: 'catalogSourceBundled',
+} as const satisfies Record<OpenAICodexModelCatalogStatus['source'], OpenAICodexSettingsKey>
+
 type ProxyDetectionState =
   | { status: 'idle' }
   | { status: 'detecting' }
@@ -102,6 +112,7 @@ const CONFIG_FIELDS = [
   'models',
   'contextWindowOverrides',
   'maxTokensOverrides',
+  'contextWindowMode',
   'enableProxy',
   'proxyUrl',
   'enableImageTool',
@@ -185,6 +196,9 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   const [feedback, setFeedback] = useState<'idle' | 'saved' | 'error'>('idle')
   const [modelCatalog, setModelCatalog] = useState<OpenAICodexModelCatalogEntry[] | undefined>()
   const [modelCatalogError, setModelCatalogError] = useState(false)
+  const [catalogStatus, setCatalogStatus] = useState<OpenAICodexModelCatalogStatus | undefined>()
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false)
+  const [catalogRefreshFailed, setCatalogRefreshFailed] = useState(false)
   const [expandedModels, setExpandedModels] = useState<Readonly<Record<string, boolean>>>({})
   const [proxyDetection, setProxyDetection] = useState<ProxyDetectionState>({ status: 'idle' })
   const [proxyMode, setProxyMode] = useState<'auto' | 'manual'>('auto')
@@ -198,26 +212,68 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   const proxyDetectionRequest = useRef(0)
   const manualProbeRequest = useRef(0)
   const currentProxyCheckRequest = useRef(0)
+  const catalogRequest = useRef(0)
+
+  /** Read the effective catalog and its provenance; both routes share one request identity. */
+  const loadCatalog = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
+    const request = ++catalogRequest.current
+    try {
+      const [catalogResponse, statusResponse] = await Promise.all([
+        fetch(OPENAI_CODEX_MODEL_CATALOG_PATH, {
+          method: 'GET',
+          credentials: 'same-origin',
+          headers: { accept: 'application/json' },
+          ...signal === undefined ? {} : { signal },
+        }),
+        fetch(OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, {
+          method: 'GET',
+          credentials: 'same-origin',
+          headers: { accept: 'application/json' },
+          ...signal === undefined ? {} : { signal },
+        }),
+      ])
+      if (!catalogResponse.ok) throw new Error(`model catalog request failed: ${String(catalogResponse.status)}`)
+      const catalog = decodeOpenAICodexModelCatalog(await catalogResponse.json())
+      if (catalog === undefined) throw new Error('model catalog response was invalid')
+      if (request !== catalogRequest.current) return false
+      setModelCatalog(catalog)
+      setModelCatalogError(false)
+      if (statusResponse.ok) setCatalogStatus(decodeOpenAICodexModelCatalogStatus(await statusResponse.json()))
+      return true
+    } catch {
+      if (request === catalogRequest.current) setModelCatalogError(true)
+      return false
+    }
+  }, [])
 
   useEffect(() => {
     if (scope === undefined) return
     const controller = new AbortController()
-    void fetch(OPENAI_CODEX_MODEL_CATALOG_PATH, {
-      method: 'GET',
-      credentials: 'same-origin',
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    }).then(async response => {
-      if (!response.ok) throw new Error(`model catalog request failed: ${String(response.status)}`)
-      const catalog = decodeOpenAICodexModelCatalog(await response.json())
-      if (catalog === undefined) throw new Error('model catalog response was invalid')
-      setModelCatalog(catalog)
-      setModelCatalogError(false)
-    }).catch(() => {
-      if (!controller.signal.aborted) setModelCatalogError(true)
-    })
+    void loadCatalog(controller.signal)
     return () => { controller.abort() }
-  }, [scope])
+  }, [loadCatalog, scope])
+
+  /** Ask the Host for one forced live read, then re-read the effective catalog. */
+  const refreshCatalog = async (): Promise<void> => {
+    if (catalogRefreshing || scope === undefined) return
+    setCatalogRefreshing(true)
+    setCatalogRefreshFailed(false)
+    try {
+      const response = await fetch(OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { accept: 'application/json' },
+      })
+      if (!response.ok) throw new Error(`model catalog refresh failed: ${String(response.status)}`)
+      const status = decodeOpenAICodexModelCatalogStatus(await response.json())
+      if (status !== undefined) setCatalogStatus(status)
+      await loadCatalog()
+    } catch {
+      setCatalogRefreshFailed(true)
+    } finally {
+      setCatalogRefreshing(false)
+    }
+  }
 
   useEffect(() => {
     if (!dirty && !busy) {
@@ -503,6 +559,21 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           </div>
           {modelCatalog === undefined && !modelCatalogError ? <p style={bodyStyle} role="status">{t('modelCatalogLoading')}</p> : null}
           {modelCatalogError ? <p style={errorStyle} role="alert">{t('modelCatalogFailed')}</p> : null}
+          <div style={actionsStyle}>
+            <span style={bodyStyle} role="status">
+              <span style={badgeStyle}>{catalogStatus === undefined ? t('catalogSourceBundled') : t(CATALOG_SOURCE_KEYS[catalogStatus.source])}</span>{' '}
+              {catalogStatus?.updatedAt === undefined
+                ? t('catalogUpdatedNever')
+                : t('catalogUpdatedAt', { time: new Date(catalogStatus.updatedAt).toLocaleString() })}
+              {catalogStatus !== undefined && catalogStatus.unavailableModels.length > 0
+                ? ` · ${t('catalogUnavailableModels', { models: catalogStatus.unavailableModels.join(', ') })}`
+                : ''}
+            </span>
+            <button type="button" style={buttonStyle} disabled={catalogRefreshing} onClick={() => { void refreshCatalog() }}>
+              {catalogRefreshing ? t('catalogRefreshing') : t('catalogRefresh')}
+            </button>
+          </div>
+          {catalogRefreshFailed ? <p style={errorStyle} role="status">{t('catalogRefreshFailed')}</p> : null}
           {modelCatalog === undefined ? null : (
             <div style={modelListStyle} role="group" aria-label={t('modelCatalog')}>
               {modelCatalog.map(model => {
@@ -607,6 +678,18 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
               })}
             </div>
           )}
+          <label style={formFieldStyle}>
+            <span style={labelStyle}>{t('contextModeLabel')}</span>
+            <select
+              style={controlStyle}
+              value={draft.contextWindowMode}
+              onChange={event => { update('contextWindowMode', event.currentTarget.value as OpenAICodexSettingsConfig['contextWindowMode']) }}
+            >
+              <option value="default">{t('contextModeDefault')}</option>
+              <option value="extended">{t('contextModeExtended')}</option>
+            </select>
+            <span style={bodyStyle}>{t('contextModeHelp')}</span>
+          </label>
           <p style={bodyStyle}>{t('contextWarning')}</p>
           <p style={bodyStyle}>{t('maxTokensHelp')}</p>
           {!validContexts ? <p style={errorStyle} role="alert">{t('contextInvalid')}</p> : null}

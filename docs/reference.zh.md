@@ -105,6 +105,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 | `proxyUrl` | `http://127.0.0.1:7890` | 不带凭据的 HTTP(S) proxy origin；启用前不生效 |
 | `contextWindowOverrides` | 无 | 按模型设置客户端上下文预算 |
 | `maxTokensOverrides` | 无 | 按模型设置默认最大输出 Tokens |
+| `contextWindowMode` | `default` | `default` 使用服务端默认窗口，`extended` 使用其最大值 |
+| `modelCatalogClientVersion` | `0.155.0` | 作为模型目录 `client_version` 校验值发送的官方客户端版本 |
 | `enableSearch` | `false` | 注册 Codex 搜索，并在保存时将它选为搜索提供方 |
 | `enableImageTool` | `false` | 注册 `view_image` |
 | `enableImageGeneration` | `false` | 注册 GPT Image 图片生成 |
@@ -118,6 +120,19 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 `contextWindowOverrides` 修改的是客户端预算，不是 OpenAI 服务端容量。未知模型 ID 或超过插件文档配置上限的值会明确失败。将整个字段设为 `null` 可屏蔽继承的全部覆盖值；将单个模型设为 `null` 可恢复其目录默认值，同时保留其他条目。请为输出和协议开销预留空间，并把更大的数值视为特定部署的实验，不能当作账户权限证据。所有权与持久化规则见 [Alpha 设计](design.zh.md)。
 
 `maxTokensOverrides` 使用相同的地图结构和相同的逐模型上限。每个值会成为 DSH 为该模型上报的请求默认输出上限，以及该模型解析记录中的 `maxTokens`；它不会改变上下文长度，也不代表账户真的能生成这么多。整字段或单个模型设为 `null` 的语义与上文一致。
+
+### 模型目录
+
+插件以活动账户身份、经配置的代理读取 `GET https://chatgpt.com/backend-api/codex/models?client_version=<version>`，并缓存六小时。请求发送 `authorization: Bearer <账户 access token>`、`chatgpt-account-id: <账户 ID>`、`originator: deepseek-harness`，以及携带已存储 `etag` 的 `If-None-Match`；HTTP 304 表示保留缓存值。实时响应提供每个模型的 `context_window`、`max_context_window`、`max_output_tokens`、`supported_reasoning_levels` 和 `service_tiers`。
+
+回退顺序如下，每一层只补充上一层无法提供的部分：
+
+1. 实时读取，缓存在 `$DSH_HOME/dsh-codex-connect-models.json`（仅所有者可读）。
+2. 该插件缓存文件，无论实时读取是否成功。
+3. 官方 CLI 缓存 `$CODEX_HOME/models_cache.json`（默认 `~/.codex/models_cache.json`），只读取、不写入。
+4. 已安装 pi-ai 包内置的目录。
+
+任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。
 
 ## 诊断与恢复
 

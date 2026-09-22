@@ -105,6 +105,8 @@ The main plugin options are:
 | `proxyUrl` | `http://127.0.0.1:7890` | Credential-free HTTP(S) proxy origin; inactive until enabled |
 | `contextWindowOverrides` | none | Per-model client context-budget overrides |
 | `maxTokensOverrides` | none | Per-model default maximum output tokens |
+| `contextWindowMode` | `default` | `default` advertises the server default window; `extended` advertises its maximum |
+| `modelCatalogClientVersion` | `0.155.0` | Official client version sent as the model catalog's `client_version` gate |
 | `enableSearch` | `false` | Register Codex search and select it when the setting is saved |
 | `enableImageTool` | `false` | Register `view_image` |
 | `enableImageGeneration` | `false` | Register GPT Image generation |
@@ -118,6 +120,19 @@ The main plugin options are:
 `contextWindowOverrides` changes the client budget, not OpenAI's server capacity. Unknown model ids and values above the plugin's documented configuration ceiling fail explicitly. Use `null` for the whole field to mask inherited overrides, or `null` for one model to restore its catalog default while preserving other entries. Leave room for output and protocol overhead, and treat larger values as deployment-specific experiments rather than entitlement evidence. [Alpha design](design.md) documents the ownership and persistence rules.
 
 `maxTokensOverrides` takes the same map with the same per-model ceiling. Each value becomes the request default output cap DSH reports for that model and the `maxTokens` on its resolved model record; it does not change the context window and does not prove the account can generate that much. Use `null` the same way to mask or reset.
+
+### Model catalog
+
+The plugin reads the model catalog from `GET https://chatgpt.com/backend-api/codex/models?client_version=<version>` as the active account, through the configured proxy, and caches it for six hours. The request sends `authorization: Bearer <account access token>`, `chatgpt-account-id: <account id>`, `originator: deepseek-harness`, and `If-None-Match` with the stored `etag`; an HTTP 304 keeps the cached value. The live payload supplies each model's `context_window`, `max_context_window`, `max_output_tokens`, `supported_reasoning_levels`, and `service_tiers`.
+
+Fallback order, each layer only filling what the previous one could not:
+
+1. The live read, cached in `$DSH_HOME/dsh-codex-connect-models.json` (owner-only).
+2. That plugin cache file, whether or not the live read succeeded.
+3. The official CLI cache at `$CODEX_HOME/models_cache.json` (default `~/.codex/models_cache.json`), read but never written.
+4. The catalog bundled with the installed pi-ai package.
+
+A failure at any layer is logged at most once per failure streak and never throws into plugin activation, removes a model, or empties the picker. An empty or malformed live payload is treated as a failed read, because the endpoint returns an empty list for a version below its gate. A live model whose slug family is not already present in the installed catalog is reported as known but not enabled and stays out of the selector; a slug that extends a known family joins it. `contextWindowMode` selects `context_window` (`default`) or `max_context_window` (`extended`) as the advertised budget; an explicit `contextWindowOverrides` entry still wins, and the extended ceiling is what override validation accepts. The settings card shows the active source and time and offers a manual **Refresh from ChatGPT**.
 
 ## Diagnostics and recovery
 
