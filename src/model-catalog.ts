@@ -25,10 +25,10 @@ import type {
 export const OPENAI_CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models'
 
 /**
- * Official client version sent as the `client_version` gate. The endpoint is
- * version-gated: `0.155.0` and `1.0.0` return the full catalog, older values
- * return an empty list, and omitting the parameter fails with HTTP 400. The
- * value is configurable because the gate follows the official client release.
+ * Official client version sent as the `client_version` gate. GPT-6 Sol and
+ * Luna declare `0.155.0` as their minimum client version; an older version
+ * may omit them or return an empty list. Omitting the parameter fails with
+ * HTTP 400. The value is configurable as the gate follows client releases.
  */
 export const DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION = '0.155.0'
 

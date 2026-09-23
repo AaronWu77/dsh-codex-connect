@@ -166,8 +166,16 @@ export function applyOpenAICodexLiveCatalog(
       unavailableModels.push(entry.slug)
       continue
     }
-    const template = baseline.find(model => model.id === family || model.id.startsWith(`${family}-`)) ?? baseline[0]
-    if (template === undefined) continue
+    // These two new slugs share their respective 5.6 variants' Codex tool and
+    // thinking-level mappings. The Astra sibling instead maps Minimal to off.
+    const predecessor = entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
+      ? baseline.find(model => model.id === `gpt-5.6-${entry.slug.slice('gpt-6-'.length)}`)
+      : undefined
+    const template = predecessor ?? baseline.find(model => model.id === family || model.id.startsWith(`${family}-`))
+    if (template === undefined) {
+      unavailableModels.push(entry.slug)
+      continue
+    }
     models.push({
       ...template,
       id: entry.slug,
@@ -407,7 +415,7 @@ export function createOpenAICodexProfile(
   const layeredProvider = layer === undefined
     ? provider
     : applyOpenAICodexLiveCatalog(provider, layer.live, layer.mode).provider
-  const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides)
+  const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides, layer?.live)
   const routedProvider = withOpenAICodexRouteId(effectiveProvider, route.routeId)
   const profile = {
     provider: route.routeId,
@@ -449,11 +457,18 @@ function applyOpenAICodexOverrides(
   provider: Provider,
   contextWindowOverrides: Readonly<Record<string, number>> | undefined,
   maxTokensOverrides: Readonly<Record<string, number>> | undefined,
+  live?: readonly OpenAICodexLiveModel[],
 ): Provider {
   if (contextWindowOverrides === undefined && maxTokensOverrides === undefined) return provider
   const baselineModels = provider.getModels()
-  assertOpenAICodexContextWindowOverrides(contextWindowOverrides, baselineModels)
-  assertOpenAICodexMaxTokensOverrides(maxTokensOverrides, baselineModels)
+  const liveMaximums = new Map(live?.map(model => [model.slug, model.maxContextWindow]))
+  const validationModels = baselineModels.map(model => ({
+    id: model.id, contextWindow: model.contextWindow,
+    maxContextWindow: liveMaximums.get(model.id)
+      ?? openAICodexContextLimit(model.id, model.contextWindow).maxContextWindow,
+  }))
+  assertOpenAICodexContextWindowOverrides(contextWindowOverrides, validationModels)
+  assertOpenAICodexMaxTokensOverrides(maxTokensOverrides, validationModels)
   const replaced = baselineModels.map(model => {
     const contextWindow = contextWindowOverrides?.[model.id]
     const maxTokens = maxTokensOverrides?.[model.id]
@@ -487,13 +502,14 @@ export function withOpenAICodexMaxTokensOverrides(
 /** Reject unknown ids and out-of-range context budgets before accepting settings or requests. */
 export function assertOpenAICodexContextWindowOverrides(
   overrides: Readonly<Record<string, number | null>> | undefined,
-  catalog: readonly Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>[],
+  catalog: readonly (Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>
+    & Partial<Pick<OpenAICodexModelCatalogEntry, 'maxContextWindow'>>)[],
 ): void {
   const models = new Map(catalog.map(model => [model.id, model]))
   for (const [id, budget] of Object.entries(overrides ?? {})) {
     const model = models.get(id)
     if (model === undefined) throw new TypeError(`OpenAI Codex contextWindowOverrides contains unknown model id "${id}"`)
-    const { maxContextWindow } = openAICodexContextLimit(id, model.contextWindow)
+    const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
     if (budget !== null && !isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
       throw new TypeError(`OpenAI Codex contextWindowOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
     }
@@ -507,13 +523,14 @@ export function assertOpenAICodexContextWindowOverrides(
  */
 export function assertOpenAICodexMaxTokensOverrides(
   overrides: Readonly<Record<string, number | null>> | undefined,
-  catalog: readonly Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>[],
+  catalog: readonly (Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>
+    & Partial<Pick<OpenAICodexModelCatalogEntry, 'maxContextWindow'>>)[],
 ): void {
   const models = new Map(catalog.map(model => [model.id, model]))
   for (const [id, budget] of Object.entries(overrides ?? {})) {
     const model = models.get(id)
     if (model === undefined) throw new TypeError(`OpenAI Codex maxTokensOverrides contains unknown model id "${id}"`)
-    const { maxContextWindow } = openAICodexContextLimit(id, model.contextWindow)
+    const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
     if (budget !== null && !isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
       throw new TypeError(`OpenAI Codex maxTokensOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
     }

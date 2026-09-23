@@ -12,7 +12,7 @@ OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认�
 
 每个已保存账户在模型选择器中都有独立路由，因此当前账户不是某个账户时，该账户的模型仍然可以直接选择。当前账户保留 `openai-codex` 路由；其他每个账户分别以 `openai-codex-2`、`openai-codex-3` 等出现，并用其不可逆账户 key 生成的 `OpenAI Codex (acct <后缀>)` 标注。每条路由在整个请求期间（包括 token 刷新）都只以自己绑定的账户认证。切换到另一个账户时，`openai-codex` 移交该账户，原当前账户获得一个编号路由；其余账户的编号保持不变。这是模型选择，不是故障切换：Codex Connect 仍不会自动轮换账户，也不会改用其他账户重试被拒绝的请求。
 
-Codex 目录来自已安装的 `@earendil-works/pi-ai` 包，不是实时查询账户可用模型的结果。DSH `0.1.2-rc.1` 使用 pi-ai `^0.84.2`，其中尚无 `gpt-6-astra`，因此由 Codex Connect 补充定义。Alpha 4.33 也已验证 DSH `0.1.5-alpha.1` 与 pi-ai `0.85.1` 的组合；混装的宿主包以及其他 DSH/pi-ai 组合仍属未验证。遇到原生 Astra 条目时，插件保留其元数据，并维持 Low、Medium、High、Xhigh 和 Max 推理选择，不修改已安装的目录。用户无需单独升级 pi-ai 即可选择 Astra。发布说明记录了准确的已验证组合和验收限制；依赖声明本身不代表已验证。两种来源的目录条目都不能证明账户具有调用权限。
+模型选择器在已安装的 `@earendil-works/pi-ai` 记录上叠加实时 Codex 模型目录。pi-ai 缺少 `gpt-6-astra` 时由插件补充；只有实时目录或官方 CLI 缓存列出了 `gpt-6-sol`、`gpt-6-luna`，插件才会加入这两个 slug。新变体的工具与推理档位映射沿用对应的 GPT-5.6 变体，名称与上下文上限取自官方目录。使用 `models` 白名单时须加入对应 ID。目录条目不证明推理权限；账户授权、额度与网络行为仍由 OpenAI 决定。
 
 - 添加账户期间，当前账户仍可继续使用。
 - 取消新的授权或等待超时，不会删除任何已有账户，并会关闭已接受的回调连接，包括未完成的 HTTP 请求。取消后，浏览器会一起读取账户标签与额度，再更新显示。待处理授权默认 10 分钟后过期；`oauthTimeoutMs` 接受 1,000–1,800,000 毫秒，并在插件加载时应用。
@@ -133,7 +133,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 3. 官方 CLI 缓存 `$CODEX_HOME/models_cache.json`（默认 `~/.codex/models_cache.json`），只读取、不写入。
 4. 已安装 pi-ai 包内置的目录。
 
-任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。
+任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。对服务端列出的 `gpt-6-sol`、`gpt-6-luna`，插件使用对应 GPT-5.6 变体的工具与推理设置，而不是借用 Astra；即使本地上限表还没有新 slug，显式上下文覆盖值也会以实时 `max_context_window` 校验。
 
 ### 提示缓存
 

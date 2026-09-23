@@ -19,6 +19,7 @@ import {
   openAICodexModelFamily,
   openAICodexUnavailableModels,
   isOpenAICodexKnownModelFamily,
+  withOpenAICodexAstra,
 } from '../src/adapter.ts'
 
 let root: string | undefined
@@ -151,6 +152,22 @@ describe('live Codex model catalog', () => {
     expect(catalog.models()[1]).toMatchObject({ contextWindow: 1_000, maxContextWindow: 2_000 })
   })
 
+  it('recovers official GPT-6 variants from the CLI cache when the live read fails', async () => {
+    const store = await authenticatedStore()
+    await writeFile(join(root!, 'cli-models_cache.json'), JSON.stringify({
+      fetched_at: '2026-09-23T09:26:11.298831200Z',
+      models: [liveModel('gpt-6-sol'), liveModel('gpt-6-luna')],
+    }))
+    const catalog = catalogFor(store, vi.fn(async () => { throw new Error('offline') }) as unknown as typeof fetch)
+
+    await catalog.initialize()
+
+    expect(catalog.source()).toBe('cli-cache')
+    expect(catalog.models().map(model => model.slug)).toEqual(['gpt-6-sol', 'gpt-6-luna'])
+    expect(openAICodexModelCatalogFrom({ live: catalog.models(), mode: 'default' })
+      .filter(model => model.id.startsWith('gpt-6-')).map(model => model.id))
+      .toEqual(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'])
+  })
   it('reads the official client\'s ISO-8601 fetched_at as the fallback timestamp', async () => {
     // The Codex CLI writes nanosecond digits: ~/.codex/models_cache.json.
     const stamp = '2026-09-21T21:37:47.186693100Z'
@@ -269,6 +286,48 @@ describe('live catalog merge', () => {
     expect(ids).not.toContain('gpt-reserve')
     expect(ids).not.toContain('codex-auto-review')
     expect(openAICodexUnavailableModels(live)).toEqual(['gpt-reserve', 'codex-auto-review'])
+  })
+
+  it('uses the matching 5.6 variant for server-advertised GPT-6 Sol and Luna', () => {
+    const provider = withOpenAICodexAstra(openaiCodexProvider())
+    const live = [
+      liveEntry('gpt-6-sol', { display_name: 'GPT-6-Sol' }),
+      liveEntry('gpt-6-luna', { display_name: 'GPT-6-Luna' }),
+    ]
+    expect(provider.getModels().map(model => model.id)).not.toContain('gpt-6-luna')
+    const merged = applyOpenAICodexLiveCatalog(provider, live, 'default')
+    expect(merged.unavailableModels).toEqual([])
+    for (const name of ['sol', 'luna']) {
+      const entry = merged.provider.getModels().find(model => model.id === `gpt-6-${name}`)
+      const previous = provider.getModels().find(model => model.id === `gpt-5.6-${name}`)
+      expect(entry).toMatchObject({
+        name: `GPT-6-${name === 'sol' ? 'Sol' : 'Luna'}`,
+        contextWindow: 272_000,
+        input: ['text', 'image'],
+        thinkingLevelMap: previous?.thinkingLevelMap,
+        compat: previous?.compat,
+      })
+      expect(entry?.thinkingLevelMap?.minimal).toBe('low')
+    }
+    const extended = openAICodexModelCatalogFrom({ live, mode: 'extended' })
+    for (const id of ['gpt-6-sol', 'gpt-6-luna']) {
+      expect(extended.find(model => model.id === id)).toMatchObject({
+        contextWindow: 872_000, maxContextWindow: 872_000, contextLimitSource: 'codex-catalog',
+      })
+    }
+    expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6-luna')
+  })
+
+  it('uses live GPT-6 Luna ceilings for explicit overrides without mutating pi-ai', () => {
+    const provider = withOpenAICodexAstra(openaiCodexProvider())
+    const live = [liveEntry('gpt-6-luna')]
+    const layer = { live, mode: 'default' as const }
+    expect(createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { 'gpt-6-luna': 872_000 }, undefined, undefined, layer)
+      .piProvider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow).toBe(872_000)
+    expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { 'gpt-6-luna': 872_001 }, undefined, undefined, layer)).toThrow('integer from 1 to 872000')
+    expect(provider.getModels().some(model => model.id === 'gpt-6-luna')).toBe(false)
   })
 
   it('lets an explicit per-model override win over the selected mode value', () => {
