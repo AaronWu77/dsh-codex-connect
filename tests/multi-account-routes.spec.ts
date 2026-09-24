@@ -59,7 +59,8 @@ describe('multi-account LLM routes through the real registry', () => {
       expect(context.llm.listProviders().map(provider => provider.id)).toEqual(['openai-codex', 'openai-codex-2'])
     })
     const providers = context.llm.listProviders()
-    expect(providers[0]).toEqual({ id: OPENAI_CODEX_PROVIDER, name: 'OpenAI Codex' })
+    expect(providers[0]!.id).toBe(OPENAI_CODEX_PROVIDER)
+    expect(providers[0]!.name).toMatch(/^OpenAI Codex \(acct [A-Za-z0-9_-]{6}\)$/u)
     expect(providers[1]!.name).toMatch(/^OpenAI Codex \(acct [A-Za-z0-9_-]{6}\)$/u)
   })
 

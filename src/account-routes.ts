@@ -11,7 +11,7 @@ import { OPENAI_CODEX_ACCOUNT_LABEL_LENGTH, openAICodexAccountKeySuffix } from '
 export interface OpenAICodexAccountRoute {
   /** Harness route id; the store's active account always keeps {@link OPENAI_CODEX_PROVIDER}. */
   routeId: string
-  /** Selector label; only the primary route carries the bare product name. */
+  /** Selector label naming the account this route authenticates as. */
   displayName: string
   /** Account key this route is bound to; absent binds whatever is active per request. */
   accountKey?: string
@@ -70,8 +70,15 @@ export class OpenAICodexAccountRouteRegistry {
     // An account holding the primary id is not also owed a secondary one.
     if (activeAccountKey !== undefined) this.assigned.delete(activeAccountKey)
     const used = new Set<string>([OPENAI_CODEX_PROVIDER, ...this.assigned.values()])
+    // Every route names its account, including the primary one: a bare product
+    // name left the picker's first entry unattributable.
     const routes: OpenAICodexAccountRoute[] = [
-      { routeId: OPENAI_CODEX_PROVIDER, displayName: OPENAI_CODEX_PRIMARY_DISPLAY_NAME },
+      {
+        routeId: OPENAI_CODEX_PROVIDER,
+        displayName: activeAccountKey === undefined
+          ? OPENAI_CODEX_PRIMARY_DISPLAY_NAME
+          : openAICodexAccountRouteLabel(activeAccountKey),
+      },
     ]
     for (const account of accounts) {
       if (account.accountKey === activeAccountKey) continue

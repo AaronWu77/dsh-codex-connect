@@ -58,7 +58,6 @@ const commandStyle: CSSProperties = { margin: 0, padding: '10px 12px', overflowX
 const accountPanelStyle: CSSProperties = { overflow: 'hidden', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10 }
 const accountRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, padding: '12px 14px', borderTop: '1px solid var(--dsw-alias-border-l2)' }
 const accountIdentityStyle: CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }
-const accountBadgeStyle: CSSProperties = { display: 'inline-flex', marginLeft: 7, padding: '1px 7px', borderRadius: 999, background: 'var(--dsw-alias-state-success-secondary, rgba(34, 160, 107, 0.12))', color: 'var(--dsw-alias-state-success-primary, #087a41)', fontSize: 11, lineHeight: '18px', fontWeight: 600 }
 const dangerButtonStyle: CSSProperties = { ...buttonStyle, color: 'var(--dsw-alias-state-error-primary, #d92d20)' }
 const moduleTabsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, paddingTop: 2 }
 const moduleTabStyle: CSSProperties = { ...buttonStyle, minWidth: 0, minHeight: 54, borderRadius: 10, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center', gap: 2, overflowWrap: 'anywhere' }
@@ -348,8 +347,8 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
         <span style={accountIdentityStyle}>
           <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{active?.displayName ?? t('accountHeading')}</strong>
           <span style={bodyStyle}>{active?.maskedEmail === undefined
-            ? t('currentAccountDetail')
-            : `${active.maskedEmail} · ${t('currentAccountDetail')}`}</span>
+            ? t('defaultAccountDetail')
+            : `${active.maskedEmail} · ${t('defaultAccountDetail')}`}</span>
         </span>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -377,10 +376,10 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
       </div>
       {accounts.map(account => <div key={account.accountKey} style={accountRowStyle}>
         <span style={accountIdentityStyle}>
-          <strong>{account.displayName}{account.active ? <span style={accountBadgeStyle}>{t('currentAccount')}</span> : null}</strong>
+          <strong>{account.displayName}</strong>
           <span style={bodyStyle}>{account.maskedEmail === undefined
-            ? t(account.active ? 'currentAccountDetail' : 'savedAccountDetail')
-            : `${account.maskedEmail} · ${t(account.active ? 'currentAccountDetail' : 'savedAccountDetail')}`}</span>
+            ? t('savedAccountDetail')
+            : `${account.maskedEmail} · ${t('savedAccountDetail')}`}</span>
         </span>
         <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <button type="button" style={buttonStyle} disabled={busy || account.active}

@@ -23,7 +23,7 @@ describe('per-account LLM route assignment', () => {
       account('acct_cccccc'),
     ])
     expect(routes).toEqual([
-      { routeId: 'openai-codex', displayName: OPENAI_CODEX_PRIMARY_DISPLAY_NAME },
+      { routeId: 'openai-codex', displayName: 'OpenAI Codex (acct aaaaaa)' },
       { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct bbbbbb)', accountKey: 'acct_bbbbbb' },
       { routeId: 'openai-codex-3', displayName: 'OpenAI Codex (acct cccccc)', accountKey: 'acct_cccccc' },
     ])
