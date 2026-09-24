@@ -48,8 +48,8 @@ describe('OpenAI Codex rc.2 adapter profile', () => {
   })
 
   it('distinguishes an omitted model list from an explicitly empty list', () => {
-    expect(Config({}).models).toBeUndefined()
-    expect(Config({ models: [] }).models).toEqual([])
+    expect(Config({}).models.get()).toBeUndefined()
+    expect(Config({ models: [] }).models.get()).toEqual([])
   })
 
   it('supplies all request-image defaults required by ResolvedPiAiProviderProfile', () => {
@@ -138,9 +138,9 @@ describe('context-window overrides', () => {
   })
 
   it('accepts a contextWindowOverrides config section', () => {
-    expect(Config({ contextWindowOverrides: { 'gpt-5.6-sol': 350_000 } }).contextWindowOverrides)
+    expect(Config({ contextWindowOverrides: { 'gpt-5.6-sol': 350_000 } }).contextWindowOverrides.get())
       .toEqual({ 'gpt-5.6-sol': 350_000 })
-    expect(Config({}).contextWindowOverrides).toBeUndefined()
+    expect(Config({}).contextWindowOverrides.get()).toBeUndefined()
   })
 
   it('withOpenAICodexContextWindowOverrides does not mutate the baseline provider', () => {
@@ -223,8 +223,8 @@ describe('maximum-output-token overrides', () => {
   })
 
   it('accepts a maxTokensOverrides config section', () => {
-    expect(Config({ maxTokensOverrides: { 'gpt-5.6-sol': 8_192 } }).maxTokensOverrides).toEqual({ 'gpt-5.6-sol': 8_192 })
-    expect(Config({}).maxTokensOverrides).toBeUndefined()
+    expect(Config({ maxTokensOverrides: { 'gpt-5.6-sol': 8_192 } }).maxTokensOverrides.get()).toEqual({ 'gpt-5.6-sol': 8_192 })
+    expect(Config({}).maxTokensOverrides.get()).toBeUndefined()
   })
 
   it('withOpenAICodexMaxTokensOverrides does not mutate the baseline provider', () => {

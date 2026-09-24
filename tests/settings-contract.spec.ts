@@ -10,6 +10,15 @@ import {
   resolveOpenAICodexSettings,
 } from '../src/settings-contract.ts'
 import { Config } from '../src/index.ts'
+import type { OpenAICodexSettingsInput } from '../src/settings-contract.ts'
+
+function configSettings(config: ReturnType<typeof Config>): OpenAICodexSettingsInput {
+  const values = Object.fromEntries(Object.entries(config).flatMap(([key, value]) => {
+    if (key === 'oauthTimeoutMs') return []
+    return [[key, value !== null && typeof value === 'object' && 'get' in value ? value.get() : value]]
+  }))
+  return values as OpenAICodexSettingsInput
+}
 
 describe('OpenAI Codex proxy settings contract', () => {
   it.each(['gpt-image-2\n', 'gpt-image-2\r', 'gpt-image-2\u2028', 'gpt-image-2\u2029', 'a'.repeat(129), 'model\tname'])('rejects padded or oversized image hints on Host and browser: %j', imageModelHint => {
@@ -58,10 +67,10 @@ describe('OpenAI Codex proxy settings contract', () => {
       ...DEFAULT_OPENAI_CODEX_SETTINGS,
       autoReviewDisclosureAcknowledged: 'yes',
     })).toBeUndefined()
-    expect(Config({
+    expect(configSettings(Config({
       autoReviewDisclosureAcknowledged: true,
       enableAutoReview: true,
-    })).toMatchObject({
+    }))).toMatchObject({
       autoReviewDisclosureAcknowledged: true,
       enableAutoReview: true,
     })
@@ -132,9 +141,9 @@ describe('OpenAI Codex proxy settings contract', () => {
     Object.fromEntries(Array.from({ length: 256 }, (_, index) => [`model-${index}`, 300_000])),
   ])('accepts the same structural map on Host and browser: %j', overrides => {
     expect(isValidOpenAICodexContextWindowOverrides(overrides)).toBe(true)
-    const config = Config({ contextWindowOverrides: overrides })
-    expect(decodeOpenAICodexSettings(config)?.contextWindowOverrides).toEqual(overrides)
-    expect(resolveOpenAICodexSettings(config).contextWindowOverrides).toEqual(overrides)
+    expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, contextWindowOverrides: overrides })?.contextWindowOverrides)
+      .toEqual(overrides)
+    expect(resolveOpenAICodexSettings({ contextWindowOverrides: overrides }).contextWindowOverrides).toEqual(overrides)
   })
 
   it.each([
@@ -151,8 +160,8 @@ describe('OpenAI Codex proxy settings contract', () => {
 
   it('preserves the Host null sentinel and resolves it as disabled in both consumers', () => {
     const host = Config({ contextWindowOverrides: null })
-    expect(host.contextWindowOverrides).toBeNull()
-    expect(resolveOpenAICodexSettings(host).contextWindowOverrides).toBeUndefined()
+    expect(host.contextWindowOverrides.get()).toBeNull()
+    expect(resolveOpenAICodexSettings(configSettings(host)).contextWindowOverrides).toBeUndefined()
     expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, contextWindowOverrides: null })?.contextWindowOverrides).toBeUndefined()
     expect(resolveOpenAICodexSettings({ contextWindowOverrides: null }).contextWindowOverrides).toBeUndefined()
   })
@@ -160,10 +169,10 @@ describe('OpenAI Codex proxy settings contract', () => {
   it('preserves per-model null masks on Host and removes them only in resolved settings', () => {
     const input = { 'gpt-5.6-sol': null, 'gpt-5.6-terra': 300_000 }
     const host = Config({ contextWindowOverrides: input })
-    expect(host.contextWindowOverrides).toEqual(input)
-    expect(host.contextWindowOverrides).not.toBe(input)
-    expect(resolveOpenAICodexSettings(host).contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 300_000 })
-    expect(decodeOpenAICodexSettings(host)?.contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 300_000 })
+    expect(host.contextWindowOverrides.get()).toEqual(input)
+    expect(host.contextWindowOverrides.get()).not.toBe(input)
+    expect(resolveOpenAICodexSettings(configSettings(host)).contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 300_000 })
+    expect(decodeOpenAICodexSettings(configSettings(host))?.contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 300_000 })
     expect(isValidOpenAICodexContextWindowOverrides({ '': null })).toBe(false)
     expect(isValidOpenAICodexContextWindowOverrides(Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`model-${i}`, null])))).toBe(false)
   })
@@ -172,9 +181,9 @@ describe('OpenAI Codex proxy settings contract', () => {
 describe('OpenAI Codex model catalog settings contract', () => {
   it('defaults the context-window mode to the server default budget', () => {
     expect(DEFAULT_OPENAI_CODEX_SETTINGS.contextWindowMode).toBe('default')
-    expect(Config({}).contextWindowMode).toBe('default')
+    expect(Config({}).contextWindowMode.get()).toBe('default')
     expect(resolveOpenAICodexSettings({}).contextWindowMode).toBe('default')
-    expect(Config({ contextWindowMode: 'extended' }).contextWindowMode).toBe('extended')
+    expect(Config({ contextWindowMode: 'extended' }).contextWindowMode.get()).toBe('extended')
     expect(() => resolveOpenAICodexSettings({ contextWindowMode: 'huge' } as never)).toThrow()
     expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, contextWindowMode: 'huge' })).toBeUndefined()
     // A legacy snapshot without the field keeps the safe default.
@@ -193,8 +202,8 @@ describe('OpenAI Codex model catalog settings contract', () => {
 
   it('defaults payload-field logging off and rejects non-boolean values', () => {
     expect(DEFAULT_OPENAI_CODEX_SETTINGS.debugLogPayloadFields).toBe(false)
-    expect(Config({}).debugLogPayloadFields).toBe(false)
-    expect(Config({ debugLogPayloadFields: true }).debugLogPayloadFields).toBe(true)
+    expect(Config({}).debugLogPayloadFields.get()).toBe(false)
+    expect(Config({ debugLogPayloadFields: true }).debugLogPayloadFields.get()).toBe(true)
     expect(resolveOpenAICodexSettings({}).debugLogPayloadFields).toBe(false)
     expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, debugLogPayloadFields: true })?.debugLogPayloadFields).toBe(true)
     expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, debugLogPayloadFields: 'yes' })).toBeUndefined()
@@ -213,8 +222,8 @@ describe('OpenAI Codex model catalog settings contract', () => {
 
   it('defaults and validates the model catalog client version gate', () => {
     expect(DEFAULT_OPENAI_CODEX_SETTINGS.modelCatalogClientVersion).toBe(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION)
-    expect(Config({}).modelCatalogClientVersion).toBe('0.155.0')
-    expect(Config({ modelCatalogClientVersion: '1.0.0' }).modelCatalogClientVersion).toBe('1.0.0')
+    expect(Config({}).modelCatalogClientVersion.get()).toBe('0.155.0')
+    expect(Config({ modelCatalogClientVersion: '1.0.0' }).modelCatalogClientVersion.get()).toBe('1.0.0')
     for (const invalid of ['', 'latest', '0.155', '0.155.0.1', '0.155.0\n', 'a'.repeat(40)]) {
       expect(() => Config({ modelCatalogClientVersion: invalid })).toThrow()
       expect(() => resolveOpenAICodexSettings({ modelCatalogClientVersion: invalid })).toThrow()

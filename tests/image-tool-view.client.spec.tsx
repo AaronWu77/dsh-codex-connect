@@ -8,8 +8,8 @@ import { en } from '../src/client/locales.ts'
 import type { OpenAICodexSettingsKey } from '../src/client/locales.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
-    IconCopyOutline16: () => <svg aria-hidden="true" data-icon="copy" />,
-    IconCheckOutline16: () => <svg aria-hidden="true" data-icon="check" />,
+    IconCopyOutlineRegular: () => <svg aria-hidden="true" data-icon="copy" />,
+    IconCheckOutlineRegular: () => <svg aria-hidden="true" data-icon="check" />,
     writeClipboard: async (value: string) => {
       if (navigator.clipboard?.writeText !== undefined) {
         await navigator.clipboard.writeText(value)

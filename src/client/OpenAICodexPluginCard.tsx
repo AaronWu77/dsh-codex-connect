@@ -10,9 +10,9 @@ import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
 /** Dependencies injected by the browser-plugin registration. */
 export type OpenAICodexPluginCardInjected = OpenAICodexSettingsInjected
 
-/** Props delivered by the Plugin configuration item slot. */
+/** Props delivered by the Codex Connect Plugins settings tab. */
 export type OpenAICodexPluginCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'settings.plugins.tab'>
   & OpenAICodexPluginCardInjected
 
 const cardStyle: CSSProperties = {
@@ -56,7 +56,7 @@ function NativeChevronDown({ open }: { open: boolean }) {
 }
 
 /** Render account management as one expandable Plugin configuration card. */
-export function OpenAICodexPluginCard({ t, configScope, updater, account }: OpenAICodexPluginCardProps) {
+export function OpenAICodexPluginCard({ t, configScope, updater, account, onOpenUsage }: OpenAICodexPluginCardProps) {
   if (t === undefined) throw new Error('OpenAI Codex plugin card requires its translation function')
   const [open, setOpen] = useState(false)
   const title = t('title')
@@ -81,6 +81,7 @@ export function OpenAICodexPluginCard({ t, configScope, updater, account }: Open
               t={t}
               {...account === undefined ? {} : { account }}
               {...updater === undefined ? {} : { updater }}
+              {...onOpenUsage === undefined ? {} : { onOpenUsage }}
               embedded
               {...configScope === undefined ? {} : { configScope }}
             />
