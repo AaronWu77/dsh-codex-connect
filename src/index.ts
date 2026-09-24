@@ -36,19 +36,15 @@ import { OpenAICodexAccountRouteRegistry } from './account-routes.ts'
 import { OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS, registerOpenAICodexAuthRoutes } from './auth-routes.ts'
 import { registerOpenAICodexProxyRoutes } from './proxy-routes.ts'
 import { OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME, OpenAICodexTrustedOriginsStore } from './trusted-origins.ts'
-import { registerOpenAICodexUpdateRoutes } from './update-routes.ts'
 import { registerOpenAICodexModelCatalogRoute, registerOpenAICodexModelCatalogStatusRoutes } from './model-routes.ts'
 import { OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OpenAICodexModelCatalog } from './model-catalog.ts'
 import type { OpenAICodexContextWindowMode, OpenAICodexModelCatalogStatus } from './model-contract.ts'
 import { registerOpenAICodexQuotaRoute } from './quota-routes.ts'
 import { registerOpenAICodexOriginalImageRoute } from './image-asset-routes.ts'
 import {
-  checkForOpenAICodexUpdate,
   compareOpenAICodexVersions,
-  parseOpenAICodexUpdateResult,
   parseOpenAICodexVersion,
 } from './update.ts'
-import { CODEX_CONNECT_VERSION } from './version.ts'
 import { FastModeRegistry } from './fast-mode.ts'
 import { assertNoOpenAICodexProviderConflict } from './doctor.ts'
 import { imageGenerateTool } from './image-tool.ts'
@@ -231,14 +227,10 @@ export {
   OPENAI_CODEX_FAST_MODE_MAX_SESSION_ID_LENGTH,
 } from './fast-mode.ts'
 export { OPENAI_CODEX_FAST_MODE_PATH } from './fast-mode-paths.ts'
-export { OPENAI_CODEX_UPDATE_PATH } from './update-paths.ts'
 export {
-  checkForOpenAICodexUpdate,
   compareOpenAICodexVersions,
-  parseOpenAICodexUpdateResult,
   parseOpenAICodexVersion,
 } from './update.ts'
-export type { OpenAICodexUpdateResult } from './update.ts'
 export {
   OpenAICodexCredentialStore,
   OPENAI_CODEX_ACCOUNT_LIMIT,
@@ -538,7 +530,6 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl,
       configValue(config.oauthTimeoutMs) ?? OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS)
     registerOpenAICodexProxyRoutes(webCtx, trustedOrigins, proxyManager)
-    registerOpenAICodexUpdateRoutes(webCtx, { currentVersion: CODEX_CONNECT_VERSION }, trustedOrigins)
     registerOpenAICodexModelCatalogRoute(webCtx, effectiveCatalog, trustedOrigins)
     registerOpenAICodexModelCatalogStatusRoutes(webCtx, {
       status: catalogStatus,

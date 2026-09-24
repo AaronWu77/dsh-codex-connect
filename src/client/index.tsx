@@ -28,9 +28,6 @@ import { en, zh } from './locales.ts'
 import type { OpenAICodexSettingsKey } from './locales.ts'
 import { CodexImageToolView } from './CodexImageToolView.tsx'
 import type { CodexImageToolViewInjected } from './CodexImageToolView.tsx'
-import { OpenAICodexUpdateOverlay } from './OpenAICodexUpdateNotice.tsx'
-import { OpenAICodexUpdateStore } from './update-store.ts'
-import { CODEX_CONNECT_VERSION } from '../version.ts'
 import { OpenAICodexAccountStore } from './account-store.ts'
 import { createCodexQuotaService } from './quota-service.ts'
 import { OpenAICodexModelsCard } from './OpenAICodexModelsCard.tsx'
@@ -67,16 +64,11 @@ function dashboardJumpOf(ctx: ClientContext): { onOpenUsage?: () => void } {
 
 export function apply(ctx: ClientContext): void {
   const namespace = 'settings.openai-codex'
-  const updater = new OpenAICodexUpdateStore(CODEX_CONNECT_VERSION)
   const account = new OpenAICodexAccountStore()
   ctx.effect(() => () => { account.dispose() }, 'dsh-codex-connect: account observation')
   // Cross-plugin quota face: other client plugins read the signed-in account's
   // rolling windows through ctx.get('codexQuota').
   ctx.provide('codexQuota', createCodexQuotaService(account))
-  ctx.effect(() => {
-    void updater.refresh()
-    return () => { updater.dispose() }
-  }, 'dsh-codex-connect: update checker')
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-codex-connect: settings copy')
   const t = ctx.locale.bind(namespace) as OpenAICodexPluginCardInjected['t']
   const configScope = new OpenAICodexConfigForm(
@@ -90,7 +82,7 @@ export function apply(ctx: ClientContext): void {
     locale: namespace,
     label: () => t('title'),
     inject: (): OpenAICodexPluginCardInjected => ({
-      t, configScope, updater, account,
+      t, configScope, account,
       // dsh-context publishes the dashboard handle in its own apply, ahead of
       // this card's first render; without that plugin the card keeps its own
       // summary line and no jump button. The renderer caches this inject per
@@ -106,14 +98,6 @@ export function apply(ctx: ClientContext): void {
     order: 100,
     inject: () => ({ t, account, configScope }),
   }, OpenAICodexModelsCard))
-
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay',
-    id: 'dsh-codex-connect-update',
-    order: 40,
-    locale: namespace,
-    inject: (): { updater: OpenAICodexUpdateStore } => ({ updater }),
-  }, OpenAICodexUpdateOverlay))
 
   ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
     name: 'tool.call.toolview',

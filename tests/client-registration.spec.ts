@@ -8,7 +8,7 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client).toContain("id: 'dsh-codex-connect-account'")
     // The plugin card injects the SHARED owner set (account included); assert the
     // binding set rather than one line layout, which may wrap.
-    expect(client).toMatch(/inject: \(\): OpenAICodexPluginCardInjected => \(\{[\s\S]{0,240}?t, configScope, updater, account,/u)
+    expect(client).toMatch(/inject: \(\): OpenAICodexPluginCardInjected => \(\{[\s\S]{0,240}?t, configScope, account,/u)
     expect(client).toContain('inject: () => ({ t, account, configScope })')
     expect(client).toContain('account.dispose()')
     expect(client.match(/new OpenAICodexAccountStore\(\)/g)).toHaveLength(1)
@@ -53,13 +53,13 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client.indexOf("id: 'openai-codex-fast-mode'")).toBeLessThan(client.indexOf("id: 'openai-codex-quota'"))
   })
 
-  it('registers the version reminder in DSH’s frame-wide shell overlay', async () => {
+  it('keeps the layout client type import that declares the shared renderer props', async () => {
     const [client, manifest] = await Promise.all([
       readFile(new URL('../src/client/index.tsx', import.meta.url), 'utf8'),
       readFile(new URL('../package.json', import.meta.url), 'utf8'),
     ])
-    expect(client).toContain("ctx.slots.inject('shell.overlay'")
-    expect(client).toContain("id: 'dsh-codex-connect-update'")
+    // The layout client augments GlobalStandardProps (usePanelInfo); dropping the
+    // type import breaks the card props that read it.
     expect(client).toContain("'@deepseek-ai/dsh-client-ui-layout/client'")
     const parsed = JSON.parse(manifest) as { dsh: { client: { inject: string[] } } }
     expect(parsed.dsh.client.inject).toContain('@deepseek-ai/dsh-client-ui-layout')

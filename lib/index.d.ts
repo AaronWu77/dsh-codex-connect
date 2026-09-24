@@ -874,55 +874,17 @@ declare class FastModeRegistry {
 /** GET/POST endpoint for one conversation's process-local Fast Mode state. */
 declare const OPENAI_CODEX_FAST_MODE_PATH = "/plugins/dsh-openai-codex/fast-mode";
 //#endregion
-//#region src/update-paths.d.ts
-/** Same-origin route used by the browser update reminder. */
-declare const OPENAI_CODEX_UPDATE_PATH = "/openai-codex/update";
-//#endregion
 //#region src/update.d.ts
-type OpenAICodexUpdateHighlightKind = 'trusted-origins' | 'runtime-compatibility' | 'quota-fast-mode' | 'dsh-rc7' | 'search-stability' | 'image-generation' | 'oauth-history' | 'model-visibility' | 'proxy-connection' | 'models-account' | 'context-budget' | 'auto-review-probe' | 'auto-review' | 'astra-compatibility' | 'multi-account' | 'search-route' | 'image-model-hint';
-interface OpenAICodexUpdateHighlight {
-  version: string;
-  kind: OpenAICodexUpdateHighlightKind;
-}
-type OpenAICodexUpdateResult = {
-  status: 'up-to-date';
-  currentVersion: string;
-  latestVersion: string;
-} | {
-  status: 'update-available';
-  currentVersion: string;
-  latestVersion: string;
-  releaseUrl: string;
-  highlights: OpenAICodexUpdateHighlight[];
-  versionsBehind?: number;
-  releaseName?: string;
-  releaseNotes?: string;
-  publishedAt?: string;
-} | {
-  status: 'unavailable';
-  currentVersion: string;
-  reason: 'invalid-current-version' | 'registry-unavailable' | 'invalid-registry-response';
-};
 interface ParsedVersion {
   major: number;
   minor: number;
   patch: number;
   prerelease: Array<number | string>;
 }
-interface UpdateCheckOptions {
-  currentVersion: string;
-  fetchImpl?: FetchImpl;
-  timeoutMs?: number;
-}
-type FetchImpl = (input: string, init?: RequestInit) => Promise<Response>;
 /** Parse one exact package version, accepting the conventional leading `v`. */
 declare function parseOpenAICodexVersion(raw: string): ParsedVersion | undefined;
 /** Compare two package versions using SemVer precedence (build metadata ignored). */
 declare function compareOpenAICodexVersions(left: string, right: string): number;
-/** Check npm's public dist-tags and enrich an available update with public release notes. */
-declare function checkForOpenAICodexUpdate(options: UpdateCheckOptions): Promise<OpenAICodexUpdateResult>;
-/** Validate a route response before it is rendered by the browser. */
-declare function parseOpenAICodexUpdateResult(value: unknown): OpenAICodexUpdateResult | undefined;
 //#endregion
 //#region src/history-migration.d.ts
 /** Offline compatibility migration for the private Codex search event emitted by Alpha 4.10. */
@@ -1068,4 +1030,4 @@ declare const Config: z<Config, VolatileConfig>;
  */
 declare function apply(ctx: Context, config: Config | VolatileConfig): void;
 //#endregion
-export { COMPATIBILITY_CONTRACT, COMPATIBILITY_PACKAGES, COMPATIBILITY_SCHEMA_VERSION, type CompatibilityDetectionOptions, type CompatibilityEntry, type CompatibilityEvaluationInput, type CompatibilityPackageName, type CompatibilityReport, type CompatibilityStatus, Config, DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE, DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT, DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION, DEFAULT_OPENAI_CODEX_PROXY_URL, DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE, DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS, DEFAULT_OPENAI_CODEX_SEARCH_MODE, DEFAULT_OPENAI_CODEX_SEARCH_MODEL, DEFAULT_OPENAI_CODEX_SETTINGS, DSH_PLUGIN_API_PACKAGES, FastModeRegistry, FastModeRegistry as OpenAICodexFastModeRegistry, type GeneratedImagePayload, IMAGE_GENERATE_TOOL_NAME, type ImageGenerationRequest, type ImageGenerationResponse, type ImageRequestContext, OPENAI_CODEX_ACCOUNT_LIMIT, OPENAI_CODEX_AUTH_DOCUMENT_LIMIT, OPENAI_CODEX_AUTH_FILENAME, OPENAI_CODEX_AUTH_V1_BACKUP_SUFFIX, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_FAST_MODE_MAX_SESSIONS, OPENAI_CODEX_FAST_MODE_MAX_SESSION_ID_LENGTH, OPENAI_CODEX_FAST_MODE_PATH, OPENAI_CODEX_HISTORY_BACKUP_SUFFIX, OPENAI_CODEX_IMAGE_GENERATION_URL, OPENAI_CODEX_IMAGE_MAX_COUNT, OPENAI_CODEX_IMAGE_MAX_ERROR_BYTES, OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES, OPENAI_CODEX_IMAGE_PROMPT_MAX_LENGTH, OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS, OPENAI_CODEX_LOCAL_PROXY_CANDIDATES, OPENAI_CODEX_MODELS_URL, OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OPENAI_CODEX_MODEL_CATALOG_PATH, OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, OPENAI_CODEX_MODEL_CATALOG_TTL_MS, OPENAI_CODEX_PROVIDER, OPENAI_CODEX_PROXY_CANDIDATE_LIMIT, OPENAI_CODEX_PROXY_DETECT_PATH, OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS, OPENAI_CODEX_PROXY_PROBE_URL, OPENAI_CODEX_PROXY_TEST_PATH, OPENAI_CODEX_SEARCH_MODEL_REQUEST_EVENT, OPENAI_CODEX_SEARCH_PROVIDER, OPENAI_CODEX_SEARCH_URL, OPENAI_CODEX_SETTINGS_NAMESPACE, OPENAI_CODEX_SETTINGS_NS, OPENAI_CODEX_TRANSPORT_API_VERSION, OPENAI_CODEX_TRANSPORT_ERROR_CODES, OPENAI_CODEX_TRANSPORT_SERVICE, OPENAI_CODEX_UPDATE_PATH, OPENAI_CODEX_USAGE_URL, type OpenAICodexAccountSummary, type OpenAICodexAuthStatus, type OpenAICodexCatalogSnapshot, type OpenAICodexCatalogSource, type OpenAICodexContextWindowMode, OpenAICodexCredentialStore, type OpenAICodexCredits, type OpenAICodexDiagnosticOptions, type OpenAICodexDiagnosticReport, type OpenAICodexHistoryMigrationFile, type OpenAICodexHistoryMigrationOptions, type OpenAICodexHistoryMigrationResult, type OpenAICodexIndividualLimit, type OpenAICodexLiveModel, OpenAICodexModelCatalog, type OpenAICodexModelCatalogOptions, type OpenAICodexModelCatalogStatus, type OpenAICodexModelReasoningLevel, type OpenAICodexModelServiceTier, OpenAICodexProxyManager, type OpenAICodexProxyProbeClassification, type OpenAICodexProxyProbeResult, type OpenAICodexRateLimit, type OpenAICodexRateLimitWindow, type OpenAICodexSearchContextSize, type OpenAICodexSearchMode, OpenAICodexSearchProvider, type OpenAICodexSearchProviderOptions, type OpenAICodexSearchRequestRecord, type OpenAICodexSettingsConfig, OpenAICodexTransport, OpenAICodexTransportError, type OpenAICodexTransportErrorCode, type OpenAICodexTransportV1, type OpenAICodexUpdateResult, type OpenAICodexUsage, PI_AI_PACKAGE, SUPPORTED_DSH_PLUGIN_API_RANGE, SUPPORTED_DSH_PLUGIN_API_VERSION, SUPPORTED_DSH_PLUGIN_API_VERSIONS, SUPPORTED_NODE_RANGE, SUPPORTED_PI_AI_RANGE, VIEW_IMAGE_TOOL_NAME, VolatileConfig, apply, assertNoOpenAICodexProviderConflict, assessCompatibility, checkForOpenAICodexUpdate, compareOpenAICodexVersions, decodeOpenAICodexModelCatalogStatus, decodeOpenAICodexSettings, detectCompatibility, detectOpenAICodexProxies, diagnoseOpenAICodex, evaluateCompatibility, inject, isFastModeSessionId, isOpenAICodexTransportError, isValidOpenAICodexContextWindowOverrides, isValidOpenAICodexImageModelHint, isValidOpenAICodexMaxTokensOverrides, isValidOpenAICodexModelCatalogClientVersion, isValidOpenAICodexProxyUrl, listOpenAICodexProxyCandidates, loginOpenAICodex, logoutOpenAICodex, mapOpenAICodexSearchResponse, migrateOpenAICodexSearchHistory, name, openAICodexAuthPath, openAICodexAuthStatus, openAICodexCliModelCachePath, openAICodexConflictMessage, openAICodexContextLimit, openAICodexModeContextWindow, parseOpenAICodexModelsPayload, parseOpenAICodexUpdateResult, parseOpenAICodexUsage, parseOpenAICodexVersion, readOpenAICodexRateLimits, resolveOpenAICodexProxyUrl, resolveOpenAICodexSettings };
+export { COMPATIBILITY_CONTRACT, COMPATIBILITY_PACKAGES, COMPATIBILITY_SCHEMA_VERSION, type CompatibilityDetectionOptions, type CompatibilityEntry, type CompatibilityEvaluationInput, type CompatibilityPackageName, type CompatibilityReport, type CompatibilityStatus, Config, DEFAULT_OPENAI_CODEX_CONTEXT_WINDOW_MODE, DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT, DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION, DEFAULT_OPENAI_CODEX_PROXY_URL, DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE, DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS, DEFAULT_OPENAI_CODEX_SEARCH_MODE, DEFAULT_OPENAI_CODEX_SEARCH_MODEL, DEFAULT_OPENAI_CODEX_SETTINGS, DSH_PLUGIN_API_PACKAGES, FastModeRegistry, FastModeRegistry as OpenAICodexFastModeRegistry, type GeneratedImagePayload, IMAGE_GENERATE_TOOL_NAME, type ImageGenerationRequest, type ImageGenerationResponse, type ImageRequestContext, OPENAI_CODEX_ACCOUNT_LIMIT, OPENAI_CODEX_AUTH_DOCUMENT_LIMIT, OPENAI_CODEX_AUTH_FILENAME, OPENAI_CODEX_AUTH_V1_BACKUP_SUFFIX, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_FAST_MODE_MAX_SESSIONS, OPENAI_CODEX_FAST_MODE_MAX_SESSION_ID_LENGTH, OPENAI_CODEX_FAST_MODE_PATH, OPENAI_CODEX_HISTORY_BACKUP_SUFFIX, OPENAI_CODEX_IMAGE_GENERATION_URL, OPENAI_CODEX_IMAGE_MAX_COUNT, OPENAI_CODEX_IMAGE_MAX_ERROR_BYTES, OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES, OPENAI_CODEX_IMAGE_PROMPT_MAX_LENGTH, OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS, OPENAI_CODEX_LOCAL_PROXY_CANDIDATES, OPENAI_CODEX_MODELS_URL, OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OPENAI_CODEX_MODEL_CATALOG_PATH, OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, OPENAI_CODEX_MODEL_CATALOG_TTL_MS, OPENAI_CODEX_PROVIDER, OPENAI_CODEX_PROXY_CANDIDATE_LIMIT, OPENAI_CODEX_PROXY_DETECT_PATH, OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS, OPENAI_CODEX_PROXY_PROBE_URL, OPENAI_CODEX_PROXY_TEST_PATH, OPENAI_CODEX_SEARCH_MODEL_REQUEST_EVENT, OPENAI_CODEX_SEARCH_PROVIDER, OPENAI_CODEX_SEARCH_URL, OPENAI_CODEX_SETTINGS_NAMESPACE, OPENAI_CODEX_SETTINGS_NS, OPENAI_CODEX_TRANSPORT_API_VERSION, OPENAI_CODEX_TRANSPORT_ERROR_CODES, OPENAI_CODEX_TRANSPORT_SERVICE, OPENAI_CODEX_USAGE_URL, type OpenAICodexAccountSummary, type OpenAICodexAuthStatus, type OpenAICodexCatalogSnapshot, type OpenAICodexCatalogSource, type OpenAICodexContextWindowMode, OpenAICodexCredentialStore, type OpenAICodexCredits, type OpenAICodexDiagnosticOptions, type OpenAICodexDiagnosticReport, type OpenAICodexHistoryMigrationFile, type OpenAICodexHistoryMigrationOptions, type OpenAICodexHistoryMigrationResult, type OpenAICodexIndividualLimit, type OpenAICodexLiveModel, OpenAICodexModelCatalog, type OpenAICodexModelCatalogOptions, type OpenAICodexModelCatalogStatus, type OpenAICodexModelReasoningLevel, type OpenAICodexModelServiceTier, OpenAICodexProxyManager, type OpenAICodexProxyProbeClassification, type OpenAICodexProxyProbeResult, type OpenAICodexRateLimit, type OpenAICodexRateLimitWindow, type OpenAICodexSearchContextSize, type OpenAICodexSearchMode, OpenAICodexSearchProvider, type OpenAICodexSearchProviderOptions, type OpenAICodexSearchRequestRecord, type OpenAICodexSettingsConfig, OpenAICodexTransport, OpenAICodexTransportError, type OpenAICodexTransportErrorCode, type OpenAICodexTransportV1, type OpenAICodexUsage, PI_AI_PACKAGE, SUPPORTED_DSH_PLUGIN_API_RANGE, SUPPORTED_DSH_PLUGIN_API_VERSION, SUPPORTED_DSH_PLUGIN_API_VERSIONS, SUPPORTED_NODE_RANGE, SUPPORTED_PI_AI_RANGE, VIEW_IMAGE_TOOL_NAME, VolatileConfig, apply, assertNoOpenAICodexProviderConflict, assessCompatibility, compareOpenAICodexVersions, decodeOpenAICodexModelCatalogStatus, decodeOpenAICodexSettings, detectCompatibility, detectOpenAICodexProxies, diagnoseOpenAICodex, evaluateCompatibility, inject, isFastModeSessionId, isOpenAICodexTransportError, isValidOpenAICodexContextWindowOverrides, isValidOpenAICodexImageModelHint, isValidOpenAICodexMaxTokensOverrides, isValidOpenAICodexModelCatalogClientVersion, isValidOpenAICodexProxyUrl, listOpenAICodexProxyCandidates, loginOpenAICodex, logoutOpenAICodex, mapOpenAICodexSearchResponse, migrateOpenAICodexSearchHistory, name, openAICodexAuthPath, openAICodexAuthStatus, openAICodexCliModelCachePath, openAICodexConflictMessage, openAICodexContextLimit, openAICodexModeContextWindow, parseOpenAICodexModelsPayload, parseOpenAICodexUsage, parseOpenAICodexVersion, readOpenAICodexRateLimits, resolveOpenAICodexProxyUrl, resolveOpenAICodexSettings };

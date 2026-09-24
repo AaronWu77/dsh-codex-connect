@@ -10,8 +10,6 @@ import type { AccountStatus, AccountSnapshot } from './account-store.ts'
 import type { OpenAICodexSettingsKey } from './locales.ts'
 import { OpenAICodexConfiguration } from './OpenAICodexConfiguration.tsx'
 import type { OpenAICodexSettingsModule } from './OpenAICodexConfiguration.tsx'
-import { OpenAICodexUpdateSettings } from './OpenAICodexUpdateNotice.tsx'
-import type { OpenAICodexUpdateStore } from './update-store.ts'
 
 /** Dependencies injected by the browser plugin entry. */
 export interface OpenAICodexSettingsInjected {
@@ -19,8 +17,6 @@ export interface OpenAICodexSettingsInjected {
   t: (key: OpenAICodexSettingsKey, params?: Record<string, unknown>) => string
   /** Host-owned optional capability settings. */
   configScope: ConfigForm<OpenAICodexSettingsConfig>
-  /** Shared browser update state used by the global overlay and this card. */
-  updater?: OpenAICodexUpdateStore
   /** Shared across Models and Plugin settings by the browser-plugin owner. */
   account?: OpenAICodexAccountStore
   /**
@@ -471,7 +467,7 @@ export function AccountFeedback({ t, snapshot, store }: {
 }
 
 /** OpenAI Codex account status and OAuth actions. */
-export function OpenAICodexSettings({ t, configScope, updater, account, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
+export function OpenAICodexSettings({ t, configScope, account, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
   if (t === undefined) throw new Error('OpenAI Codex settings requires its translation function')
   const [localAccount] = useState(() => new OpenAICodexAccountStore())
   const store = account ?? localAccount
@@ -508,7 +504,6 @@ export function OpenAICodexSettings({ t, configScope, updater, account, onOpenUs
         </div>
       )}
       <div style={embedded ? embeddedCardStyle : cardStyle}>
-        {accountOnly || updater === undefined ? null : <OpenAICodexUpdateSettings t={t} updater={updater} />}
         {accountOnly ? null : (
           <div style={moduleTabsStyle} role="tablist" aria-label={t('settingsModules')}>
             {SETTINGS_MODULES.map((module, index) => (

@@ -56,7 +56,7 @@ function NativeChevronDown({ open }: { open: boolean }) {
 }
 
 /** Render account management as one expandable Plugin configuration card. */
-export function OpenAICodexPluginCard({ t, configScope, updater, account, onOpenUsage }: OpenAICodexPluginCardProps) {
+export function OpenAICodexPluginCard({ t, configScope, account, onOpenUsage }: OpenAICodexPluginCardProps) {
   if (t === undefined) throw new Error('OpenAI Codex plugin card requires its translation function')
   const [open, setOpen] = useState(false)
   const title = t('title')
@@ -80,7 +80,6 @@ export function OpenAICodexPluginCard({ t, configScope, updater, account, onOpen
             <OpenAICodexSettings
               t={t}
               {...account === undefined ? {} : { account }}
-              {...updater === undefined ? {} : { updater }}
               {...onOpenUsage === undefined ? {} : { onOpenUsage }}
               embedded
               {...configScope === undefined ? {} : { configScope }}
