@@ -788,7 +788,9 @@ describe('OpenAI Codex Plugin configuration card', () => {
 
     const view = render(<OpenAICodexSettings t={t} quota={service(quotaOf(resetCredits))} embedded />)
     await screen.findByText(en.signedIn)
-    expect(screen.getByText(en.resetCardsHeading)).toBeTruthy()
+    expect(screen.getByText(en.accountUsageHeading)).toBeTruthy()
+    // The per-account row states its rolling windows; this fixture reports none.
+    expect(screen.getByText(en.usageNoData)).toBeTruthy()
     expect(screen.getAllByText('Work account').length).toBeGreaterThan(0)
     expect(screen.getByText(en.resetCardsAvailable.replace('{count}', '2'))).toBeTruthy()
     expect(screen.getByText('Full reset')).toBeTruthy()
@@ -796,6 +798,8 @@ describe('OpenAI Codex Plugin configuration card', () => {
     expect(screen.getByText(en.resetCardNoExpiry)).toBeTruthy()
 
     view.rerender(<OpenAICodexSettings t={t} quota={service(quotaOf(undefined))} embedded />)
-    expect(screen.queryByText(en.resetCardsHeading)).toBeNull()
+    // Without reset credits the account row stays and only the card lines go.
+    expect(screen.getByText(en.accountUsageHeading)).toBeTruthy()
+    expect(screen.queryByText(en.resetCardsAvailable.replace('{count}', '2'))).toBeNull()
   })
 })

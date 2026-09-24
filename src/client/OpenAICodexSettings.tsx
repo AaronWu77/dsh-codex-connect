@@ -221,31 +221,54 @@ export function UsageSummary({ usage, quotaError, onOpen, t }: {
   )
 }
 
+/** The rolling windows every account summary leads with, in display order. */
+const OVERVIEW_WINDOW_SECONDS = [18_000, 604_800] as const
+
 /**
- * Read-only reset cards the server reported, per stored account. Renders
- * nothing until at least one account reports the field, so the card never
- * invents a figure.
+ * Per-account usage overview: every stored account's rolling windows and reset
+ * cards in one read-only block, so this single panel answers what each signed-in
+ * account is currently at. Accounts the server reported nothing for keep their
+ * row and state that no figure arrived.
  */
-export function ResetCards({ accounts, quota, t }: {
+export function AccountUsage({ accounts, quota, t }: {
   accounts: AccountSnapshot['accounts']
   quota: CodexQuota
   t: OpenAICodexSettingsInjected['t']
 }) {
-  const reporting = (quota.accounts ?? []).filter(account => account.resetCredits !== undefined)
-  if (reporting.length === 0) return null
+  const rows = quota.accounts ?? []
+  if (rows.length === 0) return null
   return (
     <div style={quotaGroupStyle}>
-      <h3 style={quotaTitleStyle}>{t('resetCardsHeading')}</h3>
-      {reporting.map(account => {
-        const resetCredits = account.resetCredits!
+      <h3 style={quotaTitleStyle}>{t('accountUsageHeading')}</h3>
+      {rows.map(account => {
         const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
+        const windows = OVERVIEW_WINDOW_SECONDS
+          .map(seconds => account.windows.find(window => window.windowSeconds === seconds))
+          .filter(window => window !== undefined)
+        const resetCredits = account.resetCredits
+        const newest = resetCredits?.credits === undefined || resetCredits.credits.length === 0
+          ? undefined
+          : [...resetCredits.credits].sort((left, right) => right.grantedAt - left.grantedAt)[0]
         return (
           <div key={account.accountKey} style={quotaGroupStyle}>
             <div style={quotaLabelStyle}>
-              <span>{name}</span>
-              <span>{t('resetCardsAvailable', { count: resetCredits.availableCount })}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+              <span>{windows.length === 0
+                ? t('usageNoData')
+                : windows.map(window => [
+                  windowLabel(window.windowSeconds, t),
+                  t('percentRemaining', { percent: formatPercent(window.remainingPercent) }),
+                ].join(' ')).join(' · ')}</span>
             </div>
-            {(resetCredits.credits ?? []).map((credit, index) => {
+            {resetCredits === undefined ? null : (
+              <div style={quotaLabelStyle}>
+                <span>{t('resetCardsAvailable', { count: resetCredits.availableCount })}</span>
+                <span>{newest === undefined
+                  ? ''
+                  : t('resetCardGranted', { time: formatOpenAICodexResetAt(newest.grantedAt) ?? t('resetUnavailable') })}</span>
+              </div>
+            )}
+            {(resetCredits?.credits ?? []).map((credit, index) => {
               const expires = formatOpenAICodexResetAt(credit.expiresAt)
               return (
                 <div key={`${credit.id}-${index}`} style={quotaLabelStyle}>
@@ -590,7 +613,7 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
               t={t}
             />
           : null}
-        {quotaSnapshot === null ? null : <ResetCards accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
+        {quotaSnapshot === null ? null : <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
         {accountOnly ? <p style={bodyStyle}>{t('modelsAccountHelp')}</p> : null}
         </div>
         {accountOnly ? null : <OpenAICodexConfiguration
