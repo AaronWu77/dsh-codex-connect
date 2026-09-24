@@ -462,6 +462,28 @@ interface OpenAICodexCredits {
   /** Exact provider-formatted balance when finite and disclosed. */
   readonly balance?: string;
 }
+/** One ChatGPT rate-limit reset card reported for an account. */
+interface OpenAICodexResetCredit {
+  /** Server-supplied card id. */
+  readonly id: string;
+  /** Server reset category, for example `codex_rate_limits`. */
+  readonly resetType: string;
+  /** Server card status, for example `available`. */
+  readonly status: string;
+  /** Server grant time as Unix seconds. */
+  readonly grantedAt: number;
+  /** Server expiry time as Unix seconds; absent when the card does not expire. */
+  readonly expiresAt?: number;
+  /** Optional server-provided display title. */
+  readonly title?: string;
+}
+/** Reset cards reported for one account. */
+interface OpenAICodexResetCredits {
+  /** Count the server reports as available. */
+  readonly availableCount: number;
+  /** Reported cards, when the server lists them. */
+  readonly credits?: readonly OpenAICodexResetCredit[];
+}
 /** Optional exact workspace member spend limit returned by ChatGPT. */
 interface OpenAICodexIndividualLimit {
   /** Exact configured limit. */
@@ -481,11 +503,14 @@ interface OpenAICodexUsage {
   readonly credits?: OpenAICodexCredits;
   /** Exact workspace member limit when supported for this account. */
   readonly individualLimit?: OpenAICodexIndividualLimit;
+  /** Rate-limit reset cards when the endpoint reports them. */
+  readonly resetCredits?: OpenAICodexResetCredits;
 }
 /**
  * Convert the provider response into the small secret-free object sent to the browser.
  * @param value - opaque JSON returned by the ChatGPT usage endpoint.
- * @returns core and additionally metered quota buckets with remaining percentages.
+ * @returns core and additionally metered quota buckets with remaining percentages,
+ *   plus the optional reset-credit block.
  */
 declare function parseOpenAICodexUsage(value: unknown): OpenAICodexUsage;
 /**

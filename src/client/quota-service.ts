@@ -18,7 +18,7 @@
  */
 import type { AccountSnapshot, AccountStatus, OpenAICodexAccountStore } from './account-store.ts'
 import { decodeOpenAICodexUsage } from './account-store.ts'
-import type { OpenAICodexUsage } from '../usage.ts'
+import type { OpenAICodexResetCredits, OpenAICodexUsage } from '../usage.ts'
 import {
   OPENAI_CODEX_ACCOUNT_KEY_PATTERN,
   OPENAI_CODEX_ACCOUNT_LIMIT,
@@ -71,6 +71,8 @@ export interface CodexQuotaAccount {
   readonly windows: readonly CodexQuotaWindow[]
   /** Prepaid credits when the server disclosed them. */
   readonly credits?: CodexQuotaCredits
+  /** Rate-limit reset cards when the server disclosed them. */
+  readonly resetCredits?: OpenAICodexResetCredits
   /** Unix ms this account's published figures were last refreshed. */
   readonly fetchedAt?: number
   /** True when this round could not read the account; its last real figures stand. */
@@ -101,6 +103,7 @@ export interface CodexQuotaService {
 interface CodexQuotaFigures {
   readonly windows: readonly CodexQuotaWindow[]
   readonly credits?: CodexQuotaCredits
+  readonly resetCredits?: OpenAICodexResetCredits
 }
 
 /** One entry decoded from the Host's per-account quota response. */
@@ -132,10 +135,15 @@ function figuresOf(usage: OpenAICodexUsage | null): CodexQuotaFigures | null {
     }
   }
   const credits = usage.credits
-  if (windows.length === 0 && credits === undefined) return null
+  const resetCredits = usage.resetCredits
+  if (windows.length === 0 && credits === undefined && resetCredits === undefined) return null
   return {
     windows,
     ...(credits === undefined ? {} : { credits: { ...credits } }),
+    ...(resetCredits === undefined ? {} : { resetCredits: {
+      availableCount: resetCredits.availableCount,
+      ...(resetCredits.credits === undefined ? {} : { credits: resetCredits.credits.map(credit => ({ ...credit })) }),
+    } }),
   }
 }
 
@@ -199,6 +207,27 @@ function sameCredits(left: CodexQuotaCredits | undefined, right: CodexQuotaCredi
   return left.unlimited === right.unlimited && left.balance === right.balance
 }
 
+/** Whether two reset-credit projections carry the same cards. */
+function sameResetCredits(left: OpenAICodexResetCredits | undefined, right: OpenAICodexResetCredits | undefined): boolean {
+  if ((left === undefined) !== (right === undefined)) return false
+  if (left === undefined || right === undefined) return true
+  if (left.availableCount !== right.availableCount) return false
+  const before = left.credits ?? []
+  const after = right.credits ?? []
+  if (before.length !== after.length) return false
+  for (let index = 0; index < before.length; index += 1) {
+    const a = before[index]!
+    const b = after[index]!
+    if (a.id !== b.id
+      || a.resetType !== b.resetType
+      || a.status !== b.status
+      || a.grantedAt !== b.grantedAt
+      || a.expiresAt !== b.expiresAt
+      || a.title !== b.title) return false
+  }
+  return true
+}
+
 /** Whether two account entries carry the same identity, figures, and flags. */
 function sameAccount(left: CodexQuotaAccount, right: CodexQuotaAccount): boolean {
   return left.accountKey === right.accountKey
@@ -207,6 +236,7 @@ function sameAccount(left: CodexQuotaAccount, right: CodexQuotaAccount): boolean
     && (left.unavailable ?? false) === (right.unavailable ?? false)
     && sameWindows(left.windows, right.windows)
     && sameCredits(left.credits, right.credits)
+    && sameResetCredits(left.resetCredits, right.resetCredits)
 }
 
 /**
@@ -270,6 +300,7 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
         active: summary.active,
         windows: figures?.windows ?? [],
         ...(figures?.credits === undefined ? {} : { credits: figures.credits }),
+        ...(figures?.resetCredits === undefined ? {} : { resetCredits: figures.resetCredits }),
         ...(at === undefined || at === 0 ? {} : { fetchedAt: at }),
         ...(unavailable ? { unavailable: true } : {}),
       }

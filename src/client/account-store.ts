@@ -1,5 +1,5 @@
 /** Shared, in-memory OAuth UI state. No token or browser storage is used here. */
-import type { OpenAICodexUsage } from '../usage.ts'
+import type { OpenAICodexResetCredit, OpenAICodexResetCredits, OpenAICodexUsage } from '../usage.ts'
 import { OPENAI_CODEX_ACCOUNT_KEY_PATTERN } from '../account-contract.ts'
 import { BrowserRequestTimeoutError, requestJson } from './request-json.ts'
 import {
@@ -56,10 +56,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Validate the optional reset-credit projection. Malformed blocks are dropped
+ * rather than failing the account response, matching the provider parser: the
+ * quota windows must keep working without them.
+ */
+function decodeResetCredits(value: unknown): OpenAICodexResetCredits | undefined {
+  if (!isRecord(value)) return undefined
+  const availableCount = value['availableCount']
+  if (typeof availableCount !== 'number' || !Number.isSafeInteger(availableCount) || availableCount < 0) return undefined
+  const entries = value['credits']
+  if (entries !== undefined && entries !== null && !Array.isArray(entries)) return undefined
+  const credits: OpenAICodexResetCredit[] = []
+  for (const candidate of entries ?? []) {
+    if (!isRecord(candidate)
+      || typeof candidate['id'] !== 'string'
+      || candidate['id'].length === 0
+      || candidate['id'].length > 256
+      || typeof candidate['resetType'] !== 'string'
+      || typeof candidate['status'] !== 'string'
+      || typeof candidate['grantedAt'] !== 'number'
+      || !Number.isSafeInteger(candidate['grantedAt'])
+      || candidate['grantedAt'] < 0
+      || (candidate['expiresAt'] !== undefined
+        && (typeof candidate['expiresAt'] !== 'number' || !Number.isSafeInteger(candidate['expiresAt']) || candidate['expiresAt'] < 0))
+      || (candidate['title'] !== undefined && (typeof candidate['title'] !== 'string' || candidate['title'].length > 256))) {
+      return undefined
+    }
+    credits.push({
+      id: candidate['id'],
+      resetType: candidate['resetType'],
+      status: candidate['status'],
+      grantedAt: candidate['grantedAt'],
+      ...(typeof candidate['expiresAt'] === 'number' ? { expiresAt: candidate['expiresAt'] } : {}),
+      ...(typeof candidate['title'] === 'string' ? { title: candidate['title'] } : {}),
+    })
+  }
+  return { availableCount, ...(entries === undefined || entries === null ? {} : { credits }) }
+}
+
+/**
  * Validate one secret-free provider usage projection from a same-origin
  * response.
  * @param value - opaque JSON field carried by the account status or quota route.
- * @returns the validated rolling buckets, credits, and optional member limit.
+ * @returns the validated rolling buckets, credits, optional member limit, and reset credits.
  */
 export function decodeOpenAICodexUsage(value: unknown): OpenAICodexUsage {
   if (!isRecord(value) || !Array.isArray(value['rateLimits'])) throw new AccountRequestError('Invalid account response')
@@ -112,6 +151,7 @@ export function decodeOpenAICodexUsage(value: unknown): OpenAICodexUsage {
     || individual['remainingPercent'] > 100)) {
     throw new AccountRequestError('Invalid account response')
   }
+  const resetCredits = decodeResetCredits(value['resetCredits'])
   return {
     rateLimits,
     ...(isRecord(credits) ? { credits: {
@@ -124,6 +164,7 @@ export function decodeOpenAICodexUsage(value: unknown): OpenAICodexUsage {
       remaining: individual['remaining'] as string,
       remainingPercent: individual['remainingPercent'] as number,
     } } : {}),
+    ...(resetCredits === undefined ? {} : { resetCredits }),
   }
 }
 

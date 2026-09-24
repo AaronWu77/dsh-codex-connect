@@ -82,6 +82,50 @@ describe('shared codexQuota service', () => {
     } finally { unsubscribe() }
   })
 
+  it('publishes the active account reset credits from the store snapshot', async () => {
+    const resetCredits = {
+      availableCount: 1,
+      credits: [{ id: 'credit-3', resetType: 'codex_rate_limits', status: 'available', grantedAt: 1_750_118_400 }],
+    }
+    const account = fakeAccount({
+      status: {
+        status: 'signed-in',
+        usage: { rateLimits: [{ id: 'codex', windows: [{ remainingPercent: 90, windowSeconds: 18_000 }] }], resetCredits },
+      },
+      busy: false,
+      accounts: [A],
+      operation: { kind: 'idle' },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => route({ accounts: [] })))
+    const service = serve(account)
+    const unsubscribe = service.subscribe(() => {})
+    try {
+      await vi.waitFor(() => { expect(service.snapshot()?.accounts?.[0]?.resetCredits).toBeDefined() })
+      expect(service.snapshot()!.accounts![0]!.resetCredits).toEqual(resetCredits)
+    } finally { unsubscribe() }
+  })
+
+  it('carries reset credits per account through the merge', async () => {
+    const resetCredits = {
+      availableCount: 2,
+      credits: [
+        { id: 'credit-1', resetType: 'codex_rate_limits', status: 'available', grantedAt: 1_750_118_400, expiresAt: 1_752_710_400 },
+        { id: 'credit-2', resetType: 'codex_rate_limits', status: 'available', grantedAt: 1_750_118_400 },
+      ],
+    }
+    const account = fakeAccount(signedIn([A, B]))
+    vi.stubGlobal('fetch', vi.fn(async () => route({
+      accounts: [{ accountKey: B_KEY, usage: { ...usage(41), resetCredits } }],
+    })))
+    const service = serve(account)
+    const unsubscribe = service.subscribe(() => {})
+    try {
+      await vi.waitFor(() => { expect(service.snapshot()?.accounts?.[1]?.resetCredits).toBeDefined() })
+      expect(service.snapshot()!.accounts![1]!.resetCredits).toEqual(resetCredits)
+      expect(service.snapshot()!.accounts![0]!.resetCredits).toBeUndefined()
+    } finally { unsubscribe() }
+  })
+
   it('contains one failing account without dropping the others', async () => {
     const account = fakeAccount(signedIn([A, B, summary(C_KEY, false)]))
     vi.stubGlobal('fetch', vi.fn(async () => route({

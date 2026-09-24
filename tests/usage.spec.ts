@@ -169,6 +169,112 @@ describe('OpenAI Codex usage', () => {
     },
   )
 
+  it('projects reset credits encoded as Unix seconds', () => {
+    const parsed = parseOpenAICodexUsage({
+      rate_limit_reset_credits: {
+        available_count: 2,
+        credits: [{
+          id: 'credit-1',
+          reset_type: 'codex_rate_limits',
+          status: 'available',
+          granted_at: 1_750_118_400,
+          expires_at: 1_752_710_400,
+          title: 'Full reset (Weekly + 5 hr)',
+        }],
+      },
+    })
+
+    expect(parsed.resetCredits).toEqual({
+      availableCount: 2,
+      credits: [{
+        id: 'credit-1',
+        resetType: 'codex_rate_limits',
+        status: 'available',
+        grantedAt: 1_750_118_400,
+        expiresAt: 1_752_710_400,
+        title: 'Full reset (Weekly + 5 hr)',
+      }],
+    })
+  })
+
+  it('projects reset credits encoded as RFC3339 strings', () => {
+    const parsed = parseOpenAICodexUsage({
+      rate_limit_reset_credits: {
+        available_count: 1,
+        credits: [{
+          id: 'credit-2',
+          reset_type: 'codex_rate_limits',
+          status: 'available',
+          granted_at: '2026-06-17T00:00:00Z',
+          expires_at: '2026-07-17T00:00:00Z',
+        }],
+      },
+    })
+
+    expect(parsed.resetCredits?.credits?.[0]).toEqual({
+      id: 'credit-2',
+      resetType: 'codex_rate_limits',
+      status: 'available',
+      grantedAt: Date.parse('2026-06-17T00:00:00Z') / 1_000,
+      expiresAt: Date.parse('2026-07-17T00:00:00Z') / 1_000,
+    })
+  })
+
+  it.each([undefined, null])('treats a %s expiry as no expiry without dropping the rest', expiresAt => {
+    const parsed = parseOpenAICodexUsage({
+      rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18_000 } },
+      rate_limit_reset_credits: {
+        available_count: 1,
+        credits: [{
+          id: 'credit-3',
+          reset_type: 'codex_rate_limits',
+          status: 'available',
+          granted_at: 1_750_118_400,
+          expires_at: expiresAt,
+        }],
+      },
+    })
+
+    expect(parsed.resetCredits?.credits?.[0]).toEqual({
+      id: 'credit-3',
+      resetType: 'codex_rate_limits',
+      status: 'available',
+      grantedAt: 1_750_118_400,
+    })
+    expect(parsed.rateLimits[0]?.windows).toEqual([{ remainingPercent: 90, windowSeconds: 18_000 }])
+  })
+
+  it('keeps a positive available count when the server omits the card list', () => {
+    const parsed = parseOpenAICodexUsage({ rate_limit_reset_credits: { available_count: 3, credits: [] } })
+    expect(parsed.resetCredits).toEqual({ availableCount: 3, credits: [] })
+  })
+
+  it('omits reset credits when the provider does not report the field', () => {
+    expect(parseOpenAICodexUsage({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 604_800 } } }))
+      .not.toHaveProperty('resetCredits')
+  })
+
+  it.each([
+    ['a non-object block', 'not-an-object'],
+    ['a negative count', { available_count: -1 }],
+    ['an unrecognized timestamp encoding', {
+      available_count: 1,
+      credits: [{ id: 'credit-4', reset_type: 'codex_rate_limits', status: 'available', granted_at: 'yesterday' }],
+    }],
+    ['a missing grant time', {
+      available_count: 1,
+      credits: [{ id: 'credit-5', reset_type: 'codex_rate_limits', status: 'available' }],
+    }],
+  ] as const)('omits a malformed reset-credit block (%s) without breaking the windows', (_label, resetCredits) => {
+    const parsed = parseOpenAICodexUsage({
+      rate_limit: { primary_window: { used_percent: 25, limit_window_seconds: 604_800 } },
+      rate_limit_reset_credits: resetCredits,
+    })
+
+    expect(parsed).not.toHaveProperty('resetCredits')
+    expect(parsed.rateLimits[0]?.windows).toEqual([{ remainingPercent: 75, windowSeconds: 604_800 }])
+  })
+
   it('reads the fixed usage endpoint with refreshed plugin credentials', async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => response(payload()))
     vi.stubGlobal('fetch', fetchMock)

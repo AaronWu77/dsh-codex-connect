@@ -72,6 +72,30 @@ export interface OpenAICodexCredits {
   readonly balance?: string
 }
 
+/** One ChatGPT rate-limit reset card reported for an account. */
+export interface OpenAICodexResetCredit {
+  /** Server-supplied card id. */
+  readonly id: string
+  /** Server reset category, for example `codex_rate_limits`. */
+  readonly resetType: string
+  /** Server card status, for example `available`. */
+  readonly status: string
+  /** Server grant time as Unix seconds. */
+  readonly grantedAt: number
+  /** Server expiry time as Unix seconds; absent when the card does not expire. */
+  readonly expiresAt?: number
+  /** Optional server-provided display title. */
+  readonly title?: string
+}
+
+/** Reset cards reported for one account. */
+export interface OpenAICodexResetCredits {
+  /** Count the server reports as available. */
+  readonly availableCount: number
+  /** Reported cards, when the server lists them. */
+  readonly credits?: readonly OpenAICodexResetCredit[]
+}
+
 /** Optional exact workspace member spend limit returned by ChatGPT. */
 export interface OpenAICodexIndividualLimit {
   /** Exact configured limit. */
@@ -92,6 +116,8 @@ export interface OpenAICodexUsage {
   readonly credits?: OpenAICodexCredits
   /** Exact workspace member limit when supported for this account. */
   readonly individualLimit?: OpenAICodexIndividualLimit
+  /** Rate-limit reset cards when the endpoint reports them. */
+  readonly resetCredits?: OpenAICodexResetCredits
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,6 +194,82 @@ function parseCredits(value: unknown): OpenAICodexCredits | undefined {
   }
 }
 
+/**
+ * RFC 3339 date-time with an explicit zone. ChatGPT encodes reset-credit
+ * timestamps as Unix seconds in production but as ISO-8601 strings in its own
+ * fixtures, so both encodings are accepted.
+ */
+const RESET_CREDIT_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u
+
+/** Parse one reset-credit timestamp as Unix seconds, rejecting malformed values. */
+function parseResetCreditTimestamp(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`OpenAI Codex returned an invalid reset-credit ${field}`)
+    }
+    return value
+  }
+  if (typeof value === 'string' && RESET_CREDIT_TIMESTAMP.test(value)) {
+    const milliseconds = Date.parse(value)
+    if (Number.isFinite(milliseconds) && milliseconds >= 0) return Math.floor(milliseconds / 1_000)
+  }
+  throw new Error(`OpenAI Codex returned an invalid reset-credit ${field}`)
+}
+
+function parseResetCredit(value: unknown): OpenAICodexResetCredit {
+  if (!isRecord(value)) throw new Error('OpenAI Codex returned a malformed reset credit')
+  const id = value['id']
+  if (typeof id !== 'string' || id.length === 0 || id.length > 256) {
+    throw new Error('OpenAI Codex returned an invalid reset-credit id')
+  }
+  const resetType = value['reset_type']
+  if (typeof resetType !== 'string' || resetType.length === 0 || resetType.length > 128) {
+    throw new Error('OpenAI Codex returned an invalid reset-credit type')
+  }
+  const status = value['status']
+  if (typeof status !== 'string' || status.length === 0 || status.length > 128) {
+    throw new Error('OpenAI Codex returned an invalid reset-credit status')
+  }
+  const grantedAt = parseResetCreditTimestamp(value['granted_at'], 'grant time')
+  if (grantedAt === undefined) throw new Error('OpenAI Codex returned a reset credit without a grant time')
+  const expiresAt = parseResetCreditTimestamp(value['expires_at'], 'expiry time')
+  const title = value['title']
+  if (title !== undefined && title !== null && (typeof title !== 'string' || title.length === 0 || title.length > 256)) {
+    throw new Error('OpenAI Codex returned an invalid reset-credit title')
+  }
+  return {
+    id,
+    resetType,
+    status,
+    grantedAt,
+    ...expiresAt === undefined ? {} : { expiresAt },
+    ...typeof title === 'string' ? { title } : {},
+  }
+}
+
+/**
+ * Parse the optional reset-credit block. Throws on malformed values so the
+ * caller can decide; the usage projection treats the whole block as optional.
+ */
+function parseResetCredits(value: unknown): OpenAICodexResetCredits | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value)) throw new Error('OpenAI Codex returned malformed reset-credit details')
+  const availableCount = value['available_count']
+  if (typeof availableCount !== 'number' || !Number.isSafeInteger(availableCount) || availableCount < 0) {
+    throw new Error('OpenAI Codex returned an invalid reset-credit count')
+  }
+  const entries = value['credits']
+  if (entries !== undefined && entries !== null && !Array.isArray(entries)) {
+    throw new Error('OpenAI Codex returned malformed reset-credit entries')
+  }
+  const credits = entries === undefined || entries === null ? undefined : entries.map(parseResetCredit)
+  return {
+    availableCount,
+    ...credits === undefined ? {} : { credits },
+  }
+}
+
 function parseIndividualLimit(value: unknown): OpenAICodexIndividualLimit | undefined {
   if (value === undefined || value === null) return undefined
   if (!isRecord(value)) throw new Error('OpenAI Codex returned malformed spend-control details')
@@ -190,7 +292,8 @@ function parseIndividualLimit(value: unknown): OpenAICodexIndividualLimit | unde
 /**
  * Convert the provider response into the small secret-free object sent to the browser.
  * @param value - opaque JSON returned by the ChatGPT usage endpoint.
- * @returns core and additionally metered quota buckets with remaining percentages.
+ * @returns core and additionally metered quota buckets with remaining percentages,
+ *   plus the optional reset-credit block.
  */
 export function parseOpenAICodexUsage(value: unknown): OpenAICodexUsage {
   if (!isRecord(value)) throw new Error('OpenAI Codex returned a malformed usage response')
@@ -217,10 +320,19 @@ export function parseOpenAICodexUsage(value: unknown): OpenAICodexUsage {
   }
   const credits = parseCredits(value['credits'])
   const individualLimit = parseIndividualLimit(value['spend_control'])
+  // Reset credits are optional metadata: a malformed block is omitted so the
+  // quota windows it accompanies keep working.
+  let resetCredits: OpenAICodexResetCredits | undefined
+  try {
+    resetCredits = parseResetCredits(value['rate_limit_reset_credits'])
+  } catch {
+    resetCredits = undefined
+  }
   return {
     rateLimits: limits,
     ...credits === undefined ? {} : { credits },
     ...individualLimit === undefined ? {} : { individualLimit },
+    ...resetCredits === undefined ? {} : { resetCredits },
   }
 }
 

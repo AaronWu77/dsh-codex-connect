@@ -31,12 +31,12 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client).not.toContain("ctx.slots.inject('settings.section'")
   })
 
-  it('registers the weekly quota in the additive right-side Composer list slot', async () => {
+  it('registers Fast Mode in the additive right-side Composer list slot', async () => {
     const client = await readFile(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
     expect(client).toContain("scope.slots.inject('conversation.input.right'")
     expect(client).toContain("name: 'conversation.input.right'")
-    expect(client).toContain("id: 'openai-codex-quota'")
-    expect(client).toContain('order: 20')
+    expect(client).toContain("id: 'openai-codex-fast-mode'")
+    expect(client).toContain('order: 10')
     expect(client).toContain("ctx.inject(['slots', 'modelDirectories']")
     expect(client).toContain('scope.modelDirectories.directoryFor(sessionId)')
     expect(client).not.toContain("'settingsScope', 'modelDirectories'")
@@ -44,13 +44,10 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client).toContain("'@deepseek-ai/dsh-client-ui-model-selection/client'")
   })
 
-  it('registers Fast Mode before quota in the same additive Composer slot', async () => {
+  it('keeps the Composer slot to the single Fast Mode registration', async () => {
     const client = await readFile(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
-    expect(client).toContain("id: 'openai-codex-fast-mode'")
-    expect(client).toContain('order: 10')
-    expect(client).toContain("id: 'openai-codex-quota'")
-    expect(client).toContain('order: 20')
-    expect(client.indexOf("id: 'openai-codex-fast-mode'")).toBeLessThan(client.indexOf("id: 'openai-codex-quota'"))
+    expect(client.match(/name: 'conversation\.input\.right'/gu)).toHaveLength(1)
+    expect(client).not.toContain("id: 'openai-codex-quota'")
   })
 
   it('keeps the layout client type import that declares the shared renderer props', async () => {

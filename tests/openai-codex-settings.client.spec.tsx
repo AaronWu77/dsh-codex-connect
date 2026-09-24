@@ -8,6 +8,7 @@ import { OpenAICodexConfiguration } from '../src/client/OpenAICodexConfiguration
 import { en, zh } from '../src/client/locales.ts'
 import type { OpenAICodexSettingsKey } from '../src/client/locales.ts'
 import { DEFAULT_OPENAI_CODEX_SETTINGS } from '../src/settings-contract.ts'
+import type { CodexQuota, CodexQuotaService } from '../src/client/quota-service.ts'
 import type { OpenAICodexSettingsConfig } from '../src/settings-contract.ts'
 import {
   OPENAI_CODEX_AUTH_ACCOUNTS_PATH,
@@ -761,5 +762,40 @@ describe('OpenAI Codex Plugin configuration card', () => {
     expect(await screen.findByText(en.settingsReadOnly)).toBeTruthy()
     expect(document.querySelector('fieldset')?.disabled).toBe(true)
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows reported reset cards per stored account and hides the section when none report', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> => json({ status: 'signed-in', usage: { rateLimits: [] } })))
+    const accountKey = `acct_${'a'.repeat(43)}`
+    const resetCredits = {
+      availableCount: 2,
+      credits: [
+        { id: 'credit-1', resetType: 'codex_rate_limits', status: 'available', grantedAt: 1_750_118_400, expiresAt: 1_752_710_400, title: 'Full reset' },
+        { id: 'credit-2', resetType: 'codex_rate_limits', status: 'available', grantedAt: 1_750_118_400 },
+      ],
+    }
+    const quotaOf = (credits: typeof resetCredits | undefined): CodexQuota => ({
+      windows: [],
+      accounts: [{
+        accountKey,
+        label: 'acct aaaaaa',
+        active: true,
+        windows: [],
+        ...(credits === undefined ? {} : { resetCredits: credits }),
+      }],
+    })
+    const service = (value: CodexQuota): CodexQuotaService => ({ snapshot: () => value, subscribe: () => () => undefined })
+
+    const view = render(<OpenAICodexSettings t={t} quota={service(quotaOf(resetCredits))} embedded />)
+    await screen.findByText(en.signedIn)
+    expect(screen.getByText(en.resetCardsHeading)).toBeTruthy()
+    expect(screen.getAllByText('Work account').length).toBeGreaterThan(0)
+    expect(screen.getByText(en.resetCardsAvailable.replace('{count}', '2'))).toBeTruthy()
+    expect(screen.getByText('Full reset')).toBeTruthy()
+    expect(screen.getByText(en.resetCardExpiry.replace('{time}', formatOpenAICodexResetAt(1_752_710_400) ?? ''))).toBeTruthy()
+    expect(screen.getByText(en.resetCardNoExpiry)).toBeTruthy()
+
+    view.rerender(<OpenAICodexSettings t={t} quota={service(quotaOf(undefined))} embedded />)
+    expect(screen.queryByText(en.resetCardsHeading)).toBeNull()
   })
 })

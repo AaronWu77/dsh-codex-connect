@@ -10,6 +10,7 @@ import type { AccountStatus, AccountSnapshot } from './account-store.ts'
 import type { OpenAICodexSettingsKey } from './locales.ts'
 import { OpenAICodexConfiguration } from './OpenAICodexConfiguration.tsx'
 import type { OpenAICodexSettingsModule } from './OpenAICodexConfiguration.tsx'
+import type { CodexQuota, CodexQuotaService } from './quota-service.ts'
 
 /** Dependencies injected by the browser plugin entry. */
 export interface OpenAICodexSettingsInjected {
@@ -25,6 +26,8 @@ export interface OpenAICodexSettingsInjected {
    * the usage breakdown, so the card only summarises and jumps.
    */
   onOpenUsage?: () => void
+  /** Per-account quota service, when the browser plugin publishes it. */
+  quota?: CodexQuotaService
 }
 
 /** Props delivered by the settings slot renderer. */
@@ -215,6 +218,46 @@ export function UsageSummary({ usage, quotaError, onOpen, t }: {
           : <button type="button" style={buttonStyle} onClick={onOpen}>{t('usageOpenPanel')}</button>}
       </div>
       {quotaError === undefined ? null : <p style={errorStyle}>{t('quotaUnavailable')}</p>}
+    </div>
+  )
+}
+
+/**
+ * Read-only reset cards the server reported, per stored account. Renders
+ * nothing until at least one account reports the field, so the card never
+ * invents a figure.
+ */
+export function ResetCards({ accounts, quota, t }: {
+  accounts: AccountSnapshot['accounts']
+  quota: CodexQuota
+  t: OpenAICodexSettingsInjected['t']
+}) {
+  const reporting = (quota.accounts ?? []).filter(account => account.resetCredits !== undefined)
+  if (reporting.length === 0) return null
+  return (
+    <div style={quotaGroupStyle}>
+      <h3 style={quotaTitleStyle}>{t('resetCardsHeading')}</h3>
+      {reporting.map(account => {
+        const resetCredits = account.resetCredits!
+        const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
+        return (
+          <div key={account.accountKey} style={quotaGroupStyle}>
+            <div style={quotaLabelStyle}>
+              <span>{name}</span>
+              <span>{t('resetCardsAvailable', { count: resetCredits.availableCount })}</span>
+            </div>
+            {(resetCredits.credits ?? []).map((credit, index) => {
+              const expires = formatOpenAICodexResetAt(credit.expiresAt)
+              return (
+                <div key={`${credit.id}-${index}`} style={quotaLabelStyle}>
+                  <span>{credit.title ?? t('resetCardUnnamed')}</span>
+                  <span>{expires === undefined ? t('resetCardNoExpiry') : t('resetCardExpiry', { time: expires })}</span>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -467,11 +510,14 @@ export function AccountFeedback({ t, snapshot, store }: {
 }
 
 /** OpenAI Codex account status and OAuth actions. */
-export function OpenAICodexSettings({ t, configScope, account, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
+export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
   if (t === undefined) throw new Error('OpenAI Codex settings requires its translation function')
   const [localAccount] = useState(() => new OpenAICodexAccountStore())
   const store = account ?? localAccount
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  const subscribeQuota = useCallback((listener: () => void) => quota?.subscribe(listener) ?? (() => undefined), [quota])
+  const getQuotaSnapshot = useCallback(() => quota?.snapshot() ?? null, [quota])
+  const quotaSnapshot = useSyncExternalStore(subscribeQuota, getQuotaSnapshot, getQuotaSnapshot)
   const subscribeConfig = useCallback((listener: () => void) => configScope?.subscribe(listener) ?? (() => undefined), [configScope])
   const getConfigSnapshot = useCallback(() => configScope?.getSnapshot() ?? UNAVAILABLE_CONFIG_SNAPSHOT, [configScope])
   const configSnapshot = useSyncExternalStore(subscribeConfig, getConfigSnapshot, getConfigSnapshot)
@@ -545,6 +591,7 @@ export function OpenAICodexSettings({ t, configScope, account, onOpenUsage, embe
               t={t}
             />
           : null}
+        {quotaSnapshot === null ? null : <ResetCards accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
         {accountOnly ? <p style={bodyStyle}>{t('modelsAccountHelp')}</p> : null}
         </div>
         {accountOnly ? null : <OpenAICodexConfiguration
