@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { OAuthCredential } from '@earendil-works/pi-ai'
 import { OpenAICodexWebAuth } from '../src/auth-routes.ts'
 import {
+  OPENAI_CODEX_RESET_CREDITS_URL,
   OPENAI_CODEX_USAGE_URL,
   isOpenAICodexReauthRequiredError,
   OpenAICodexReauthRequiredError,
@@ -293,6 +294,40 @@ describe('OpenAI Codex usage', () => {
         'cache-control': 'no-store',
       },
     })
+  })
+
+  it('fills per-card reset-credit details from the details endpoint', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => String(input) === OPENAI_CODEX_RESET_CREDITS_URL
+      ? response({
+        available_count: 3,
+        credits: [{
+          id: 'card-1',
+          reset_type: 'codex_rate_limits',
+          status: 'available',
+          granted_at: '2026-06-17T00:00:00Z',
+          expires_at: '2026-07-17T00:00:00Z',
+          title: 'Full reset (Weekly + 5 hr)',
+        }],
+      })
+      : response({ ...(payload() as Record<string, unknown>), rate_limit_reset_credits: { available_count: 3 } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const usage = await readOpenAICodexRateLimits(await authenticatedStore())
+
+    expect(usage.resetCredits?.availableCount).toBe(3)
+    expect(usage.resetCredits?.credits?.[0]).toMatchObject({ id: 'card-1', title: 'Full reset (Weekly + 5 hr)' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the reported reset-credit count when the details read fails', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => String(input) === OPENAI_CODEX_RESET_CREDITS_URL
+      ? response({ error: 'unavailable' }, 503)
+      : response({ ...(payload() as Record<string, unknown>), rate_limit_reset_credits: { available_count: 3 } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const usage = await readOpenAICodexRateLimits(await authenticatedStore())
+
+    expect(usage.resetCredits).toEqual({ availableCount: 3 })
   })
 
   it('keeps the access token paired with its account when the active account switches', async () => {

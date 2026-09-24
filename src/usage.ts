@@ -7,6 +7,9 @@ import type { OpenAICodexCredentialStore } from './store.ts'
 /** Fixed endpoint used by the official Codex client for ChatGPT rate limits. */
 export const OPENAI_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 
+/** Per-card reset-credit details; the usage read carries only their count. */
+export const OPENAI_CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+
 const USAGE_REQUEST_TIMEOUT_MS = 15_000
 
 /** Release a discarded response without replacing the HTTP failure with a cancellation error. */
@@ -270,6 +273,42 @@ function parseResetCredits(value: unknown): OpenAICodexResetCredits | undefined 
   }
 }
 
+/**
+ * Read one account's per-card reset-credit details as that account. The usage
+ * summary carries only a count, so titles and grant/expiry times come from this
+ * second read.
+ * @param access - bearer token already resolved for the target account.
+ * @param accountId - provider account id sent as the routing header.
+ * @param signal - shared request deadline.
+ * @returns the parsed details block.
+ * @throws When the response is not OK or unreadable.
+ */
+async function readResetCreditDetails(
+  access: string,
+  accountId: string,
+  signal: AbortSignal,
+): Promise<OpenAICodexResetCredits> {
+  const response = await fetch(OPENAI_CODEX_RESET_CREDITS_URL, {
+    method: 'GET',
+    redirect: 'error',
+    headers: {
+      authorization: `Bearer ${access}`,
+      'chatgpt-account-id': accountId,
+      accept: 'application/json',
+      'cache-control': 'no-store',
+      'user-agent': 'dsh-codex-connect',
+    },
+    signal,
+  })
+  if (!response.ok) {
+    await cancelDiscardedResponseBody(response)
+    throw new Error(`OpenAI Codex reset-credit request failed with HTTP ${response.status}`)
+  }
+  const parsed = parseResetCredits(await response.json())
+  if (parsed === undefined) throw new Error('OpenAI Codex returned no reset-credit details')
+  return parsed
+}
+
 function parseIndividualLimit(value: unknown): OpenAICodexIndividualLimit | undefined {
   if (value === undefined || value === null) return undefined
   if (!isRecord(value)) throw new Error('OpenAI Codex returned malformed spend-control details')
@@ -382,5 +421,18 @@ export async function readOpenAICodexRateLimits(
   } catch (error: unknown) {
     throw new Error('OpenAI Codex returned an unreadable usage response', { cause: error })
   }
-  return parseOpenAICodexUsage(value)
+  const usage = parseOpenAICodexUsage(value)
+  const summary = usage.resetCredits
+  // Only a reported card justifies the second read, and only the summaries that
+  // cannot name their cards need it.
+  if (summary === undefined || summary.credits !== undefined || summary.availableCount === 0) return usage
+  try {
+    const details = await readResetCreditDetails(access, accountId, signal)
+    return details.credits === undefined
+      ? usage
+      : { ...usage, resetCredits: { ...summary, credits: details.credits } }
+  } catch {
+    // The count alone still serves the panel; per-card times are a display nicety.
+    return usage
+  }
 }
