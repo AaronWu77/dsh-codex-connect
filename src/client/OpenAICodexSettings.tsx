@@ -246,9 +246,6 @@ export function AccountUsage({ accounts, quota, t }: {
           .map(seconds => account.windows.find(window => window.windowSeconds === seconds))
           .filter(window => window !== undefined)
         const resetCredits = account.resetCredits
-        const newest = resetCredits?.credits === undefined || resetCredits.credits.length === 0
-          ? undefined
-          : [...resetCredits.credits].sort((left, right) => right.grantedAt - left.grantedAt)[0]
         return (
           <div key={account.accountKey} style={quotaGroupStyle}>
             <div style={quotaLabelStyle}>
@@ -263,9 +260,6 @@ export function AccountUsage({ accounts, quota, t }: {
             {resetCredits === undefined ? null : (
               <div style={quotaLabelStyle}>
                 <span>{t('resetCardsAvailable', { count: resetCredits.availableCount })}</span>
-                <span>{newest === undefined
-                  ? ''
-                  : t('resetCardGranted', { time: formatOpenAICodexResetAt(newest.grantedAt) ?? t('resetUnavailable') })}</span>
               </div>
             )}
             {(resetCredits?.credits ?? []).map((credit, index) => {
