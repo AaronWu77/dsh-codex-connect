@@ -30,9 +30,29 @@ export function isOpenAICodexRouteId(routeId: string): boolean {
   return suffix.startsWith('-') && /^\d+$/u.test(suffix.slice(1))
 }
 
-/** Build the stable selector label for one non-primary account. */
+/** Build the stable, key-only selector label (`OpenAI Codex (acct 43a31b)`). */
 export function openAICodexAccountRouteLabel(accountKey: string): string {
   return `${OPENAI_CODEX_PRIMARY_DISPLAY_NAME} (acct ${openAICodexAccountKeySuffix(accountKey)})`
+}
+
+/**
+ * Build one account's selector label from its display-only profile name, the
+ * same name the settings card and quota figures show. The key suffix rides
+ * along only when two stored accounts share a name, so the picker never shows
+ * an ambiguous pair.
+ * @param account - stored account summary carrying its decoded profile name.
+ * @param duplicateNames - names carried by more than one stored account.
+ * @returns the selector label, for example `OpenAI Codex (AaronWu)`.
+ */
+export function openAICodexAccountRouteLabelFor(
+  account: Pick<OpenAICodexAccountSummary, 'accountKey' | 'displayName'>,
+  duplicateNames: ReadonlySet<string>,
+): string {
+  const name = account.displayName.trim()
+  if (name.length === 0) return openAICodexAccountRouteLabel(account.accountKey)
+  return duplicateNames.has(name)
+    ? `${OPENAI_CODEX_PRIMARY_DISPLAY_NAME} (${name} \u00b7 ${openAICodexAccountKeySuffix(account.accountKey)})`
+    : `${OPENAI_CODEX_PRIMARY_DISPLAY_NAME} (${name})`
 }
 
 /** The lowest free `openai-codex-N` id at or above 2. */
@@ -70,14 +90,20 @@ export class OpenAICodexAccountRouteRegistry {
     // An account holding the primary id is not also owed a secondary one.
     if (activeAccountKey !== undefined) this.assigned.delete(activeAccountKey)
     const used = new Set<string>([OPENAI_CODEX_PROVIDER, ...this.assigned.values()])
+    // Labels carry the account's own name; only same-named accounts fall back
+    // to the key suffix.
+    const nameCounts = new Map<string, number>()
+    for (const account of accounts) nameCounts.set(account.displayName, (nameCounts.get(account.displayName) ?? 0) + 1)
+    const duplicateNames = new Set([...nameCounts].filter(([, count]) => count > 1).map(([name]) => name))
+    const active = accounts.find(account => account.active)
     // Every route names its account, including the primary one: a bare product
     // name left the picker's first entry unattributable.
     const routes: OpenAICodexAccountRoute[] = [
       {
         routeId: OPENAI_CODEX_PROVIDER,
-        displayName: activeAccountKey === undefined
+        displayName: active === undefined
           ? OPENAI_CODEX_PRIMARY_DISPLAY_NAME
-          : openAICodexAccountRouteLabel(activeAccountKey),
+          : openAICodexAccountRouteLabelFor(active, duplicateNames),
       },
     ]
     for (const account of accounts) {
@@ -88,7 +114,7 @@ export class OpenAICodexAccountRouteRegistry {
         this.assigned.set(account.accountKey, routeId)
       }
       used.add(routeId)
-      routes.push({ routeId, displayName: openAICodexAccountRouteLabel(account.accountKey), accountKey: account.accountKey })
+      routes.push({ routeId, displayName: openAICodexAccountRouteLabelFor(account, duplicateNames), accountKey: account.accountKey })
     }
     return routes
   }

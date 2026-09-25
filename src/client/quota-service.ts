@@ -60,11 +60,12 @@ export interface CodexQuotaAccount {
   /** Stable account key (acct_...). */
   readonly accountKey: string
   /**
-   * Short, stable, human-readable caption for a picker or cell header, for
-   * example `acct 43a31b`. It is derived from the already-hashed key, so it is
-   * never an email or token.
+   * Human caption for a picker or cell header: the account's display-only
+   * ChatGPT name, the same one the settings card shows.
    */
   readonly label: string
+  /** Display-only masked email (`aa••@example.com`) when the credential carried one. */
+  readonly maskedEmail?: string
   /** Whether this is the store's active account. */
   readonly active: boolean
   /** The account's rolling windows, server order. */
@@ -296,7 +297,8 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
       const unavailable = isActive ? activeUnavailable : unavailableAccounts.has(summary.accountKey)
       return {
         accountKey: summary.accountKey,
-        label: openAICodexAccountLabel(summary.accountKey),
+        label: summary.displayName,
+        ...(summary.maskedEmail === undefined ? {} : { maskedEmail: summary.maskedEmail }),
         active: summary.active,
         windows: figures?.windows ?? [],
         ...(figures?.credits === undefined ? {} : { credits: figures.credits }),

@@ -8,7 +8,7 @@ import {
 import type { OpenAICodexAccountSummary } from '../src/store.ts'
 
 function account(accountKey: string, active = false): OpenAICodexAccountSummary {
-  return { accountKey, displayName: accountKey, profileSource: 'generated', active }
+  return { accountKey, displayName: `User ${accountKey.slice(-6)}`, profileSource: 'oauth', active }
 }
 
 function bindings(routes: ReturnType<OpenAICodexAccountRouteRegistry['reconcile']>): [string, string | undefined][] {
@@ -23,9 +23,22 @@ describe('per-account LLM route assignment', () => {
       account('acct_cccccc'),
     ])
     expect(routes).toEqual([
-      { routeId: 'openai-codex', displayName: 'OpenAI Codex (acct aaaaaa)' },
-      { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct bbbbbb)', accountKey: 'acct_bbbbbb' },
-      { routeId: 'openai-codex-3', displayName: 'OpenAI Codex (acct cccccc)', accountKey: 'acct_cccccc' },
+      { routeId: 'openai-codex', displayName: 'OpenAI Codex (User aaaaaa)' },
+      { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (User bbbbbb)', accountKey: 'acct_bbbbbb' },
+      { routeId: 'openai-codex-3', displayName: 'OpenAI Codex (User cccccc)', accountKey: 'acct_cccccc' },
+    ])
+  })
+
+  it('disambiguates two accounts that share a display name with the key suffix', () => {
+    const same = (accountKey: string, active = false): OpenAICodexAccountSummary =>
+      ({ accountKey, displayName: 'AaronWu', profileSource: 'oauth', active })
+    const routes = new OpenAICodexAccountRouteRegistry().reconcile([
+      same('acct_aaaaaa', true),
+      same('acct_bbbbbb'),
+    ])
+    expect(routes.map(route => route.displayName)).toEqual([
+      'OpenAI Codex (AaronWu \u00b7 aaaaaa)',
+      'OpenAI Codex (AaronWu \u00b7 bbbbbb)',
     ])
   })
 

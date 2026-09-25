@@ -60,8 +60,10 @@ describe('multi-account LLM routes through the real registry', () => {
     })
     const providers = context.llm.listProviders()
     expect(providers[0]!.id).toBe(OPENAI_CODEX_PROVIDER)
-    expect(providers[0]!.name).toMatch(/^OpenAI Codex \(acct [A-Za-z0-9_-]{6}\)$/u)
-    expect(providers[1]!.name).toMatch(/^OpenAI Codex \(acct [A-Za-z0-9_-]{6}\)$/u)
+    // Neither fixture credential carries an OAuth profile, so each route falls
+    // back to the generated display name.
+    expect(providers[0]!.name).toMatch(/^OpenAI Codex \(ChatGPT account \d+\)$/u)
+    expect(providers[1]!.name).toMatch(/^OpenAI Codex \(ChatGPT account \d+\)$/u)
   })
 
   it('resolves models on a secondary account route while the primary route keeps serving', async () => {

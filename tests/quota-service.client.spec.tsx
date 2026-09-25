@@ -70,15 +70,16 @@ describe('shared codexQuota service', () => {
       const snapshot = service.snapshot()!
       // Back-compat fields still describe the active account alone.
       expect(snapshot.windows).toEqual([{ bucketId: 'codex', bucketName: 'Codex', remainingPercent: 92, windowSeconds: 18_000 }])
-      expect(snapshot.accounts!.map(entry => [entry.label, entry.active])).toEqual([['acct aaaaaa', true], ['acct bbbbbb', false]])
+      expect(snapshot.accounts!.map(entry => [entry.label, entry.active])).toEqual([['work@example.com', true], ['work@example.com', false]])
       expect(snapshot.accounts![1]!.windows).toEqual([
         { bucketId: 'codex', bucketName: 'Codex', remainingPercent: 41, windowSeconds: 604_800, resetAt: 1_790_000_000 },
       ])
       expect(snapshot.accounts![1]!.unavailable).toBeUndefined()
       expect(snapshot.fetchedAt).toBeTypeOf('number')
       expect(snapshot.accounts![1]!.fetchedAt).toBeTypeOf('number')
-      // The caption is the key-derived form, never the stored display name or email.
-      expect(JSON.stringify(snapshot.accounts)).not.toContain('example.com')
+      // The caption is the account's display-only name, and its masked email rides along.
+      expect(snapshot.accounts!.map(entry => entry.label)).toEqual(['work@example.com', 'work@example.com'])
+      expect(snapshot.accounts![0]!.maskedEmail).toBe('wo\u2022\u2022@example.com')
     } finally { unsubscribe() }
   })
 
