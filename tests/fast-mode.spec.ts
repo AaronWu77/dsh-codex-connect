@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { normalizeContext } from '@earendil-works/pi-ai'
 import type { AssistantMessageEventStream, Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { withOpenAICodexFastMode } from '../src/adapter.ts'
 import {
@@ -69,16 +70,16 @@ describe('OpenAI Codex Fast Mode adapter boundary', () => {
     const registry = new FastModeRegistry()
     const wrapped = withOpenAICodexFastMode(fixture.provider, registry)
     const options: SimpleStreamOptions = { sessionId: 'session-a', temperature: 0.2 }
-    wrapped.streamSimple(model('openai-codex'), {} as PiContext, options)
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), options)
     expect(fixture.streamSimple).toHaveBeenCalledWith(expect.anything(), expect.anything(), options)
     registry.set('session-a', true)
-    wrapped.streamSimple(model('openai-codex'), {} as PiContext, options)
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), options)
     const enabledOptions = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
     expect(enabledOptions).toEqual(expect.objectContaining({ sessionId: 'session-a', temperature: 0.2 }))
     expect(enabledOptions?.onPayload).toBeTypeOf('function')
     expect(await enabledOptions?.onPayload?.({ model: 'gpt-5', input: [] }, model('openai-codex')))
       .toEqual({ model: 'gpt-5', input: [], service_tier: 'priority' })
-    wrapped.streamSimple(model('openai-codex'), {} as PiContext, { temperature: 0.2 })
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), { temperature: 0.2 })
     expect(fixture.streamSimple).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { temperature: 0.2 })
     await Promise.resolve()
     expect(fixture.payloads).toContainEqual({ model: 'gpt-5', input: [], service_tier: 'priority' })
@@ -90,7 +91,7 @@ describe('OpenAI Codex Fast Mode adapter boundary', () => {
     registry.set('session-a', true)
     const wrapped = withOpenAICodexFastMode(fixture.provider, registry)
     const onPayload = vi.fn(async () => ({ existing: true }))
-    wrapped.streamSimple(model('openai-codex'), {} as PiContext, { sessionId: 'session-a', onPayload })
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), { sessionId: 'session-a', onPayload })
     const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
     expect(await options?.onPayload?.({ original: true }, model('openai-codex')))
       .toEqual({ existing: true, service_tier: 'priority' })
@@ -102,7 +103,7 @@ describe('OpenAI Codex Fast Mode adapter boundary', () => {
     const registry = new FastModeRegistry()
     registry.set('session-a', true)
     const wrapped = withOpenAICodexFastMode(fixture.provider, registry)
-    wrapped.streamSimple(model('other-provider'), {} as PiContext, { sessionId: 'session-a' })
+    wrapped.streamSimple(model('other-provider'), normalizeContext({ messages: [] }), { sessionId: 'session-a' })
     expect(fixture.streamSimple).toHaveBeenCalledWith(expect.anything(), expect.anything(), { sessionId: 'session-a' })
   })
 })

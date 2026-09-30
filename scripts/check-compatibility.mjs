@@ -11,9 +11,9 @@ const PACKAGE_FILE = join(REPO_ROOT, 'package.json')
 const JSON_SCHEMA_VERSION = 1
 const REQUIRED_NODE_RANGE = '^22.19.0 || >=24.0.0'
 const REQUIRED_DSH_VERSION = '0.1.2-rc.1'
-const REQUIRED_DSH_VERSIONS = [REQUIRED_DSH_VERSION, '0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.7-rc.1', '0.1.7-rc.2']
+const REQUIRED_DSH_VERSIONS = [REQUIRED_DSH_VERSION, '0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.7-rc.1', '0.1.7-rc.2', '0.2.0-rc.2']
 const REQUIRED_DSH_RANGE = REQUIRED_DSH_VERSIONS.join(' || ')
-const REQUIRED_PI_AI_RANGE = '^0.84.2 || 0.85.1'
+const REQUIRED_PI_AI_RANGE = '^0.84.2 || 0.85.1 || 0.87.1'
 const PI_AI_PACKAGE = '@earendil-works/pi-ai'
 const MAX_PACKAGE_JSON_SEARCH_DEPTH = 8
 
@@ -39,7 +39,7 @@ function piAiStatus(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(value.trim())
   if (match === null) return 'incompatible'
   const [major, minor, patch] = match.slice(1).map(Number)
-  return major === 0 && ((minor === 84 && patch >= 2) || (minor === 85 && patch === 1)) ? 'compatible' : 'incompatible'
+  return major === 0 && ((minor === 84 && patch >= 2) || ((minor === 85 || minor === 87) && patch === 1)) ? 'compatible' : 'incompatible'
 }
 
 async function readJson(filename) {
@@ -125,7 +125,10 @@ async function main() {
   if (installedPiAi === undefined || piAiStatus(installedPiAi) !== 'compatible') {
     fail(`installed ${PI_AI_PACKAGE} does not match ${REQUIRED_PI_AI_RANGE}`)
   }
-  if (installedDshVersion === REQUIRED_DSH_VERSION ? !installedPiAi.startsWith('0.84.') : installedPiAi !== '0.85.1') {
+  const pairedPiAi = installedDshVersion === REQUIRED_DSH_VERSION
+    ? installedPiAi.startsWith('0.84.')
+    : installedDshVersion === '0.2.0-rc.2' ? installedPiAi === '0.87.1' : installedPiAi === '0.85.1'
+  if (!pairedPiAi) {
     fail('installed DSH and pi-ai versions do not form a declared pair')
   }
 

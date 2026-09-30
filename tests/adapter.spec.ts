@@ -270,7 +270,7 @@ describe('multi-route adapter', () => {
         { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct two)', accountKey: 'acct_two' },
       ], { catalogLayer: () => ({ live, mode: 'default' }) })
     for (const route of [OPENAI_CODEX_PROVIDER, 'openai-codex-2']) {
-      expect((await adapter.listModels(route)).map(model => model.id)).toEqual(visible)
+      expect((await adapter.listModels(route)).map(model => model.id).sort()).toEqual([...visible].sort())
       await expect(adapter.resolveModel(route, 'gpt-6-luna')).resolves.toMatchObject({
         id: 'gpt-6-luna', provider: route,
       })

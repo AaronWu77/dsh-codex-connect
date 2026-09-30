@@ -9,9 +9,7 @@ describe('model-specific configuration ceilings', () => {
     ['gpt-5.6-sol', 272_000, 872_000],
     ['gpt-5.6-terra', 272_000, 872_000],
     ['gpt-5.6-luna', 272_000, 872_000],
-    ['gpt-5.4', 272_000, 1_000_000],
     ['gpt-5.5', 272_000, 272_000],
-    ['gpt-5.4-mini', 272_000, 272_000],
     ['gpt-5.3-codex-spark', 128_000, 128_000],
   ])('exposes %s defaults and enforces the ceiling in both browser and adapter validation', (id, contextWindow, maximum) => {
     const model = openAICodexModelCatalog().find(entry => entry.id === id)!
@@ -27,6 +25,16 @@ describe('model-specific configuration ceilings', () => {
     }
     expect(() => assertOpenAICodexContextWindowOverrides({ [id]: null }, catalog)).not.toThrow()
   })
+
+  it.each([['gpt-5.4', 1_000_000], ['gpt-5.4-mini', 272_000]])(
+    'keeps the %s configuration ceiling without advertising a removed bundled model', (id, maximum) => {
+      expect(openAICodexModelCatalog().some(model => model.id === id)).toBe(false)
+      const legacy = { id, contextWindow: 272_000, ...openAICodexContextLimit(id, 272_000) }
+      expect(legacy.maxContextWindow).toBe(maximum)
+      expect(() => assertOpenAICodexContextWindowOverrides({ [id]: maximum }, [legacy])).not.toThrow()
+      expect(() => assertOpenAICodexContextWindowOverrides({ [id]: maximum + 1 }, [legacy])).toThrow('integer from 1 to')
+    },
+  )
 
   it('uses only installed defaults for unlisted models and newer defaults beyond the pinned ceiling', () => {
     for (const id of ['new-model', 'toString', 'gpt-5.6-sol']) {

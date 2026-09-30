@@ -137,7 +137,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 
 ### 提示缓存
 
-每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用系统提示词与首条用户消息生成稳定键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
+每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用当前有效的系统提示词（包括 pi-ai 0.87.1 中消息记录的系统段落更新）与首条非空用户消息生成稳定键。仍支持旧版提示词字段；只有系统文本的请求也会生成键，而系统文本与用户文本均为空时不发送键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
 
 ## 诊断与恢复
 

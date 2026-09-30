@@ -1,6 +1,7 @@
 /** OpenAI Codex adapter assembled from public dsh-llm-pi-ai extension points. */
 
 import { createHash } from 'node:crypto'
+import * as piAi from '@earendil-works/pi-ai'
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
@@ -282,7 +283,7 @@ function openAICodexContentText(content: unknown): string {
 /**
  * Derive the prompt-cache key for one request. The Harness session id is the
  * stable per-session identity, so it is used whenever the request supplies one.
- * Without it, a hash of the system prompt and the first user message keeps
+ * Without it, a hash of the effective system prompt and the first user message keeps
  * requests from the same conversation together. A different key only causes a
  * prompt-cache miss; it never changes the model's answer.
  * @param context - exact pi-ai request context.
@@ -294,7 +295,11 @@ export function deriveOpenAICodexPromptCacheKey(
   sessionId: string | undefined,
 ): string | undefined {
   if (sessionId !== undefined && sessionId.trim().length > 0) return clampOpenAICodexPromptCacheKey(sessionId.trim())
-  const system = typeof context.systemPrompt === 'string' ? context.systemPrompt : ''
+  // Older supported pi-ai versions carry a prompt field rather than system messages.
+  const systemMessage = 'getCurrentSystemMessage' in piAi ? piAi.getCurrentSystemMessage(context.messages) : undefined
+  const system = systemMessage === undefined
+    ? context.systemPrompt ?? ''
+    : piAi.getSystemMessageText(systemMessage)
   const firstUser = (context.messages ?? [])
     .filter(message => message.role === 'user')
     .map(message => openAICodexContentText(message.content))
@@ -330,7 +335,7 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
   const streamSimple = provider.streamSimple
   return {
     ...provider,
-    streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
+    streamSimple(model, context, options?: SimpleStreamOptions) {
       const sessionId = options?.sessionId
       const codexRoute = provider.id === model.provider && isOpenAICodexRouteId(provider.id)
       const fastEnabled = codexRoute && policy.fastMode?.isEnabled(sessionId) === true
@@ -384,7 +389,7 @@ function requestProvider(
   const streamSimple = configured.streamSimple
   return {
     ...configured,
-    streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
+    streamSimple(model, context, options?: SimpleStreamOptions) {
       const proxyUrl = resolveProxyUrl?.()
       const operation = () => streamSimple.call(configured, model, context, options)
       return proxyManager?.runStream(proxyUrl, operation) ?? operation()

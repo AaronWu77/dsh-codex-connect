@@ -166,7 +166,7 @@ describe('live Codex model catalog', () => {
     expect(catalog.models().map(model => model.slug)).toEqual(['gpt-6-sol', 'gpt-6-luna'])
     expect(openAICodexModelCatalogFrom({ live: catalog.models(), mode: 'default' })
       .filter(model => model.id.startsWith('gpt-6-')).map(model => model.id))
-      .toEqual(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'])
+      .toEqual(['gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol'])
   })
   it('reads the official client\'s ISO-8601 fetched_at as the fallback timestamp', async () => {
     // The Codex CLI writes nanosecond digits: ~/.codex/models_cache.json.
@@ -313,8 +313,11 @@ describe('live catalog merge', () => {
     expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6.1-sol')
   })
 
-  it('uses the matching 5.6 variant for server-advertised GPT-6 Sol and Luna', () => {
-    const provider = withOpenAICodexAstra(openaiCodexProvider())
+  it('uses the matching 5.6 variant when the installed catalog predates server-advertised GPT-6 Sol and Luna', () => {
+    const installed = openaiCodexProvider()
+    const provider = withOpenAICodexAstra({
+      ...installed, getModels: () => installed.getModels().filter(model => !model.id.startsWith('gpt-6-')),
+    })
     const live = [
       liveEntry('gpt-6-sol', { display_name: 'GPT-6-Sol' }),
       liveEntry('gpt-6-luna', { display_name: 'GPT-6-Luna' }),
@@ -340,11 +343,13 @@ describe('live catalog merge', () => {
         contextWindow: 872_000, maxContextWindow: 872_000, contextLimitSource: 'codex-catalog',
       })
     }
-    expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6-luna')
+    expect(provider.getModels().map(model => model.id)).not.toContain('gpt-6-luna')
   })
 
   it('uses live GPT-6 Luna ceilings for explicit overrides without mutating pi-ai', () => {
     const provider = withOpenAICodexAstra(openaiCodexProvider())
+    const baseline = provider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow
+    expect(baseline).toBe(272_000)
     const live = [liveEntry('gpt-6-luna')]
     const layer = { live, mode: 'default' as const }
     expect(createOpenAICodexProfile(provider, undefined, undefined, undefined,
@@ -352,7 +357,9 @@ describe('live catalog merge', () => {
       .piProvider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow).toBe(872_000)
     expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
       { 'gpt-6-luna': 872_001 }, undefined, undefined, layer)).toThrow('integer from 1 to 872000')
-    expect(provider.getModels().some(model => model.id === 'gpt-6-luna')).toBe(false)
+    expect(provider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow)
+      .toBe(baseline)
+    expect(openaiCodexProvider().getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow).toBe(baseline)
   })
 
   it('lets an explicit per-model override win over the selected mode value', () => {

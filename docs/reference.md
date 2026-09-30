@@ -137,7 +137,7 @@ A failure at any layer is logged at most once per failure streak and never throw
 
 ### Prompt caching
 
-Every Codex request carries a `prompt_cache_key` so OpenAI can reuse a cached prefix across turns. The key is the Harness session id; `cacheRetention: "none"` on a request suppresses both the key and the cache. When no session id is available, the plugin derives a stable key from the system prompt and the first user message instead. A different key only causes a prompt-cache miss; it never changes the answer. `store: false` and `include: ["reasoning.encrypted_content"]` remain in the request body. Set `debugLogPayloadFields: true` to write the field names of each Codex request to the plugin log for verification; it records names only, never request or response content, and is off by default.
+Every Codex request carries a `prompt_cache_key` so OpenAI can reuse a cached prefix across turns. The key is the Harness session id; `cacheRetention: "none"` on a request suppresses both the key and the cache. When no session id is available, the plugin derives a stable key from the effective system prompt (including transcript section updates in pi-ai 0.87.1) and the first non-empty user message instead. Legacy prompt fields remain supported; a system-only request also receives a key, while a context with neither system text nor user text sends none. A different key only causes a prompt-cache miss; it never changes the answer. `store: false` and `include: ["reasoning.encrypted_content"]` remain in the request body. Set `debugLogPayloadFields: true` to write the field names of each Codex request to the plugin log for verification; it records names only, never request or response content, and is off by default.
 
 ## Diagnostics and recovery
 

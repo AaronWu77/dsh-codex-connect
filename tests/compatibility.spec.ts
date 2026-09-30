@@ -77,6 +77,21 @@ describe('compatibility contract', () => {
     }).status).toBe('unverified')
   })
 
+  it('accepts the exact 0.2.0-rc.2 and pi-ai 0.87.1 pair but leaves mixed or future pairs unverified', () => {
+    const pair = {
+      '@deepseek-ai/dsh-llm': '0.2.0-rc.2',
+      '@deepseek-ai/dsh-llm-pi-ai': '0.2.0-rc.2',
+      '@earendil-works/pi-ai': '0.87.1',
+    }
+    expect(evaluateCompatibility({ nodeVersion: 'v24.20.0', packageVersions: pair }).status).toBe('compatible')
+    for (const mixed of [
+      { ...pair, '@deepseek-ai/dsh-llm': '0.1.7-rc.2' },
+      { ...pair, '@earendil-works/pi-ai': '0.85.1' },
+      { ...pair, '@earendil-works/pi-ai': '0.87.2' },
+      { ...pair, '@deepseek-ai/dsh-llm': '0.2.0-rc.3', '@deepseek-ai/dsh-llm-pi-ai': '0.2.0-rc.3' },
+    ]) expect(evaluateCompatibility({ nodeVersion: 'v24.20.0', packageVersions: mixed }).status).toBe('unverified')
+  })
+
   it('keeps missing metadata unknown rather than claiming compatibility', () => {
     const report = evaluateCompatibility({ nodeVersion: 'not-a-node-version', packageVersions: {} })
     expect(report.status).toBe('unknown')
