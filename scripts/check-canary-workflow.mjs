@@ -12,13 +12,14 @@ const packagePath = fileURLToPath(new URL('../package.json', import.meta.url))
 const installCheckPath = fileURLToPath(new URL('./check-dsh-install.mjs', import.meta.url))
 const nextCheckPath = fileURLToPath(new URL('./check-dsh-next.mjs', import.meta.url))
 const canaryEnvironmentPath = fileURLToPath(new URL('./canary-environment.mjs', import.meta.url))
-const workflow = readFileSync(workflowPath, 'utf8')
-const ciWorkflow = readFileSync(ciWorkflowPath, 'utf8')
+// Workflow indentation checks use LF: Git's Windows checkout may supply CRLF.
+const workflow = readFileSync(workflowPath, 'utf8').replace(/\r\n/gu, '\n')
+const ciWorkflow = readFileSync(ciWorkflowPath, 'utf8').replace(/\r\n/gu, '\n')
 const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'))
 const installCheck = readFileSync(installCheckPath, 'utf8')
 const nextCheck = readFileSync(nextCheckPath, 'utf8')
 const canaryEnvironment = readFileSync(canaryEnvironmentPath, 'utf8')
-const declaredWorkflow = readFileSync(new URL('../.github/workflows/compatibility-canary.yml', import.meta.url), 'utf8')
+const declaredWorkflow = readFileSync(new URL('../.github/workflows/compatibility-canary.yml', import.meta.url), 'utf8').replace(/\r\n/gu, '\n')
 
 const failures = []
 let assertionCount = 0
@@ -30,7 +31,7 @@ function assertContract(name, condition) {
 
 assertContract('declared canary checks the full same-artifact matrix without a stale version override', /run: pnpm --silent run check:dsh-matrix/u.test(declaredWorkflow) && !/DSH_VERSION:/u.test(declaredWorkflow))
 assertContract('package exposes the declared matrix check', packageJson.scripts?.['check:dsh-matrix'] === 'node scripts/check-dsh-matrix.mjs')
-const matrixVersions = ['0.1.2-rc.1', '0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2']
+const matrixVersions = ['0.1.2-rc.1', '0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.7-rc.1', '0.1.7-rc.2']
 const matrixReports = matrixVersions.map(dshVersion => ({
   schemaVersion: 1, dshVersion, plugin: 'dsh-codex-connect', pluginVersion: '0.1.0-alpha.4.33',
   pluginArtifactSha256: 'a'.repeat(64), defaultsUnchanged: true,

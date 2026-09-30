@@ -10,7 +10,8 @@ describe('capability documentation', () => {
     const pairing = await readFile(new URL(`../${record}`, import.meta.url), 'utf8')
     for (const path of paths) {
       const bytes = await readFile(new URL(`../${path}`, import.meta.url))
-      const hash = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+      const canonical = Buffer.from(bytes.toString('utf8').replace(/\r\n/gu, '\n'))
+      const hash = createHash('sha1').update(`blob ${canonical.length}\0`).update(canonical).digest('hex')
       expect(pairing).toContain(`${path}: ${hash}`)
     }
   })

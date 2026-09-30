@@ -35,7 +35,7 @@ describe('compatibility contract', () => {
     expect(JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'))).toEqual(COMPATIBILITY_CONTRACT)
   })
 
-  it.each(['0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2'])('accepts the exact %s host pair without accepting mixed or future versions', version => {
+  it.each(['0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.7-rc.1', '0.1.7-rc.2'])('accepts the exact %s host pair without accepting mixed or future versions', version => {
     const alpha = {
       '@deepseek-ai/dsh-llm': version,
       '@deepseek-ai/dsh-llm-pi-ai': version,

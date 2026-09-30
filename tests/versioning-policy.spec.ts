@@ -38,7 +38,8 @@ describe('independent plugin versioning', () => {
     const record = await readFile(new URL('../docs/versioning.i18n.yaml', import.meta.url), 'utf8')
     for (const path of ['VERSIONING.md', 'docs/VERSIONING.zh.md']) {
       const bytes = await readFile(new URL(`../${path}`, import.meta.url))
-      const hash = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+      const canonical = Buffer.from(bytes.toString('utf8').replace(/\r\n/gu, '\n'))
+      const hash = createHash('sha1').update(`blob ${canonical.length}\0`).update(canonical).digest('hex')
       expect(record).toContain(`${path}: ${hash}`)
       for (const term of ['0.1.0-alpha.4.x', '+build.n', '0.2.0-alpha.1', 'schemaVersion: 1', 'pnpm run check', 'pnpm run test:browser', 'pnpm run check:dsh-matrix']) {
         expect(bytes.toString('utf8')).toContain(term)

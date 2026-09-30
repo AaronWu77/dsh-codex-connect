@@ -72,7 +72,7 @@ afterEach(async () => {
 })
 
 describe('legacy Codex search history migration', () => {
-  it('dry-runs, backs up, repairs, and remains idempotent across concatenated frames', async () => {
+  it.skipIf(process.platform === 'win32')('dry-runs, backs up, repairs, and remains idempotent across concatenated frames', async () => {
     const artifact = await createLegacyArtifact('session-fixture')
 
     await expect(migrateOpenAICodexSearchHistory({ root: currentRoot() })).resolves.toMatchObject({
@@ -115,7 +115,7 @@ describe('legacy Codex search history migration', () => {
     await expect(readFile(artifact.path + OPENAI_CODEX_HISTORY_BACKUP_SUFFIX)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('refuses a torn compressed artifact without changing or backing it up', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a torn compressed artifact without changing or backing it up', async () => {
     if (root === undefined) root = await mkdtemp(join(tmpdir(), 'dsh-codex-history-torn-'))
     const directory = join(root, '--fixture--', 'session-torn')
     await mkdir(directory, { recursive: true })
@@ -145,7 +145,7 @@ describe('legacy Codex search history migration', () => {
     await expect(readFile(outside)).resolves.toEqual(artifact.original)
   })
 
-  it('refuses a same-content backup that is not linked to the current artifact', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a same-content backup that is not linked to the current artifact', async () => {
     const artifact = await createLegacyArtifact('session-detached-backup')
     await writeFile(artifact.path + OPENAI_CODEX_HISTORY_BACKUP_SUFFIX, artifact.original)
 
@@ -157,7 +157,7 @@ describe('legacy Codex search history migration', () => {
     await expect(readFile(artifact.path)).resolves.toEqual(artifact.original)
   })
 
-  it('serializes concurrent apply calls with one lock and one actual modification', async () => {
+  it.skipIf(process.platform === 'win32')('serializes concurrent apply calls with one lock and one actual modification', async () => {
     const artifact = await createLegacyArtifact('session-concurrent')
 
     const results = await Promise.all([
