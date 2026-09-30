@@ -134,7 +134,7 @@ export function isOpenAICodexKnownModelFamily(slug: string, knownIds: readonly s
 /**
  * Overlay the live catalog on the installed one. Known slugs keep their
  * bundled record with the selected mode's window and the server output cap;
- * only family-known new slugs are synthesized from a sibling record. Unknown
+ * GPT-6.1 Sol and family-known new slugs use a sibling record. Unknown
  * slugs are returned so the Host can report them without enabling them.
  * @param provider - installed provider catalog.
  * @param live - server-advertised models.
@@ -161,16 +161,17 @@ export function applyOpenAICodexLiveCatalog(
   const unavailableModels: string[] = []
   for (const entry of live) {
     if (baseline.some(model => model.id === entry.slug)) continue
+    const solPredecessor = entry.slug === 'gpt-6.1-sol'
+      ? baseline.find(model => model.id === 'gpt-6-sol') ?? baseline.find(model => model.id === 'gpt-5.6-sol')
+      : undefined
     const family = openAICodexModelFamily(entry.slug)
-    if (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds)) {
+    if (solPredecessor === undefined && (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds))) {
       unavailableModels.push(entry.slug)
       continue
     }
-    // These two new slugs share their respective 5.6 variants' Codex tool and
-    // thinking-level mappings. The Astra sibling instead maps Minimal to off.
-    const predecessor = entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
+    const predecessor = solPredecessor ?? (entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
       ? baseline.find(model => model.id === `gpt-5.6-${entry.slug.slice('gpt-6-'.length)}`)
-      : undefined
+      : undefined)
     const template = predecessor ?? baseline.find(model => model.id === family || model.id.startsWith(`${family}-`))
     if (template === undefined) {
       unavailableModels.push(entry.slug)
@@ -180,6 +181,9 @@ export function applyOpenAICodexLiveCatalog(
       ...template,
       id: entry.slug,
       name: entry.displayName ?? entry.slug,
+      ...entry.slug === 'gpt-6.1-sol'
+        ? { thinkingLevelMap: { ...template.thinkingLevelMap, off: null, minimal: null } }
+        : {},
       contextWindow: openAICodexModeContextWindow(entry.contextWindow, entry.maxContextWindow, mode),
       maxTokens: entry.maxOutputTokens ?? template.maxTokens,
     })

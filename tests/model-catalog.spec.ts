@@ -288,6 +288,31 @@ describe('live catalog merge', () => {
     expect(openAICodexUnavailableModels(live)).toEqual(['gpt-reserve', 'codex-auto-review'])
   })
 
+  it('adds server-advertised GPT-6.1 Sol with Sol tool settings and supported reasoning', () => {
+    const provider = withOpenAICodexAstra(openaiCodexProvider())
+    const live = [liveEntry('gpt-6.1-sol', { display_name: 'GPT-6.1-Sol', max_output_tokens: 128_000 }), liveEntry('gpt-6.2-sol')]
+    const before = provider.getModels().map(model => model.id)
+    const merged = applyOpenAICodexLiveCatalog(provider, live, 'default')
+    const entry = merged.provider.getModels().find(model => model.id === 'gpt-6.1-sol')
+    const previous = provider.getModels().find(model => model.id === 'gpt-6-sol')
+      ?? provider.getModels().find(model => model.id === 'gpt-5.6-sol')
+    expect(entry).toMatchObject({
+      name: 'GPT-6.1-Sol', contextWindow: 272_000, maxTokens: 128_000,
+      input: ['text', 'image'], compat: previous?.compat,
+      thinkingLevelMap: { ...previous?.thinkingLevelMap, off: null, minimal: null },
+    })
+    expect(merged.unavailableModels).toEqual(['gpt-6.2-sol'])
+    expect(provider.getModels().map(model => model.id)).toEqual(before)
+    expect(openAICodexModelCatalogFrom({ live, mode: 'extended' }).find(model => model.id === 'gpt-6.1-sol'))
+      .toMatchObject({ contextWindow: 872_000, maxContextWindow: 872_000, contextLimitSource: 'codex-catalog' })
+    expect(createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { 'gpt-6.1-sol': 872_000 }, undefined, undefined, { live, mode: 'default' })
+      .piProvider.getModels().find(model => model.id === 'gpt-6.1-sol')?.contextWindow).toBe(872_000)
+    expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { 'gpt-6.1-sol': 872_001 }, undefined, undefined, { live, mode: 'default' })).toThrow('integer from 1 to 872000')
+    expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6.1-sol')
+  })
+
   it('uses the matching 5.6 variant for server-advertised GPT-6 Sol and Luna', () => {
     const provider = withOpenAICodexAstra(openaiCodexProvider())
     const live = [
