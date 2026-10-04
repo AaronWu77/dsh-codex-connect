@@ -9,6 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import type { Credential, CredentialInfo, CredentialStore, OAuthCredential } from '@earendil-works/pi-ai'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { OPENAI_CODEX_PROVIDER } from './account-route-id.ts'
 import {
   resolveOpenAICodexAccountProfiles,
   type OpenAICodexAccountProfileSource,
@@ -20,8 +21,7 @@ import {
 
 export { OPENAI_CODEX_ACCOUNT_KEY_PREFIX, OPENAI_CODEX_ACCOUNT_LIMIT }
 
-/** Provider route and pi-ai provider id owned by this bundle. */
-export const OPENAI_CODEX_PROVIDER = 'openai-codex'
+export { OPENAI_CODEX_PROVIDER } from './account-route-id.ts'
 
 /** Basename of the OAuth document inside the Harness home. */
 export const OPENAI_CODEX_AUTH_FILENAME = '.openai-codex-auth.json'

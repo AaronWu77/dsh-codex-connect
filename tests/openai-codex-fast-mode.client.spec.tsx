@@ -59,7 +59,7 @@ describe('OpenAI Codex Fast Mode Composer toggle', () => {
     expect(zh.fastModeEnabledTitle).toBe('当前：1.5 倍速度，额度消耗更快。点击切换到标准速度')
   })
 
-  it('loads the current session state, toggles only that session, and exposes aria/title semantics', async () => {
+  it.each(['openai-codex', 'openai-codex-2', 'openai-codex-16'])('loads and toggles only the current session on %s with accessible state', async provider => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       if (init?.method === 'POST') {
         expect(input).toBe(OPENAI_CODEX_FAST_MODE_PATH)
@@ -70,7 +70,7 @@ describe('OpenAI Codex Fast Mode Composer toggle', () => {
       return json({ enabled: false })
     })
     vi.stubGlobal('fetch', fetchMock)
-    render(<OpenAICodexFastModeToggle directory={directoryStore(directoryState('gpt-5'))} sessionId="session-a" t={t} />)
+    render(<OpenAICodexFastModeToggle directory={directoryStore(directoryState('gpt-5', provider))} sessionId="session-a" t={t} />)
 
     const button = await screen.findByRole('button')
     const bolt = button.querySelector('[data-openai-codex-fast-mode-bolt]')
@@ -100,6 +100,8 @@ describe('OpenAI Codex Fast Mode Composer toggle', () => {
   it.each([
     ['non-GPT model', directoryState('o3')],
     ['wrong provider', directoryState('gpt-5', 'openai')],
+    ['lookalike provider', directoryState('gpt-5', 'custom-route-2')],
+    ['non-numeric account suffix', directoryState('gpt-5', 'openai-codex-other')],
   ])('hides for %s', (_label, state) => {
     const fetchMock = vi.fn(async () => json({ enabled: false }))
     vi.stubGlobal('fetch', fetchMock)

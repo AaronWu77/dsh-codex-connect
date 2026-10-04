@@ -85,9 +85,12 @@ type OpenAICodexAccountProfileSource = 'oauth' | 'generated';
 /** Maximum number of stored OpenAI Codex accounts. */
 declare const OPENAI_CODEX_ACCOUNT_LIMIT = 16;
 //#endregion
-//#region src/store.d.ts
-/** Provider route and pi-ai provider id owned by this bundle. */
+//#region src/account-route-id.d.ts
+/** Browser-safe identity shared by Codex account routes and Composer controls. */
+/** Primary Harness route and pi-ai provider id owned by this bundle. */
 declare const OPENAI_CODEX_PROVIDER = "openai-codex";
+//#endregion
+//#region src/store.d.ts
 /** Basename of the OAuth document inside the Harness home. */
 declare const OPENAI_CODEX_AUTH_FILENAME = ".openai-codex-auth.json";
 /** Maximum serialized credential document size. */

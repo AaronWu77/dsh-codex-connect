@@ -6,7 +6,7 @@ import { page, userEvent } from 'vitest/browser'
 import { modelCatalogFixture } from '../model-catalog-fixture.ts'
 import { OpenAICodexConfiguration } from '../../src/client/OpenAICodexConfiguration.tsx'
 import { en } from '../../src/client/locales.ts'
-import { OPENAI_CODEX_MODEL_CATALOG_PATH } from '../../src/model-contract.ts'
+import { OPENAI_CODEX_MODEL_CATALOG_PATH, OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH } from '../../src/model-contract.ts'
 import {
   OPENAI_CODEX_PROXY_DETECT_PATH,
   OPENAI_CODEX_PROXY_TEST_PATH,
@@ -125,7 +125,7 @@ describe('Codex model visibility in Chromium', () => {
   it('stages per-model budgets, preserves hidden models, discards edits and resets without changing other budgets', async () => {
     const models = [{ id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' }, { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' }]
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(modelCatalogFixture(models)))))
-    const { scope, mutate } = settingsScopeFixture({ contextWindowOverrides: { 'gpt-5.6-sol': 300_000, 'gpt-5.6-terra': 340_000 } })
+    const { scope, mutate } = settingsScopeFixture({ contextWindowOverrides: { 'gpt-5.6-sol': 300_000, 'gpt-5.6-terra': 340_000 }, maxTokensOverrides: { 'gpt-5.6-sol': 8192, 'gpt-5.6-terra': 16_384 } })
     root.render(createElement(OpenAICodexConfiguration, { scope, t }))
     const sol = page.getByRole('group', { name: 'GPT-5.6 Sol', exact: true })
     await sol.getByRole('button', { name: en.contextAdjust, exact: true }).click()
@@ -140,11 +140,12 @@ describe('Codex model visibility in Chromium', () => {
     await vi.waitFor(() => {
       expect(scope.getSnapshot().value).toMatchObject({ models: ['gpt-5.6-terra'], contextWindowOverrides: { 'gpt-5.6-sol': 350_000, 'gpt-5.6-terra': 340_000 } })
     })
-    await sol.getByRole('button', { name: en.contextReset, exact: true }).click()
+    await sol.getByRole('group', { name: en.contextTokens, exact: true }).getByRole('button', { name: en.contextReset, exact: true }).click()
     await page.getByRole('button', { name: en.save, exact: true }).click()
     await vi.waitFor(() => {
       expect(mutate).toHaveBeenCalledWith(expect.arrayContaining([{ op: 'set', path: ['contextWindowOverrides'], value: { 'gpt-5.6-sol': null, 'gpt-5.6-terra': 340_000 } }]), expect.any(Number))
       expect(scope.getSnapshot().value?.contextWindowOverrides).toEqual({ 'gpt-5.6-terra': 340_000 })
+      expect(scope.getSnapshot().value?.maxTokensOverrides).toEqual({ 'gpt-5.6-sol': 8192, 'gpt-5.6-terra': 16_384 })
       expect((input.element() as HTMLInputElement).value).toBe('272000')
     })
     await page.viewport(360, 800)
@@ -167,7 +168,7 @@ describe('Codex model visibility in Chromium', () => {
       })
     }
     expect(mutate).not.toHaveBeenCalled()
-    await page.getByRole('button', { name: en.contextReset, exact: true }).click()
+    await page.getByRole('group', { name: en.contextTokens, exact: true }).getByRole('button', { name: en.contextReset, exact: true }).click()
     await page.getByRole('button', { name: en.save, exact: true }).click()
     expect(scope.getSnapshot().value?.contextWindowOverrides).toBeUndefined()
   })
@@ -224,6 +225,7 @@ describe('Codex model visibility in Chromium', () => {
       { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
     ]
     const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      if (String(input) === OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH) return Response.json({ source: 'bundled', clientVersion: 'fixture-client', modelCount: models.length, unavailableModels: [] })
       expect(String(input)).toBe(OPENAI_CODEX_MODEL_CATALOG_PATH)
       return new Response(JSON.stringify(modelCatalogFixture(models)), { status: 200, headers: { 'content-type': 'application/json' } })
     })
@@ -272,7 +274,7 @@ describe('Codex model visibility in Chromium', () => {
     expect(mutate).not.toHaveBeenCalled()
     await page.getByRole('button', { name: en.save, exact: true }).click()
     expect(scope.getSnapshot().value?.contextWindowOverrides).toEqual({ 'gpt-5.6-sol': 871_999 })
-    await sol.getByRole('button', { name: en.contextReset, exact: true }).click()
+    await sol.getByRole('group', { name: en.contextTokens, exact: true }).getByRole('button', { name: en.contextReset, exact: true }).click()
     await expect.element(input).toHaveValue(272_000)
     await expect.element(slider).toHaveValue('272000')
     await expect.element(sol.getByText(en.contextAboveDefault)).not.toBeInTheDocument()
@@ -282,7 +284,7 @@ describe('Codex model visibility in Chromium', () => {
   })
 
   it('uses a fallback model ceiling without claiming a higher official limit', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json([{ id: 'gpt-5.3-codex-spark', name: 'Spark', contextWindow: 128_000, maxContextWindow: 128_000, contextLimitSource: 'catalog-default' }])))
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json([{ id: 'gpt-5.3-codex-spark', name: 'Spark', contextWindow: 128_000, maxTokens: 16_384, maxContextWindow: 128_000, contextLimitSource: 'catalog-default' }])))
     const { scope } = settingsScopeFixture()
     root.render(createElement(OpenAICodexConfiguration, { scope, t }))
     await page.getByRole('button', { name: en.contextAdjust, exact: true }).click()

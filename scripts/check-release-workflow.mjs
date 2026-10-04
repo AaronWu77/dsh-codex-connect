@@ -5,8 +5,8 @@ import './verify-release-ci.test.mjs'
 const workflowPath = fileURLToPath(new URL('../.github/workflows/release.yml', import.meta.url))
 const ciWorkflowPath = fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url))
 const packagePath = fileURLToPath(new URL('../package.json', import.meta.url))
-const workflow = readFileSync(workflowPath, 'utf8')
-const ciWorkflow = readFileSync(ciWorkflowPath, 'utf8')
+const workflow = readFileSync(workflowPath, 'utf8').replace(/\r\n/gu, '\n')
+const ciWorkflow = readFileSync(ciWorkflowPath, 'utf8').replace(/\r\n/gu, '\n')
 const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'))
 
 const failures = []
