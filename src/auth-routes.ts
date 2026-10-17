@@ -474,6 +474,7 @@ export async function trustedRequestDecision(
   }
 }
 
+
 function json(res: ServerResponse, status: number, value: unknown): void {
   if (res.destroyed) return
   res.writeHead(status, {
