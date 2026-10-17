@@ -279,8 +279,46 @@ describe('OpenAI Codex image transport', () => {
     jsonResponse({ data: [{ b64_json: '' }] }),
     jsonResponse({ data: Array.from({ length: 5 }, () => ({ b64_json: 'aA==' })) }),
   ])('rejects malformed success responses', async response => {
-    vi.stubGlobal('fetch', vi.fn(async () => response.clone()))
+    // Each case owns its response; an unused tee branch would hold cancellation open.
+    vi.stubGlobal('fetch', vi.fn(async () => response))
     const failure = await (await transport()).generateImages({ prompt: 'test' }, {}).catch((error: unknown) => error)
     expectCode(failure, OPENAI_CODEX_TRANSPORT_ERROR_CODES.malformedResponse)
   })
+})
+
+it.each([
+  'content-type', 'content-length',
+] as const)('joins rejected %s response cancellation before returning', async reason => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  let sourceSettled = false, requestSignal: AbortSignal | null | undefined
+  const cancel = vi.fn(async () => { entered.resolve(); await release.promise; sourceSettled = true })
+  const response = new Response(new ReadableStream<Uint8Array>({ cancel }), { headers: reason === 'content-type'
+    ? { 'content-type': 'text/html' } : { 'content-type': 'application/json', 'content-length': String(OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES + 1) } })
+  const fetcher = vi.fn<typeof fetch>(async (_url, init) => { requestSignal = init?.signal; return response })
+  vi.stubGlobal('fetch', fetcher)
+  const service = await transport()
+  let settled = false
+  const pending = service.generateImages({ prompt: 'fixture' }, {}).finally(() => { settled = true })
+  const rejected = expect(pending).rejects.toMatchObject({ code: reason === 'content-type'
+    ? OPENAI_CODEX_TRANSPORT_ERROR_CODES.malformedResponse : OPENAI_CODEX_TRANSPORT_ERROR_CODES.responseTooLarge })
+  try {
+    await entered.promise
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(settled).toBe(false)
+    expect(sourceSettled).toBe(false)
+  } finally { release.resolve(); await rejected }
+  expect(sourceSettled).toBe(true)
+  expect(cancel).toHaveBeenCalledOnce()
+  expect(requestSignal?.aborted).toBe(true)
+})
+
+it('aborts its completed request after preserving its generated images', async () => {
+  let signal: AbortSignal | null | undefined
+  const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+    signal = init?.signal
+    return jsonResponse({ status: 'completed', data: [{ b64_json: 'aGVsbG8=' }] })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  expect((await (await transport()).generateImages({ prompt: 'fixture' }, {})).images).toHaveLength(1)
+  expect(signal?.aborted).toBe(true)
 })

@@ -30,8 +30,23 @@ import { OpenAICodexAccountStore } from './account-store.ts'
 import { createCodexQuotaService } from './quota-service.ts'
 import { OpenAICodexModelsCard } from './OpenAICodexModelsCard.tsx'
 import { OpenAICodexConfigForm } from './config-form.ts'
+import { CodexUsageCapsule, CodexUsagePanel, CodexUsagePanelStore } from './CodexUsagePanel.tsx'
+import type { CodexUsageInjected } from './CodexUsagePanel.tsx'
+import { usageStyles, usageDialogStyles } from './usage-styles.ts'
+import { managementStyles } from './management-styles.ts'
+import { startUsageWarmup } from './usage-warmup.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
+  /**
+   * Declared by the sidebar package at runtime. This plugin depends on that package
+   * but its `./client` types do not resolve from the installed copy, so the shape is
+   * repeated here until that dependency resolves.
+   */
+  interface SlotMap {
+    /** Frame-wide sidebar footer actions. */
+    'sidebar.footer.action': { kind: 'list'; scope: 'root' }
+  }
+
   interface LocaleNamespaceMap {
     /** OpenAI Codex account page copy. */
     'settings.openai-codex': OpenAICodexSettingsKey
@@ -43,31 +58,25 @@ export const name = 'dsh-codex-connect-client'
 /** Client services required by the Plugin configuration contribution. */
 export const inject = ['slots', 'locale', 'connection', 'remote', 'remote.session', 'configForms', 'sessions']
 
-/** Register account copy and the OpenAI Codex card under Plugin configuration. */
-/**
- * The card jump into the Quota & Usage dashboard, when the plugin that owns
- * that surface is mounted. Optional read: the card renders without it.
- * @param ctx - the client context (`contextOverview` is another plugin service).
- * @returns the injected field, or an empty object.
- */
-function dashboardJumpOf(ctx: ClientContext): { onOpenUsage?: () => void } {
-  // Resolve the service on every call: the presence check decides once whether
-  // the card shows the button, the click reads the handle as it is then.
-  const read = (): { open?: (day?: string) => void } | undefined =>
-    (ctx as unknown as { get?: (name: string) => unknown }).get?.('contextOverview') as
-      { open?: (day?: string) => void } | undefined
-  if (typeof read()?.open !== 'function') return {}
-  return { onOpenUsage: () => { read()?.open?.() } }
-}
-
 export function apply(ctx: ClientContext): void {
   const namespace = 'settings.openai-codex'
   const account = new OpenAICodexAccountStore()
   ctx.effect(() => () => { account.dispose() }, 'dsh-codex-connect: account observation')
   // Cross-plugin quota face: other client plugins read the signed-in account's
   // rolling windows and reset cards through ctx.get('codexQuota').
+  const panel = new CodexUsagePanelStore()
+  ctx.provide('codexUsagePanel', { open: () => { panel.show() } })
+  ctx.effect(() => {
+    const style = document.createElement('style')
+    style.textContent = usageStyles + usageDialogStyles + managementStyles
+    document.head.append(style)
+    return () => { style.remove() }
+  }, 'dsh-codex-connect: usage styles')
   const quota = createCodexQuotaService(account)
   ctx.provide('codexQuota', quota)
+  ctx.effect(() => startUsageWarmup(() => ctx.sessions.refresh(), message => {
+    ctx.logger.warn('dsh-codex-connect: ' + message)
+  }), 'dsh-codex-connect: historical usage observation')
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-codex-connect: settings copy')
   const t = ctx.locale.bind(namespace) as OpenAICodexPluginCardInjected['t']
   const configScope = new OpenAICodexConfigForm(
@@ -82,12 +91,7 @@ export function apply(ctx: ClientContext): void {
     label: () => t('title'),
     inject: (): OpenAICodexPluginCardInjected => ({
       t, configScope, account, quota,
-      // dsh-context publishes the dashboard handle in its own apply, ahead of
-      // this card's first render; without that plugin the card keeps its own
-      // summary line and no jump button. The renderer caches this inject per
-      // entry, so the presence check settles once while the click resolves the
-      // service live.
-      ...dashboardJumpOf(ctx),
+      onOpenUsage: () => { panel.show() },
     }),
   }, OpenAICodexPluginCard)), 'dsh-codex-connect: settings page while served')
 
@@ -98,11 +102,29 @@ export function apply(ctx: ClientContext): void {
     inject: () => ({ t, account, configScope }),
   }, OpenAICodexModelsCard))
 
+  const usageInjected = (): CodexUsageInjected => ({ t, account, quota, panel })
+
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
+    id: 'codex-connect-usage',
+    order: 11,
+    locale: namespace,
+    inject: usageInjected,
+  }, CodexUsageCapsule))
+
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'codex-connect-usage',
+    order: 20,
+    locale: namespace,
+    inject: usageInjected,
+  }, CodexUsagePanel))
+
   ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
     name: 'tool.call.toolview',
     key: 'codex_connect_image_generate',
     locale: namespace,
-    inject: (): CodexImageToolViewInjected => ({ sessions: ctx.sessions }),
+    inject: (): CodexImageToolViewInjected => ({ sessions: ctx.sessions, configScope }),
   }, CodexImageToolView))
 
   ctx.inject(['slots', 'modelDirectories'], (scope: ClientContext) => {

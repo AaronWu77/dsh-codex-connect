@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { routeContext } from './route-context.ts'
 import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -22,6 +22,7 @@ import { OpenAICodexTrustedOriginsStore } from '../src/trusted-origins.ts'
 import {
   OPENAI_CODEX_REAUTH_REQUIRED_MESSAGE,
   OpenAICodexReauthRequiredError,
+  OpenAICodexUsageHttpError,
 } from '../src/usage.ts'
 
 const mocked = vi.hoisted(() => ({
@@ -80,17 +81,10 @@ interface CapturedRoute {
 
 function captureRoutes(trustedOrigins: OpenAICodexTrustedOriginsStore = emptyTrustedOrigins): CapturedRoute[] {
   const routes: CapturedRoute[] = []
-  const ctx = {
-    webServer: {
-      register(route: CapturedRoute) {
-        routes.push(route)
-        return () => undefined
-      },
-    },
-    effect(factory: () => void | (() => void | Promise<void>)) {
-      return factory()
-    },
-  } as unknown as Context
+  const ctx = routeContext((route) => {
+    routes.push(route)
+    return () => undefined
+  })
   registerOpenAICodexAuthRoutes(ctx, store, trustedOrigins)
   return routes
 }
@@ -105,6 +99,7 @@ function request(options: {
   body?: string
 }): IncomingMessage {
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     method: options.method ?? 'GET',
     socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
     headers: {
@@ -120,6 +115,7 @@ function request(options: {
 function response(): ServerResponse & { observed: { status: number | undefined; body: string | undefined } } {
   const observed: { status: number | undefined; body: string | undefined } = { status: undefined, body: undefined }
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     observed,
     writeHead(status: number) {
       observed.status = status
@@ -566,6 +562,7 @@ describe('OpenAI Codex Web OAuth boundary', () => {
       status: 'signed-in',
       usage: { rateLimits: [] },
       quotaError: 'OpenAI Codex usage request failed with HTTP 503',
+      quotaErrorCode: 'unavailable',
     })
     expect(mocked.logout).not.toHaveBeenCalled()
   })
@@ -578,4 +575,15 @@ describe('OpenAI Codex Web OAuth boundary', () => {
     expect(JSON.stringify(result)).not.toContain('opaque-fixture-secret')
     expect(result).toMatchObject({ quotaError: 'OpenAI Codex operation failed. Please try again.' })
   })
+})
+
+it('reports active-account HTTP 429 as rate-limited without revoking credentials', async () => {
+  mocked.status.mockResolvedValue({ authenticated: true })
+  mocked.usage.mockRejectedValue(new OpenAICodexUsageHttpError(429))
+  const auth = new OpenAICodexWebAuth(store)
+  try {
+    await expect(auth.status()).resolves.toMatchObject({ status: 'signed-in', quotaErrorCode: 'rate-limited', usage: { rateLimits: [] } })
+    expect(mocked.logout).not.toHaveBeenCalled()
+    expect(mocked.login).not.toHaveBeenCalled()
+  } finally { await auth.dispose() }
 })

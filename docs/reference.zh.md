@@ -30,7 +30,7 @@ OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认�
 GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 
 - **Fast Mode** 只为当前对话请求优先服务（`service_tier: 'priority'`）。默认关闭，也不会更换模型。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
-- **额度条**在已登录时通常每 60 秒刷新一次，只显示服务端实际返回的 `5h` 和 `7d` 窗口，并显示精确剩余百分比与重置时间。`gpt-5.3-codex-spark` 使用独立的 Spark 额度桶。Codex Connect 不会虚构缺失窗口，也不会根据套餐名称隐藏已返回窗口。
+- **额度条**在已保存账户列表就绪后读取非当前账户；非当前账户集合变化时立即更新，不切换当前账户。重复的状态更新共享现有轮询。响应缺少某个账户时显示读取不可用，仅在已有保留期限内保留之前的数字。在已登录时通常每 60 秒刷新一次，只显示服务端实际返回的 `5h` 和 `7d` 窗口，并显示精确剩余百分比与重置时间。`gpt-5.3-codex-spark` 使用独立的 Spark 额度桶。Codex Connect 不会虚构缺失窗口，也不会根据套餐名称隐藏已返回窗口。
 
 其他插件通过 `codexQuota` 客户端服务渲染额度。该服务保留活动账户原有的 `windows` 与 `credits` 字段，并新增 `accounts` 数组，按“活动账户在前、随后为文档顺序”列出每个已登录账户。每个条目包含由不可逆账户 key 生成的短标签（`acct <后缀>`）、窗口、已披露的赠送额度、刷新时间，以及 `unavailable` 标志。只有活动账户来自账户页面自身的轮询；其他已保存账户由 DSH 主机通过 `GET /plugins/dsh-openai-codex/quota` 读取，在有待观察者订阅时约每 60 秒一次。该路由只返回不可逆账户 key 和与状态路由相同的去密用量投影，绝不返回邮箱、token 或提供方账户 id。读取失败的账户会保留最近一次真实数据五分钟，因此单个账户的失败不会清空其他账户的单元格。
 
@@ -65,14 +65,16 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 - `enableSearch: true` 将 Codex 注册为可用搜索提供方，并用于整个 profile 的搜索。关闭时会注销该提供方，并恢复启用 Codex 搜索之前的路由。
 - 搜索从认证开始到读完响应共用 30 秒总期限。超过 1 MiB 的响应会被拒绝，失败时会取消尚未读完的响应体。调用方也可以提前取消搜索。
 - `enableImageTool: true` 为具备视觉能力的模型注册 `view_image`。远程读取只接受不带凭据的公网 HTTP(S)，并重新检查 DNS 与重定向。
-- `enableImageGeneration: true` 注册只接受提示词的 GPT Image 图片生成。使用你当前 GPT 订阅计划提供的图片生成能力。可用性、尺寸和额度仍由账户及服务端控制。
-- `imageModelHint` 是“插件配置”或 profile config 中的可选设置，按 profile 保存。留空使用 `gpt-image-2`；自定义值接受 1–128 个 ASCII 字母、数字、点、下划线或连字符，且必须以字母或数字开头。保存后会修改后续图片请求的 `model` 字段，仍使用同一固定端点；清空可恢复默认值。工具仍只接受 `prompt`。这是未经验证的路由提示：服务端可能忽略或拒绝，也不保证返回指定模型。
+- `enableImageGeneration: true` 注册显式 GPT Image 图片生成与编辑。编辑必须有当前会话有权使用的目标，不会静默变成生成请求。可用性、尺寸和额度仍由账户及服务端控制。
+- `imageModelHint` 是“插件配置”或 profile config 中的可选设置，按 profile 保存。留空使用 `gpt-image-2`；自定义值接受 1–128 个 ASCII 字母、数字、点、下划线或连字符，且必须以字母或数字开头。保存后会修改后续图片请求的 `model` 字段，仍使用同一固定端点；清空可恢复默认值。生成接受提示词；编辑还必须显式指定来源。这是未经验证的路由提示：服务端可能忽略或拒绝，也不保证返回指定模型。
 
 生成的原文件保存在 `$DSH_HOME/dsh-codex-connect/images/v1`；对话会收到另一份 DSH 附件预览。结果卡片会报告尺寸和文件大小，并可下载任一版本。原文件仅允许所有者访问，下载前会校验完整性，并且只对创建会话及继承了该结果的 fork 开放。关闭能力或卸载插件不会自动删除这些文件。
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/zh/image-generation.png" alt="包含提示词、下载操作与图片详情的 GPT Image 结果" width="780">
 </p>
+
+编辑接受一个目标和最多四张参考图，每张参考图须说明用途。来源必须是当前会话或其 fork 继承前缀中已记录的图片附件、保留的原图结果；不接受任意路径、URL 或其他会话的资源 ID。原图和预览是不同选择，仅有预览时编辑需要明确同意。非 Codex 工具结果会持久记录带版本的句柄；Codex 路由从已记录内容派生相同句柄。图片卡片会排入显式的后续指令，不会隐蔽执行编辑。缺少编辑能力时明确拒绝，不会改为重试生成。
 
 ### 自动审查
 
@@ -101,6 +103,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 | 字段 | 默认值 | 含义 |
 |---|---:|---|
 | `models` | 完整目录 | 可见的 Codex model id；空数组隐藏全部条目 |
+| `enableNewSessionFastMode` | `false` | 仅为新启动的主对话设置优先服务 |
+| `enableNewSubagentFastMode` | `false` | 仅为新启动的子 Agent 对话设置优先服务 |
 | `enableProxy` | `false` | Codex Connect 流量是否使用 `proxyUrl` |
 | `proxyUrl` | `http://127.0.0.1:7890` | 不带凭据的 HTTP(S) proxy origin；启用前不生效 |
 | `contextWindowOverrides` | 无 | 按模型设置客户端上下文预算 |
@@ -122,6 +126,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 
 `maxTokensOverrides` 使用相同的地图结构和相同的逐模型上限。每个值会成为 DSH 为该模型上报的请求默认输出上限，以及该模型解析记录中的 `maxTokens`；它不会改变上下文长度，也不代表账户真的能生成这么多。整字段或单个模型设为 `null` 的语义与上文一致。
 
+两个 Fast Mode 默认选项互相独立，仅作用于新启动的 `startup` 会话。加载、恢复或重复通知会话不会重新应用默认值，也不会覆盖手动关闭的选择。两个选项都不改变账号选择。模型预览区分认证、信任、账号移除、宿主不可用、超时和数据格式错误；保留条目会注明是旧数据。目录不可用不会阻止保存与已接受预算无关的设置。尚未采用的代理候选保留为独立草稿，直到采用或放弃。
+
 ### 模型目录
 
 插件以活动账户身份、经配置的代理读取 `GET https://chatgpt.com/backend-api/codex/models?client_version=<version>`，并缓存六小时。请求发送 `authorization: Bearer <账户 access token>`、`chatgpt-account-id: <账户 ID>`、`originator: deepseek-harness`，以及携带已存储 `etag` 的 `If-None-Match`；HTTP 304 表示保留缓存值。实时响应提供每个模型的 `context_window`、`max_context_window`、`max_output_tokens`、`supported_reasoning_levels` 和 `service_tiers`。
@@ -137,7 +143,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 
 ### 提示缓存
 
-每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用系统提示词与首条用户消息生成稳定键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
+每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用当前有效的系统提示词（包括 pi-ai 0.87.1 中消息记录的系统段落更新）与首条非空用户消息生成稳定键。仍支持旧版提示词字段；只有系统文本的请求也会生成键，而系统文本与用户文本均为空时不发送键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
 
 ## 诊断与恢复
 

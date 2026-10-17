@@ -1,4 +1,5 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { routeContext } from './route-context.ts'
+import { EventEmitter } from 'node:events'
 import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
@@ -176,10 +177,7 @@ describe('manual callback state boundary', () => {
 interface Route { path: string; handler(req: IncomingMessage, res: ServerResponse): void | Promise<void> }
 function routes(trusted = false) {
   const result: Route[] = []
-  const ctx = {
-    webServer: { register: (route: Route) => { result.push(route); return () => undefined } },
-    effect: (factory: () => () => Promise<void>) => { cleanups.push(factory()) },
-  } as unknown as Context
+  const ctx = routeContext(route => { result.push(route); return () => undefined })
   registerOpenAICodexAuthRoutes(ctx, store, { has: async () => trusted } as unknown as OpenAICodexTrustedOriginsStore)
   return {
     callback: result.find(route => route.path === OPENAI_CODEX_AUTH_CALLBACK_PATH)!,
@@ -190,13 +188,14 @@ async function call(route: Route, options: {
   method?: string; headers?: Record<string, string>; body?: string | Uint8Array; streamed?: boolean
 } = {}) {
   const bytes = options.body ?? JSON.stringify({ callbackUrl: callback })
-  const req = Object.assign(options.streamed ? Readable.from([bytes]) : { body: bytes }, {
+  const req = Object.assign(options.streamed ? Readable.from([bytes]) : Object.assign(new EventEmitter(), { body: bytes }), {
     method: options.method ?? 'POST',
     headers: { host: 'localhost:3080', origin: 'http://localhost:3080', 'content-type': 'application/json', ...options.headers },
     socket: { remoteAddress: '127.0.0.1' },
   }) as unknown as IncomingMessage
   const result = { status: 0, headers: {} as Record<string, string>, body: '' }
   const res = {
+    once() { return this }, off() { return this }, destroy() { return this },
     writeHead: (status: number, headers: Record<string, string>) => { result.status = status; result.headers = headers },
     end: (body: string) => { result.body = body },
   } as unknown as ServerResponse
@@ -212,8 +211,8 @@ describe('manual callback HTTP boundary', () => {
   it('returns immediately on acceptance while the client continues polling existing status', async () => {
     const endpoints = routes()
     // Login itself intentionally returns its authorization URL; do not pass through the callback secrecy assertion.
-    const loginReq = { method: 'POST', headers: { host: 'localhost:3080' }, socket: { remoteAddress: '127.0.0.1' } } as unknown as IncomingMessage
-    await endpoints.login.handler(loginReq, { writeHead: () => undefined, end: () => undefined } as unknown as ServerResponse)
+    const loginReq = { once() { return this }, off() { return this }, method: 'POST', headers: { host: 'localhost:3080' }, socket: { remoteAddress: '127.0.0.1' } } as unknown as IncomingMessage
+    await endpoints.login.handler(loginReq, { once() { return this }, off() { return this }, writeHead: () => undefined, end: () => undefined } as unknown as ServerResponse)
     expect((await call(endpoints.callback, { body: JSON.stringify({ callbackUrl: callback.replace('test-state', 'wrong') }) })).status).toBe(400)
     expect((await call(endpoints.callback, { body: '{' })).status).toBe(400)
     const result = await call(endpoints.callback, { streamed: true })

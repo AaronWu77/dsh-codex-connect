@@ -60,6 +60,67 @@ function serve(account: ReturnType<typeof fakeAccount>) {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('shared codexQuota service', () => {
+  it('waits for discovered accounts before reading secondary quota instead of dropping an early response', async () => {
+    vi.useFakeTimers()
+    const account = fakeAccount({ status: {status:'loading'}, busy:false, accounts:[], operation:{kind:'idle'} })
+    const fetchMock = vi.fn(async () => route({ accounts: [{ accountKey:B_KEY, usage:usage(41) }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const service = serve(account), stop = service.subscribe(() => {})
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).not.toHaveBeenCalled()
+      account.publish(signedIn([A,B]))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.snapshot()?.accounts?.find(a=>a.accountKey===B_KEY)?.windows[0]?.remainingPercent).toBe(41)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      account.publish(signedIn([A,B],90))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally { stop() }
+  })
+
+  it('reads newly added secondary accounts immediately rather than waiting for the next minute', async () => {
+    vi.useFakeTimers()
+    const account = fakeAccount(signedIn([A]))
+    const fetchMock = vi.fn(async () => route({accounts:[{accountKey:B_KEY,usage:usage(41)}]}))
+    vi.stubGlobal('fetch',fetchMock)
+    const service = serve(account), stop = service.subscribe(() => {})
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).not.toHaveBeenCalled()
+      account.publish(signedIn([A,B]))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.snapshot()?.accounts?.find(a=>a.accountKey===B_KEY)?.windows[0]?.remainingPercent).toBe(41)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {stop()}
+  })
+
+  it('flags an omitted account instead of treating an empty response as a successful read', async () => {
+    vi.useFakeTimers()
+    const account = fakeAccount(signedIn([A,B]))
+    let payload: unknown = {accounts:[{accountKey:B_KEY,usage:usage(41)}]}
+    vi.stubGlobal('fetch', async()=>route(payload))
+    const service=serve(account), stop=service.subscribe(()=>{})
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      payload={accounts:[]}
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(service.snapshot()?.accounts?.find(a=>a.accountKey===B_KEY)).toMatchObject({unavailable:true,errorCode:'unavailable',windows:[{remainingPercent:41}]})
+    } finally {stop()}
+  })
+
+  it('publishes secondary read failures even before any account returns usable figures', async () => {
+    vi.useFakeTimers()
+    const account=fakeAccount({...signedIn([A,B]),status:{status:'signed-in',usage:{rateLimits:[]}}})
+    vi.stubGlobal('fetch',async()=>route({accounts:[]}))
+    const service=serve(account), stop=service.subscribe(()=>{})
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.snapshot()?.accounts?.find(a=>a.accountKey===B_KEY)).toMatchObject({windows:[],unavailable:true,errorCode:'unavailable'})
+      expect(service.snapshot()).toMatchSnapshot()
+    } finally {stop()}
+  })
+
   it('publishes the active account and every other account the Host read', async () => {
     const account = fakeAccount(signedIn([A, B]))
     vi.stubGlobal('fetch', vi.fn(async () => route({ accounts: [{ accountKey: B_KEY, usage: usage(41) }] })))
@@ -202,7 +263,8 @@ describe('shared codexQuota service', () => {
       }
       const expired = service.snapshot()!.accounts!.find(entry => entry.accountKey === B_KEY)!
       expect(expired.windows).toEqual([])
-      expect(expired.unavailable).toBeUndefined()
+      expect(expired.unavailable).toBe(true)
+      expect(expired.errorCode).toBe('unavailable')
     } finally { unsubscribe() }
   })
 
@@ -285,4 +347,53 @@ describe('shared codexQuota service', () => {
       expect(active.windows).toHaveLength(1)
     } finally { unsubscribe() }
   })
+})
+
+it('keeps held figures attributed to their own account after a manual switch with failed quota', async () => {
+  const account = fakeAccount(signedIn([A, B], 92))
+  vi.stubGlobal('fetch', vi.fn(async () => route({ accounts: [{ accountKey: B_KEY, usage: usage(41) }] })))
+  const service = serve(account)
+  const stop = service.subscribe(() => {})
+  try {
+    await vi.waitFor(() => expect(service.snapshot()?.accounts?.[1]?.windows[0]?.remainingPercent).toBe(41))
+    account.publish({ ...signedIn([{ ...A, active: false }, { ...B, active: true }]), status: { status: 'error', message: 'quota unavailable' } })
+    expect(service.snapshot()?.windows[0]?.remainingPercent).toBe(41)
+    expect(service.snapshot()?.accounts?.find(entry => entry.accountKey === A_KEY)?.windows[0]?.remainingPercent).toBe(92)
+    expect(service.snapshot()?.accounts?.find(entry => entry.accountKey === B_KEY)?.unavailable).toBe(true)
+  } finally { stop() }
+})
+
+it('ignores removed-account figures arriving after the account list changed', async () => {
+  vi.useFakeTimers()
+  const account = fakeAccount(signedIn([A, B]))
+  const pending = Promise.withResolvers<Response>()
+  vi.stubGlobal('fetch', () => pending.promise)
+  const service = serve(account)
+  const stop = service.subscribe(() => {})
+  try {
+    account.publish(signedIn([A]))
+    pending.resolve(route({ accounts: [{ accountKey: B_KEY, usage: usage(41) }] }))
+    await pending.promise
+    await vi.advanceTimersByTimeAsync(0)
+    expect(service.snapshot()?.accounts?.map(entry => entry.accountKey)).toEqual([A_KEY])
+  } finally { stop() }
+})
+
+
+it.each(['reauth-required', 'rate-limited', 'unavailable'] as const)('preserves typed quota failure %s beside held figures', async errorCode => {
+  vi.useFakeTimers()
+  const account = fakeAccount(signedIn([A, B]))
+  let payload: unknown = { accounts: [{ accountKey: B_KEY, usage: usage(41) }] }
+  vi.stubGlobal('fetch', async () => route(payload))
+  const service = serve(account)
+  const stop = service.subscribe(() => {})
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    payload = { accounts: [{ accountKey: B_KEY, unavailable: true, errorCode }] }
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(service.snapshot()?.accounts?.[1]).toMatchObject({ unavailable: true, errorCode, windows: [{ remainingPercent: 41 }] })
+    payload = { accounts: [{ accountKey: B_KEY, usage: usage(42) }] }
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(service.snapshot()?.accounts?.[1]?.errorCode).toBeUndefined()
+  } finally { stop() }
 })

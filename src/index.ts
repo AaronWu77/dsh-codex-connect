@@ -1,3 +1,6 @@
+import { registerImageHandleBridge } from './image-handle-bridge.ts'
+import { registerImageInventoryRoute } from './image-inventory-routes.ts'
+import { registerOpenAICodexFastModeDefaults } from './fast-mode-defaults.ts'
 /**
  * ChatGPT OAuth and Codex models for DeepSeek Harness, with opt-in search and
  * image tooling.
@@ -39,7 +42,9 @@ import { OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME, OpenAICodexTrustedOriginsStore }
 import { registerOpenAICodexModelCatalogRoute, registerOpenAICodexModelCatalogStatusRoutes } from './model-routes.ts'
 import { OPENAI_CODEX_MODEL_CATALOG_CACHE_FILENAME, OpenAICodexModelCatalog } from './model-catalog.ts'
 import type { OpenAICodexContextWindowMode, OpenAICodexModelCatalogStatus } from './model-contract.ts'
+import { openAICodexUnavailableConfiguredModels } from './model-contract.ts'
 import { registerOpenAICodexQuotaRoute } from './quota-routes.ts'
+import { watchBalanceChannel } from './balance-route.ts'
 import { registerOpenAICodexOriginalImageRoute } from './image-asset-routes.ts'
 import {
   compareOpenAICodexVersions,
@@ -321,6 +326,8 @@ export interface Config {
    * writes field names, never payload content, and is off by default.
    */
   debugLogPayloadFields?: boolean
+  enableNewSessionFastMode?: boolean
+  enableNewSubagentFastMode?: boolean
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean
   /** Register the optional image-loading tool. */
@@ -354,6 +361,8 @@ export interface VolatileConfig {
   contextWindowMode: Volatile<OpenAICodexContextWindowMode>
   modelCatalogClientVersion: Volatile<string>
   debugLogPayloadFields: Volatile<boolean>
+  enableNewSessionFastMode: Volatile<boolean>
+  enableNewSubagentFastMode: Volatile<boolean>
   enableSearch: Volatile<boolean>
   enableImageTool: Volatile<boolean>
   enableImageGeneration: Volatile<boolean>
@@ -414,6 +423,8 @@ const configSchema = z.object({
   modelCatalogClientVersion: z.transform(z.string(), parseOpenAICodexModelCatalogClientVersion)
     .default(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION).volatile(),
   debugLogPayloadFields: z.boolean().default(false).volatile(),
+  enableNewSessionFastMode: z.boolean().default(false).volatile(),
+  enableNewSubagentFastMode: z.boolean().default(false).volatile(),
   enableSearch: z.boolean().default(false).volatile(),
   enableImageTool: z.boolean().default(false).volatile(),
   enableImageGeneration: z.boolean().default(false).volatile(),
@@ -441,6 +452,8 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     proxyUrl: configValue(config.proxyUrl), contextWindowOverrides: configValue(config.contextWindowOverrides),
     maxTokensOverrides: configValue(config.maxTokensOverrides), contextWindowMode: configValue(config.contextWindowMode),
     modelCatalogClientVersion: configValue(config.modelCatalogClientVersion),
+    enableNewSessionFastMode: configValue(config.enableNewSessionFastMode),
+    enableNewSubagentFastMode: configValue(config.enableNewSubagentFastMode),
     debugLogPayloadFields: configValue(config.debugLogPayloadFields), enableSearch: configValue(config.enableSearch),
     enableImageTool: configValue(config.enableImageTool), enableImageGeneration: configValue(config.enableImageGeneration),
     imageModelHint: configValue(config.imageModelHint),
@@ -449,6 +462,8 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     searchMode: configValue(config.searchMode), searchContextSize: configValue(config.searchContextSize),
     searchMaxOutputTokens: configValue(config.searchMaxOutputTokens),
   }).filter(([, value]) => value !== undefined)) as OpenAICodexSettingsInput
+  // Only currency totals reach the browser; the Host retains the DeepSeek credential.
+  watchBalanceChannel(ctx)
   const proxyManager = new OpenAICodexProxyManager()
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
@@ -464,18 +479,24 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       if (error !== undefined) ctx.logger.error(error)
     },
   })
-  const catalogLayer = (): OpenAICodexCatalogLayer => ({
-    live: modelCatalog.models(),
+  const catalogLayer = (accountKey?: string): OpenAICodexCatalogLayer => ({
+    live: modelCatalog.modelsFor(accountKey),
     mode: resolveOpenAICodexSettings(current()).contextWindowMode,
   })
-  const effectiveCatalog = () => openAICodexModelCatalogFrom(catalogLayer())
-  const catalogStatus = (): OpenAICodexModelCatalogStatus => {
-    const updatedAt = modelCatalog.updatedAt()
+  const effectiveCatalog = (accountKey?: string) => {
+    const layer = catalogLayer(accountKey)
+    return openAICodexModelCatalogFrom(layer).map(model => {
+      const live = layer.live.find(candidate => candidate.slug === model.id)
+      return live === undefined ? model : { ...model, available: live.withdrawn !== true }
+    })
+  }
+  const catalogStatus = (accountKey?: string): OpenAICodexModelCatalogStatus => {
+    const updatedAt = modelCatalog.updatedAt(accountKey)
     return {
-      source: modelCatalog.source(),
+      source: modelCatalog.source(accountKey),
       clientVersion: resolveOpenAICodexSettings(current()).modelCatalogClientVersion,
-      modelCount: effectiveCatalog().length,
-      unavailableModels: openAICodexUnavailableModels(modelCatalog.models()),
+      modelCount: effectiveCatalog(accountKey).length,
+      unavailableModels: openAICodexUnavailableModels(modelCatalog.modelsFor(accountKey)),
       ...updatedAt === undefined ? {} : { updatedAt },
     }
   }
@@ -486,11 +507,21 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     assertOpenAICodexMaxTokensOverrides(value.maxTokensOverrides ?? undefined, catalog)
   }
   validateSettings(current())
+  // A configured selection can outlive the account's entitlement list. A lapsed
+  // subscription is transient, so report the mismatch instead of failing the boot.
+  for (const model of openAICodexUnavailableConfiguredModels(
+    [...(current().models ?? []), current().searchModel],
+    effectiveCatalog(),
+  )) {
+    ctx.logger.warn(`dsh-codex-connect: configured model "${model}" is not in the current Codex catalog; it may be unavailable for the signed-in account`)
+  }
   const imageAssets = new OpenAICodexImageAssetStore()
+  registerImageHandleBridge(ctx, { enabled: () => resolveOpenAICodexSettings(current()).enableImageGeneration })
   const trustedOrigins = new OpenAICodexTrustedOriginsStore(
     join(dirname(credentials.filename), OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME),
   )
   const fastMode = new FastModeRegistry()
+  registerOpenAICodexFastModeDefaults(ctx, fastMode, () => resolveOpenAICodexSettings(current()))
   assertNoOpenAICodexProviderConflict(ctx.llm.listProviders().map(provider => provider.id))
   new OpenAICodexTransport(ctx, credentials, proxyManager, resolveProviderProxyUrl, () => resolveOpenAICodexSettings(current()).imageModelHint)
   registerOpenAICodexAutoReview(
@@ -519,6 +550,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       () => routeBindings,
       {
         catalogLayer,
+        imageEditingEnabled: () => resolveOpenAICodexSettings(current()).enableImageGeneration,
         resolveOnPayloadFields: () => resolveOpenAICodexSettings(current()).debugLogPayloadFields
           // Payload field names only; never the request or response content.
           ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
@@ -526,16 +558,19 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       },
     ),
   )
-  ctx.inject(['webServer'], webCtx => {
+  ctx.inject(['webServer', 'connection'], webCtx => {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl,
       configValue(config.oauthTimeoutMs) ?? OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS)
     registerOpenAICodexProxyRoutes(webCtx, trustedOrigins, proxyManager)
-    registerOpenAICodexModelCatalogRoute(webCtx, effectiveCatalog, trustedOrigins)
+    const catalogAccountKeys = async () => (await credentials.accounts()).map(account => account.accountKey)
+    registerOpenAICodexModelCatalogRoute(webCtx, effectiveCatalog, trustedOrigins, catalogAccountKeys)
     registerOpenAICodexModelCatalogStatusRoutes(webCtx, {
       status: catalogStatus,
-      refresh: () => modelCatalog.refresh(true),
+      accountKeys: catalogAccountKeys,
+      refresh: signal => modelCatalog.refresh(true, signal),
     }, trustedOrigins)
     registerOpenAICodexOriginalImageRoute(webCtx, trustedOrigins, imageAssets)
+    registerImageInventoryRoute(webCtx, trustedOrigins)
     registerOpenAICodexQuotaRoute(webCtx, {
       store: credentials,
       trustedOrigins,
@@ -572,7 +607,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       return
     }
     const nextRouteIds = next.map(route => route.routeId)
-    if (deepEqualJson(nextRouteIds, registeredRouteIds)) return
+    if (deepEqualJson(nextRouteIds, registeredRouteIds) && deepEqualJson(next, routeBindings)) return
     // The account read is the only suspension point; teardown may have started inside it.
     if (stopped) return
     const previous = routeBindings
@@ -678,7 +713,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     if (stopped || !enabled) return
     const fiber = ctx.inject(
       ['tools', 'attachments'],
-      toolCtx => toolCtx.tools.register(imageGenerateTool(toolCtx, imageAssets)),
+      toolCtx => toolCtx.tools.register(imageGenerateTool(toolCtx, imageAssets, provider => routeBindings.find(route => route.routeId === provider)?.accountKey)),
     )
     imageGenerationFiber = fiber
     void Promise.resolve(fiber).catch((error: unknown) => {
@@ -711,7 +746,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
 
   ctx.effect(() => async () => {
     stopped = true
-    modelCatalog.dispose()
+    await modelCatalog.dispose()
     await Promise.all([searchTail, imageTail, imageGenerationTail, accountRouteTail, catalogTail])
     const search = searchFiber
     const image = imageFiber

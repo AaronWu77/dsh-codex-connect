@@ -90,6 +90,6 @@ describe('per-account LLM route assignment', () => {
 
   it('recognizes only its own route ids', () => {
     expect(['openai-codex', 'openai-codex-2', 'openai-codex-16'].every(isOpenAICodexRouteId)).toBe(true)
-    expect(['openai-codex-', 'openai-codex-x', 'openai-codex-2-extra', 'other-provider', 'openai-codex2'].some(isOpenAICodexRouteId)).toBe(false)
+    expect(['openai-codex-', 'openai-codex-x', 'openai-codex-2-extra', 'other-provider', 'openai-codex2', 'custom-route-2', 'OPENAI-CODEX-2'].some(isOpenAICodexRouteId)).toBe(false)
   })
 })

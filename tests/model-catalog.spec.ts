@@ -18,6 +18,7 @@ import {
   openAICodexModelCatalogFrom,
   openAICodexModelFamily,
   openAICodexUnavailableModels,
+  openAICodexWithdrawnModelMessage,
   isOpenAICodexKnownModelFamily,
   withOpenAICodexAstra,
 } from '../src/adapter.ts'
@@ -43,6 +44,20 @@ async function authenticatedStore(): Promise<OpenAICodexCredentialStore> {
   }
   await store.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential))
   return store
+}
+
+/** Store one more account and make it the current selection. */
+async function storeSecondAccount(store: OpenAICodexCredentialStore, accountId: string): Promise<string> {
+  const credential: OAuthCredential = {
+    type: 'oauth',
+    access: `access-${accountId}`,
+    refresh: `refresh-${accountId}`,
+    expires: Date.now() + 3_600_000,
+    accountId,
+  }
+  await store.modify(OPENAI_CODEX_PROVIDER, () => Promise.resolve(credential))
+  const accounts = await store.accounts()
+  return accounts.find(account => account.active)!.accountKey
 }
 
 /** One server model record with overridable catalog facts. */
@@ -108,10 +123,13 @@ describe('live Codex model catalog', () => {
     expect(headers['if-none-match']).toBeUndefined()
     expect(catalog.source()).toBe('live')
     expect(catalog.models().map(model => model.slug)).toEqual(['gpt-5.6-sol'])
+    const [storedAccount] = await store.accounts()
     const cached = JSON.parse(await readFile(join(root!, 'dsh-codex-connect-models.json'), 'utf8')) as Record<string, unknown>
-    expect(cached['client_version']).toBe(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION)
-    expect(cached['etag']).toBe('W/"v1"')
-    expect(cached['models']).toEqual([expect.objectContaining({ slug: 'gpt-5.6-sol', contextWindow: 272_000, maxContextWindow: 872_000 })])
+    expect(cached['version']).toBe(2)
+    const account = (cached['accounts'] as Record<string, Record<string, unknown>>)[storedAccount!.accountKey]!
+    expect(account['client_version']).toBe(DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION)
+    expect(account['etag']).toBe('W/"v1"')
+    expect(account['models']).toEqual([expect.objectContaining({ slug: 'gpt-5.6-sol', contextWindow: 272_000, maxContextWindow: 872_000 })])
   })
 
   it('sends If-None-Match from the cache and keeps the cached value on 304', async () => {
@@ -166,7 +184,7 @@ describe('live Codex model catalog', () => {
     expect(catalog.models().map(model => model.slug)).toEqual(['gpt-6-sol', 'gpt-6-luna'])
     expect(openAICodexModelCatalogFrom({ live: catalog.models(), mode: 'default' })
       .filter(model => model.id.startsWith('gpt-6-')).map(model => model.id))
-      .toEqual(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'])
+      .toEqual(['gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol'])
   })
   it('reads the official client\'s ISO-8601 fetched_at as the fallback timestamp', async () => {
     // The Codex CLI writes nanosecond digits: ~/.codex/models_cache.json.
@@ -248,6 +266,228 @@ describe('live Codex model catalog', () => {
     await catalog.refresh()
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
+
+  it('reads each stored account separately and caches one layer per account', async () => {
+    const store = await authenticatedStore()
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    const accounts = await store.accounts()
+    const firstKey = accounts.find(account => !account.active)!.accountKey
+    const seen: string[] = []
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const accountId = (init?.headers as Record<string, string>)['chatgpt-account-id']!
+      seen.push(accountId)
+      return accountId === 'account-2'
+        ? catalogResponse([liveModel('gpt-6.1-sol'), liveModel('gpt-6-astra')])
+        : catalogResponse([liveModel('gpt-5.6-luna')])
+    }) as unknown as typeof fetch
+    const catalog = catalogFor(store, fetchImpl)
+
+    await catalog.initialize()
+
+    expect(seen.sort()).toEqual(['account-1', 'account-2'])
+    expect(catalog.modelsFor(secondKey).map(model => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-6-astra'])
+    expect(catalog.modelsFor(firstKey).map(model => model.slug)).toEqual(['gpt-5.6-luna'])
+    const cached = JSON.parse(await readFile(join(root!, 'dsh-codex-connect-models.json'), 'utf8')) as Record<string, unknown>
+    expect(Object.keys(cached['accounts'] as Record<string, unknown>).sort()).toEqual([firstKey, secondKey].sort())
+  })
+
+  it('keeps the other account layer when one account read fails', async () => {
+    const store = await authenticatedStore()
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    const accounts = await store.accounts()
+    const firstKey = accounts.find(account => !account.active)!.accountKey
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const accountId = (init?.headers as Record<string, string>)['chatgpt-account-id']
+      if (accountId === 'account-1') throw new Error('offline')
+      return catalogResponse([liveModel('gpt-6.1-sol')])
+    }) as unknown as typeof fetch
+    const catalog = catalogFor(store, fetchImpl)
+
+    await catalog.initialize()
+
+    expect(catalog.modelsFor(secondKey).map(model => model.slug)).toEqual(['gpt-6.1-sol'])
+    expect(catalog.modelsFor(firstKey)).toEqual([])
+  })
+
+  it('reads a version-1 cache file as the current account layer', async () => {
+    const store = await authenticatedStore()
+    await writeFile(join(root!, 'dsh-codex-connect-models.json'), JSON.stringify({
+      version: 1,
+      fetched_at: clock,
+      client_version: DEFAULT_OPENAI_CODEX_MODEL_CATALOG_CLIENT_VERSION,
+      models: [{
+        slug: 'gpt-6.1-sol',
+        contextWindow: 272_000,
+        maxContextWindow: 872_000,
+        reasoningLevels: [],
+        serviceTiers: [],
+        inputModalities: ['text'],
+      }],
+    }))
+    const fetchImpl = vi.fn(async () => { throw new Error('a fresh cache must not read live') }) as unknown as typeof fetch
+    const catalog = catalogFor(store, fetchImpl)
+
+    await catalog.initialize()
+
+    expect(catalog.source()).toBe('cache')
+    expect(catalog.models().map(model => model.slug)).toEqual(['gpt-6.1-sol'])
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('keeps a model the account no longer advertises, flags it, and clears the flag when it returns', async () => {
+    const store = await authenticatedStore()
+    const catalog = catalogFor(store, vi.fn(async () => catalogResponse([liveModel('gpt-6.1-sol'), liveModel('gpt-6-luna')])) as unknown as typeof fetch)
+    await catalog.initialize()
+    expect(catalog.models().map(model => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-6-luna'])
+
+    clock += OPENAI_CODEX_MODEL_CATALOG_TTL_MS + 1
+    const shrunk = catalogFor(store, vi.fn(async () => catalogResponse([liveModel('gpt-6-luna')])) as unknown as typeof fetch)
+    await shrunk.initialize()
+    expect(shrunk.models()).toEqual([
+      expect.objectContaining({ slug: 'gpt-6-luna' }),
+      expect.objectContaining({ slug: 'gpt-6.1-sol', withdrawn: true }),
+    ])
+
+    clock += OPENAI_CODEX_MODEL_CATALOG_TTL_MS + 1
+    const restored = catalogFor(store, vi.fn(async () => catalogResponse([liveModel('gpt-6-luna'), liveModel('gpt-6.1-sol')])) as unknown as typeof fetch)
+    await restored.initialize()
+    expect(restored.models().find(model => model.slug === 'gpt-6.1-sol')?.withdrawn).toBeUndefined()
+  })
+})
+
+describe('account catalog refresh isolation', () => {
+  it('keeps account provenance and timestamps separate from the active default', async () => {
+    const store = await authenticatedStore()
+    const firstKey = (await store.accounts())[0]!.accountKey
+    const firstStamp = clock
+    const catalog = catalogFor(store, vi.fn<typeof fetch>(async (_url, init) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id')
+      return catalogResponse([liveModel(account === 'account-1' ? 'gpt-6.1-sol' : 'gpt-6-luna')])
+    }))
+    await catalog.initialize()
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    expect(catalog.source(secondKey)).toBe('bundled')
+    expect(catalog.updatedAt(secondKey)).toBeUndefined()
+    expect(catalog.modelsFor(secondKey)).toEqual([])
+    clock += 50
+    await catalog.refresh()
+    expect(catalog.source(firstKey)).toBe('live')
+    expect(catalog.updatedAt(firstKey)).toBe(firstStamp)
+    expect(catalog.source(secondKey)).toBe('live')
+    expect(catalog.updatedAt(secondKey)).toBe(clock)
+    expect(catalog.modelsFor(undefined)).toEqual(catalog.modelsFor(secondKey))
+    expect(catalog.source()).toBe(catalog.source(secondKey))
+    expect(catalog.updatedAt()).toBe(catalog.updatedAt(secondKey))
+    await store.activate(firstKey)
+    await catalog.refresh()
+    expect(catalog.models()).toEqual(catalog.modelsFor(firstKey))
+    expect(catalog.updatedAt()).toBe(firstStamp)
+    expect(catalog.updatedAt(secondKey)).toBe(firstStamp + 50)
+    expect(catalog.source('removed-account')).toBe('bundled')
+    expect(catalog.updatedAt('removed-account')).toBeUndefined()
+    expect(catalog.modelsFor('removed-account')).toEqual([])
+  })
+
+  it('does not borrow provenance or timestamps when another account read fails', async () => {
+    const store = await authenticatedStore()
+    const firstKey = (await store.accounts())[0]!.accountKey
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    const catalog = catalogFor(store, vi.fn<typeof fetch>(async (_url, init) => {
+      if (new Headers(init?.headers).get('chatgpt-account-id') === 'account-2') throw new Error('offline')
+      return catalogResponse([liveModel('gpt-6.1-sol')])
+    }))
+    await catalog.initialize()
+    expect(catalog.source(firstKey)).toBe('live')
+    expect(catalog.updatedAt(firstKey)).toBe(clock)
+    expect(catalog.source(secondKey)).toBe('bundled')
+    expect(catalog.updatedAt(secondKey)).toBeUndefined()
+    expect(catalog.modelsFor(secondKey)).toEqual([])
+    expect(catalog.source()).toBe('bundled')
+    expect(catalog.updatedAt()).toBeUndefined()
+  })
+
+  it('drops an account removed during a live refresh before publishing the cache', async () => {
+    const store = await authenticatedStore()
+    const firstKey = (await store.accounts())[0]!.accountKey
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<Response>()
+    let delayed = false
+    const catalog = catalogFor(store, vi.fn<typeof fetch>(async (_url, init) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id')
+      if (delayed && account === 'account-1') {
+        entered.resolve()
+        return finish.promise
+      }
+      return catalogResponse([liveModel(account === 'account-1' ? 'gpt-6.1-sol' : 'gpt-6-luna')])
+    }))
+    await catalog.initialize()
+    expect(catalog.modelsFor(firstKey)).not.toEqual([])
+    delayed = true
+    const refreshing = catalog.refresh(true)
+    try {
+      await entered.promise
+      await store.removeAccount(firstKey)
+    } finally {
+      finish.resolve(catalogResponse([liveModel('gpt-6.1-sol')]))
+      await refreshing
+    }
+    expect(catalog.modelsFor(firstKey)).toEqual([])
+    expect(catalog.source(firstKey)).toBe('bundled')
+    expect(catalog.updatedAt(firstKey)).toBeUndefined()
+    expect(catalog.modelsFor(secondKey).map(model => model.slug)).toEqual(['gpt-6-luna'])
+    const cached = JSON.parse(await readFile(join(root!, 'dsh-codex-connect-models.json'), 'utf8')) as { accounts: Record<string, unknown> }
+    expect(Object.keys(cached.accounts)).toEqual([secondKey])
+  })
+
+  it('pins in-flight account results even when the active account changes', async () => {
+    const store = await authenticatedStore()
+    const firstKey = (await store.accounts())[0]!.accountKey
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    const firstResponse = Promise.withResolvers<Response>()
+    const entered = Promise.withResolvers<void>()
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      if (new Headers(init?.headers).get('chatgpt-account-id') === 'account-1') {
+        entered.resolve()
+        return firstResponse.promise
+      }
+      return catalogResponse([liveModel('gpt-6-luna')])
+    })
+    const catalog = catalogFor(store, fetchImpl)
+    const initializing = catalog.initialize()
+    try {
+      await entered.promise
+      await store.activate(firstKey)
+    } finally {
+      firstResponse.resolve(catalogResponse([liveModel('gpt-6.1-sol')]))
+      await initializing
+    }
+    expect(catalog.modelsFor(firstKey).map(model => model.slug)).toEqual(['gpt-6.1-sol'])
+    expect(catalog.modelsFor(secondKey).map(model => model.slug)).toEqual(['gpt-6-luna'])
+    await catalog.refresh()
+    expect(catalog.models()).toEqual(catalog.modelsFor(firstKey))
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads a newly added account even while the current account cache is fresh', async () => {
+    const store = await authenticatedStore()
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => catalogResponse([liveModel(new Headers(init?.headers).get('chatgpt-account-id') === 'account-1' ? 'gpt-6.1-sol' : 'gpt-6-luna')]))
+    const catalog = catalogFor(store, fetchImpl)
+    await catalog.initialize()
+    const firstKey = (await store.accounts())[0]!.accountKey
+    const secondKey = await storeSecondAccount(store, 'account-2')
+    await store.activate(firstKey)
+    await catalog.refresh()
+    expect(catalog.modelsFor(secondKey).map(model => model.slug)).toEqual(['gpt-6-luna'])
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+  it('never captures the mutable current account while reading an exact account catalog', async () => {
+    const store = await authenticatedStore()
+    const captureActive = vi.spyOn(store, 'captureActiveAccount')
+    const catalog = catalogFor(store, vi.fn<typeof fetch>(async () => catalogResponse([liveModel('gpt-6.1-sol')])))
+    await catalog.initialize()
+    expect(captureActive).not.toHaveBeenCalled()
+  })
 })
 
 describe('live catalog merge', () => {
@@ -313,8 +553,11 @@ describe('live catalog merge', () => {
     expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6.1-sol')
   })
 
-  it('uses the matching 5.6 variant for server-advertised GPT-6 Sol and Luna', () => {
-    const provider = withOpenAICodexAstra(openaiCodexProvider())
+  it('uses the matching 5.6 variant when the installed catalog predates server-advertised GPT-6 Sol and Luna', () => {
+    const installed = openaiCodexProvider()
+    const provider = withOpenAICodexAstra({
+      ...installed, getModels: () => installed.getModels().filter(model => !model.id.startsWith('gpt-6-')),
+    })
     const live = [
       liveEntry('gpt-6-sol', { display_name: 'GPT-6-Sol' }),
       liveEntry('gpt-6-luna', { display_name: 'GPT-6-Luna' }),
@@ -340,11 +583,13 @@ describe('live catalog merge', () => {
         contextWindow: 872_000, maxContextWindow: 872_000, contextLimitSource: 'codex-catalog',
       })
     }
-    expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6-luna')
+    expect(provider.getModels().map(model => model.id)).not.toContain('gpt-6-luna')
   })
 
   it('uses live GPT-6 Luna ceilings for explicit overrides without mutating pi-ai', () => {
     const provider = withOpenAICodexAstra(openaiCodexProvider())
+    const baseline = provider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow
+    expect(baseline).toBe(272_000)
     const live = [liveEntry('gpt-6-luna')]
     const layer = { live, mode: 'default' as const }
     expect(createOpenAICodexProfile(provider, undefined, undefined, undefined,
@@ -352,7 +597,9 @@ describe('live catalog merge', () => {
       .piProvider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow).toBe(872_000)
     expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
       { 'gpt-6-luna': 872_001 }, undefined, undefined, layer)).toThrow('integer from 1 to 872000')
-    expect(provider.getModels().some(model => model.id === 'gpt-6-luna')).toBe(false)
+    expect(provider.getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow)
+      .toBe(baseline)
+    expect(openaiCodexProvider().getModels().find(model => model.id === 'gpt-6-luna')?.contextWindow).toBe(baseline)
   })
 
   it('lets an explicit per-model override win over the selected mode value', () => {
@@ -373,5 +620,15 @@ describe('live catalog merge', () => {
     const baseline = provider.getModels().find(model => model.id === 'gpt-5.6-sol')!.contextWindow
     applyOpenAICodexLiveCatalog(provider, [liveEntry('gpt-5.6-sol', { context_window: 111_000 })], 'default')
     expect(provider.getModels().find(model => model.id === 'gpt-5.6-sol')?.contextWindow).toBe(baseline)
+  })
+
+  it('lists a withdrawn model while rejecting a request for it before the provider is reached', () => {
+    const layer = { live: [{ ...liveEntry('gpt-6.1-sol'), withdrawn: true as const }], mode: 'default' as const }
+    const route = { routeId: OPENAI_CODEX_PROVIDER, displayName: 'OpenAI Codex (AaronWu)' }
+    const profile = createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined, undefined, undefined, route, layer)
+
+    expect(profile.piProvider.getModels().some(model => model.id === 'gpt-6.1-sol')).toBe(true)
+    expect(profile.modelErrors.get('gpt-6.1-sol'))
+      .toBe(openAICodexWithdrawnModelMessage('OpenAI Codex (AaronWu)', 'gpt-6.1-sol'))
   })
 })

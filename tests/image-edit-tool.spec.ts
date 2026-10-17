@@ -1,0 +1,574 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { deflateSync } from 'node:zlib'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import LocalAttachments from '@deepseek-ai/dsh-attachment-local'
+import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionStore, SessionId } from '@deepseek-ai/dsh-session'
+import type { Session } from '@deepseek-ai/dsh-session'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { imageGenerateTool, IMAGE_GENERATE_TOOL_NAME } from '../src/image-tool.ts'
+import { OpenAICodexImageAssetStore } from '../src/image-assets.ts'
+import { decodeImagePresentationMeta, decodeImageResultContent } from '../src/image-presentation.ts'
+import type { ImageEditSources } from '../src/image-input-contract.ts'
+import type { ImageRequestContext } from '../src/transport.ts'
+
+const PNG = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64'))
+function pixelPng(red: number, green: number, blue: number, width = 1, height = 1): Uint8Array {
+  const chunk = (type: string, data: Uint8Array): Buffer => {
+    const output = Buffer.alloc(data.byteLength + 12)
+    output.writeUInt32BE(data.byteLength); output.write(type, 4, 'ascii'); Buffer.from(data).copy(output, 8)
+    let crc = 0xffffffff
+    for (const byte of output.subarray(4, 8 + data.byteLength)) {
+      crc ^= byte
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0)
+    }
+    output.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 8 + data.byteLength)
+    return output
+  }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2
+  const raster = Buffer.alloc((width * 3 + 1) * height)
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const at = y * (width * 3 + 1) + 1 + x * 3
+    raster[at] = red; raster[at + 1] = green; raster[at + 2] = blue
+  }
+  return Uint8Array.from(Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raster)), chunk('IEND', Buffer.alloc(0))]))
+}
+const contexts: Context[] = []
+const roots: string[] = []
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+  vi.restoreAllMocks()
+})
+
+async function setup(resolveAccountKey?: (provider: string) => string | undefined) {
+  const root = await mkdtemp(join(tmpdir(), 'codex-edit-tool-'))
+  roots.push(root)
+  const ctx = new Context()
+  contexts.push(ctx)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(LocalAttachments, { dshHome: root })
+  const assets = new OpenAICodexImageAssetStore(root)
+  const reply = async () => ({ apiVersion: 1 as const, traceId: 'synthetic', elapsedMs: 1,
+    responseBytes: PNG.byteLength, images: [{ b64Json: Buffer.from(PNG).toString('base64') }] })
+  const generateImages = vi.fn(reply)
+  const editImages = vi.fn(async (_input: unknown, _context: ImageRequestContext) => reply())
+  ctx.provide('openaiCodexTransport', { apiVersion: 1, generateImages, editImages })
+  const toolFiber = ctx.inject(['tools', 'attachments'], scope => scope.tools.register(imageGenerateTool(scope, assets, resolveAccountKey)))
+  await toolFiber
+  const session = ctx.sessions.create(SessionId('owner'))
+  return { ctx, assets, session, editImages, generateImages, toolFiber }
+}
+
+async function upload(ctx: Context, session: Session, name = 'upload.png', data: Uint8Array = PNG) {
+  const ref = await ctx.attachments.saveImage({ data, mediaType: 'image/png', name })
+  session.append('user/message', createUserMessage({ content: [{ type: 'image', attachment: ref }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+  return ref
+}
+let callIndex = 0
+async function execute(ctx: Context, session: Session, args: unknown, signal = new AbortController().signal, provider?: string) {
+  return ctx.tools.execute({ signal, callId: `edit-${++callIndex}` as never, name: IMAGE_GENERATE_TOOL_NAME,
+    arguments: args, agent: { id: session.id, options: { provider }, session } as never })
+}
+function target(ref: ImageAttachmentRef) { return { attachmentId: String(ref.attachmentId) } }
+function persistResult(session: Session, result: Awaited<ReturnType<typeof execute>>) {
+  session.append('tool/result', { turn: 0, step: 0,
+    message: createToolResultMessage({ callId: `persist-${++callIndex}` as never, isError: result.isError, content: result.content }),
+    ...(result.meta === undefined ? {} : { meta: result.meta }),
+  }, { surfaceOp: 'append' })
+}
+function firstAsset(result: Awaited<ReturnType<typeof execute>>) {
+  const decoded = decodeImagePresentationMeta(result.meta)
+  const asset = decoded?.images[0]?.original
+  if (asset === undefined) throw new Error(`expected persisted image: ${JSON.stringify(result)}`)
+  return asset
+}
+
+describe('session-owned image edit tool', () => {
+  it('captures numbered route account before asynchronous input reads', async () => {
+    let selected = 'selected-account'
+    const { ctx, session, editImages } = await setup(route => route === 'openai-codex-2' ? selected : undefined)
+    const ref = await upload(ctx, session)
+    const read = ctx.attachments.readImage.bind(ctx.attachments)
+    vi.spyOn(ctx.attachments, 'readImage').mockImplementation(async (value, signal) => {
+      selected = 'another-account'
+      return read(value, signal)
+    })
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'change the sky', target: target(ref) }, new AbortController().signal, 'openai-codex-2')
+    expect(result.isError).toBe(false)
+    expect(editImages.mock.calls[0]?.[1]).toMatchObject({ accountKey: 'selected-account' })
+  })
+
+  it('rejects an unknown numbered account rather than using the active account', async () => {
+    const { ctx, session, editImages, generateImages } = await setup(() => undefined)
+    const ref = await upload(ctx, session)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'change the sky', target: target(ref) }, new AbortController().signal, 'openai-codex-3')
+    expect(result.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+    expect(generateImages).not.toHaveBeenCalled()
+  })
+
+  it('a reuploaded preview handle must not silently select the old generated original', async () => {
+    const { ctx, session, editImages, generateImages } = await setup()
+    const large = pixelPng(255, 0, 0, 3072, 1536)
+    generateImages.mockResolvedValueOnce({ apiVersion: 1, traceId: 'synthetic', elapsedMs: 1,
+      responseBytes: large.byteLength, images: [{ b64Json: Buffer.from(large).toString('base64') }] })
+    const generated = await execute(ctx, session, { prompt: 'old generated original' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const storedPreview = await ctx.attachments.readImage(preview)
+    const uploaded = await ctx.attachments.saveImage({ data: storedPreview.data, mediaType: storedPreview.ref.mediaType, name: 'current-upload.webp' })
+    session.append('user/message', createUserMessage({ content: [{ type: 'image', attachment: uploaded }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+    expect(uploaded.attachmentId).toBe(preview.attachmentId)
+    expect(storedPreview.data).not.toEqual(large)
+    expect(uploaded.width).toBeLessThan(3072)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'edit the image I just attached', target: target(uploaded) })
+    // A bare handle shared by an upload and an original must request disambiguation,
+    // or resolve to the chosen upload, never silently send the old original bytes.
+    if (!result.isError) {
+      expect(editImages.mock.calls[0]?.[0]).toMatchObject({ images: [{ mediaType: uploaded.mediaType }] })
+      expect(result.meta).toMatchObject({ edit: { target: { attachment: uploaded } } })
+      expect(editImages.mock.calls[0]?.[0]).toMatchObject({ images: [{ data: storedPreview.data }] })
+    } else expect(editImages).not.toHaveBeenCalled()
+  })
+
+  it('PR272 a complete reuploaded reference stays usable after the old original is removed', async () => {
+    const { ctx, assets, session, editImages } = await setup()
+    const generated = await execute(ctx, session, { prompt: 'old generated original' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const storedPreview = await ctx.attachments.readImage(preview)
+    const uploaded = await upload(ctx, session, preview.name!, storedPreview.data)
+    await assets.removeImages([firstAsset(generated)])
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'edit this reattached image', target: { attachment: uploaded } })
+    expect(result.isError, JSON.stringify(result.content)).toBe(false)
+    expect(editImages).toHaveBeenCalledOnce()
+  })
+
+  it('edits an admitted upload, records canonical sources and preserves exact input bytes', async () => {
+    const { ctx, assets, session, editImages, generateImages } = await setup()
+    const ref = await upload(ctx, session)
+    const before = await ctx.attachments.readImage(ref)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'make the background blue', target: { attachment: ref } })
+    expect(result.isError).toBe(false)
+    expect(generateImages).not.toHaveBeenCalled()
+    expect(editImages).toHaveBeenCalledOnce()
+    expect(editImages.mock.calls[0]?.[0]).toMatchObject({ images: [{ data: before.data, mediaType: ref.mediaType }], prompt: expect.stringContaining('make the background blue') })
+    expect(result.meta).toMatchObject({ operation: 'edit', schemaVersion: 2, edit: { target: { attachment: ref }, references: [] } })
+    expect((await ctx.attachments.readImage(ref)).data).toEqual(before.data)
+    expect((await assets.read(session.id, firstAsset(result).assetId))?.data).toEqual(PNG)
+    expect(decodeImageResultContent(result.content, 'make the background blue')).toEqual(decodeImagePresentationMeta(result.meta))
+  })
+
+  it('review: preserves both complete references when identical uploads have different display names', async () => {
+    const { ctx, session, editImages } = await setup()
+    const first = await upload(ctx, session, 'first-upload.png')
+    const second = await upload(ctx, session, 'second-upload.png')
+    expect(first.attachmentId).toBe(second.attachmentId)
+    expect(first.name).not.toBe(second.name)
+    for (const ref of [first, second]) {
+      const result = await execute(ctx, session, { operation: 'edit', prompt: 'keep the selected upload', target: { attachment: ref } })
+      expect(result.isError, JSON.stringify(result.content)).toBe(false)
+      expect(result.meta).toMatchObject({ edit: { target: { attachment: ref } } })
+    }
+    expect(editImages).toHaveBeenCalledTimes(2)
+  })
+
+  it('review: does not promote a complete upload reference to an unrelated generated occurrence', async () => {
+    const { ctx, session } = await setup()
+    const ref = await upload(ctx, session, 'chosen-upload.png')
+    const generated = await execute(ctx, session, { prompt: 'same normalized pixels' })
+    persistResult(session, generated)
+    expect(decodeImagePresentationMeta(generated.meta)!.images[0]!.preview.attachmentId).toBe(ref.attachmentId)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'edit the upload itself', target: { attachment: ref } })
+    expect(result.isError, JSON.stringify(result.content)).toBe(false)
+    expect(result.meta).toMatchObject({ edit: { target: { attachment: ref } } })
+  })
+
+  it('review: refuses an unrecorded occurrence name even when its image bytes are known', async () => {
+    const { ctx, session, editImages, generateImages } = await setup()
+    const ref = await upload(ctx, session, 'known-name.png')
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'must not guess an occurrence',
+      target: { attachment: { ...ref, name: 'not-in-session.png' } } })
+    expect(result.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+    expect(generateImages).not.toHaveBeenCalled()
+  })
+
+  it('keeps ordered reference purposes and sends every input', async () => {
+    const { ctx, session, editImages, generateImages } = await setup()
+    const ref = await upload(ctx, session)
+    const blue = await upload(ctx, session, 'blue.png', pixelPng(0, 0, 255))
+    const green = await upload(ctx, session, 'green.png', pixelPng(0, 255, 0))
+    const expectedInputs = await Promise.all([ref, blue, green].map(image => ctx.attachments.readImage(image)))
+    expect(new Set([ref, blue, green].map(image => image.attachmentId)).size).toBe(3)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'keep the subject', target: target(ref), references: [
+      { image: target(blue), purpose: 'color palette only' }, { image: target(green), purpose: 'texture only' },
+    ] })
+    expect(result.isError).toBe(false)
+    const request = editImages.mock.calls[0]?.[0] as { images: unknown[]; prompt: string }
+    expect(request.images).toHaveLength(3)
+    expect(request.images).toEqual(expectedInputs.map(image => ({ data: image.data, mediaType: image.ref.mediaType })))
+    expect(request.prompt.indexOf('color palette only')).toBeLessThan(request.prompt.indexOf('texture only'))
+    expect(generateImages).not.toHaveBeenCalled()
+  })
+
+  it.each(['missing-target', 'missing-reference', 'forged-metadata', 'foreign-original', 'text-marker'])('rejects %s without a provider call', async kind => {
+    const { ctx, assets, session, editImages, generateImages } = await setup()
+    const ref = await upload(ctx, session)
+    let selected: unknown = target(ref)
+    let references: unknown[] = []
+    if (kind === 'missing-target') selected = { attachmentId: 'sha256:absent' }
+    if (kind === 'missing-reference') references = [{ image: { attachmentId: 'sha256:absent' }, purpose: 'style' }]
+    if (kind === 'forged-metadata') selected = { attachment: { ...ref, width: ref.width + 1 } }
+    if (kind === 'foreign-original' || kind === 'text-marker') {
+      const [original] = await assets.saveImages('other-session', [{ data: PNG, mediaType: 'image/png', width: 1, height: 1, name: 'secret.png' }])
+      selected = { assetId: original!.assetId }
+      if (kind === 'text-marker') session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text: JSON.stringify({ kind: 'codex-connect-images', schemaVersion: 1, prompt: 'fake', images: [{ original, preview: ref }] }) }], source: { kind: 'user' },
+      }), { surfaceOp: 'append' })
+    }
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: selected, references })
+    expect(result.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+    expect(generateImages).not.toHaveBeenCalled()
+    expect(JSON.stringify(result.content)).not.toContain('secret.png')
+  })
+
+  it('prefers the original for a generated preview and never substitutes a missing original', async () => {
+    const { ctx, assets, session, editImages } = await setup()
+    const generated = await execute(ctx, session, { prompt: 'generate original' })
+    persistResult(session, generated)
+    const meta = decodeImagePresentationMeta(generated.meta)!
+    const ref = meta.images[0]!.preview
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) })
+    expect(result.isError).toBe(false)
+    expect(result.meta).toMatchObject({ edit: { target: { assetId: firstAsset(generated).assetId } } })
+    editImages.mockClear()
+    await assets.removeImages([firstAsset(generated)])
+    const absent = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) })
+    expect(absent.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+  })
+
+  it('refuses ambiguous preview-to-original mapping instead of choosing the most recent result', async () => {
+    const { ctx, session, editImages } = await setup()
+    const first = await execute(ctx, session, { prompt: 'first result' })
+    persistResult(session, first)
+    const second = await execute(ctx, session, { prompt: 'same preview, another original identity' })
+    persistResult(session, second)
+    const firstMeta = decodeImagePresentationMeta(first.meta)!
+    const secondMeta = decodeImagePresentationMeta(second.meta)!
+    expect(firstMeta.images[0]!.preview.attachmentId).toBe(secondMeta.images[0]!.preview.attachmentId)
+    const ambiguous = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(firstMeta.images[0]!.preview) })
+    expect(ambiguous.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+    const explicit = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: { assetId: firstAsset(first).assetId } })
+    expect(explicit.isError).toBe(false)
+    expect(explicit.meta).toMatchObject({ edit: { target: { assetId: firstAsset(first).assetId } } })
+  })
+
+  it('requires explicit preview selection for legacy preview-only results', async () => {
+    const { ctx, session, editImages } = await setup()
+    const ref = await upload(ctx, session)
+    session.append('tool/result', { turn: 0, step: 0, message: createToolResultMessage({ callId: 'legacy' as never, isError: false,
+      content: [{ type: 'image', attachment: ref }] }), meta: { kind: 'codex-connect-images', prompt: 'legacy', images: [{ ...ref }] } }, { surfaceOp: 'append' })
+    const request = { operation: 'edit', prompt: 'modify', target: target(ref) }
+    expect((await execute(ctx, session, request)).isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+    const result = await execute(ctx, session, { ...request, target: { ...target(ref), usePreview: true } })
+    expect(result.isError).toBe(false)
+    expect(result.meta).toMatchObject({ edit: { target: { attachment: ref, usePreview: true } } })
+  })
+
+  it('supports A to A1 to A2 and A1 to another result without overwriting earlier originals', async () => {
+    const { ctx, assets, session } = await setup()
+    const base = await execute(ctx, session, { prompt: 'new' })
+    persistResult(session, base)
+    const a = firstAsset(base)
+    const first = await execute(ctx, session, { operation: 'edit', prompt: 'background', target: { assetId: a.assetId } })
+    persistResult(session, first)
+    const a1 = firstAsset(first)
+    const next = await execute(ctx, session, { operation: 'edit', prompt: 'hat', target: { assetId: a1.assetId } })
+    persistResult(session, next)
+    const branch = await execute(ctx, session, { operation: 'edit', prompt: 'scarf instead', target: { assetId: a1.assetId } })
+    const ids = [a, a1, firstAsset(next), firstAsset(branch)].map(image => image.assetId)
+    expect(new Set(ids).size).toBe(4)
+    for (const id of ids) expect((await assets.read(session.id, id))?.data).toEqual(PNG)
+    expect(branch.meta).toMatchObject({ edit: { target: { assetId: a1.assetId } } })
+  })
+
+  it('allows inherited originals after restore but not images created after the fork', async () => {
+    const { ctx, session, editImages } = await setup()
+    const base = await execute(ctx, session, { prompt: 'before fork' })
+    persistResult(session, base)
+    const fork = ctx.sessions.fork(session, undefined, SessionId('child'))
+    const later = await execute(ctx, session, { prompt: 'after fork' })
+    persistResult(session, later)
+    const options = { seed: JSON.parse(JSON.stringify(fork.snapshotEvents())), meta: JSON.parse(JSON.stringify(fork.header)),
+      inheritedEventCount: fork.inheritedEventCount, seedSource: 'persistence' as const }
+    const restored = ctx.sessions.prepare(SessionId('restored-child'), options)
+    const allowed = await execute(ctx, restored, { operation: 'edit', prompt: 'modify', target: { assetId: firstAsset(base).assetId } })
+    expect(allowed.isError).toBe(false)
+    editImages.mockClear()
+    const denied = await execute(ctx, restored, { operation: 'edit', prompt: 'modify', target: { assetId: firstAsset(later).assetId } })
+    expect(denied.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+  })
+
+  it('recovers an editable original from a successful nested tool result', async () => {
+    const { ctx, session } = await setup()
+    const base = await execute(ctx, session, { prompt: 'nested image' })
+    const event = { type: 'tool/ptc-dispatch', seq: 0, time: 1,
+      data: { name: IMAGE_GENERATE_TOOL_NAME, isError: false, arguments: { prompt: 'nested image' }, content: base.content } }
+    const originalSnapshot = session.snapshotEvents.bind(session)
+    vi.spyOn(session, 'snapshotEvents').mockImplementation(() => [...originalSnapshot(), event] as never)
+    const edited = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: { assetId: firstAsset(base).assetId } })
+    expect(edited.isError).toBe(false)
+  })
+
+  it('does not retry generation when an older transport has no editing capability', async () => {
+    const { ctx, session, generateImages } = await setup()
+    const ref = await upload(ctx, session)
+    const service = ctx.get('openaiCodexTransport') as { editImages?: unknown }
+    delete service.editImages
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('does not support editing')
+    expect(generateImages).not.toHaveBeenCalled()
+  })
+
+  it.each(['bytes', 'count', 'pixels', 'dimension', 'missing-policy'])('enforces host %s policy before reading input bytes', async kind => {
+    const { ctx, session, editImages, generateImages } = await setup()
+    const ref = await upload(ctx, session)
+    const limits = { ...ctx.attachments.imageLimits }
+    if (kind === 'bytes') limits.maxImageBytes = ref.bytes - 1
+    if (kind === 'count') limits.maxImagesPerMessage = 1
+    if (kind === 'pixels') limits.maxImagePixels = 0
+    if (kind === 'dimension') limits.maxImageDimension = 0
+    if (kind === 'missing-policy') delete (limits as { maxImageDimension?: number }).maxImageDimension
+    vi.spyOn(ctx.attachments, 'imageLimits', 'get').mockReturnValue(limits)
+    const read = vi.spyOn(ctx.attachments, 'readImage')
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref),
+      ...(kind === 'count' ? { references: [{ image: target(ref), purpose: 'colors' }] } : {}) })
+    expect(result.isError).toBe(true)
+    expect(read).not.toHaveBeenCalled()
+    expect(editImages).not.toHaveBeenCalled()
+    expect(generateImages).not.toHaveBeenCalled()
+  })
+
+  it('rejects bytes that do not match the admitted image', async () => {
+    const { ctx, session, editImages } = await setup()
+    const ref = await upload(ctx, session)
+    vi.spyOn(ctx.attachments, 'readImage').mockResolvedValue({ ref, data: new Uint8Array([1, 2, 3]) })
+    expect((await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) })).isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+  })
+
+  it('honors cancellation during input validation without sending an edit', async () => {
+    const { ctx, session, editImages } = await setup()
+    const ref = await upload(ctx, session)
+    const controller = new AbortController()
+    vi.spyOn(ctx.attachments, 'validateImage').mockImplementation(async () => { controller.abort(); })
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) }, controller.signal)
+    expect(result.isError).toBe(true)
+    expect(editImages).not.toHaveBeenCalled()
+  })
+
+  it('does not send a second edit when result storage fails', async () => {
+    const { ctx, assets, session, editImages } = await setup()
+    const ref = await upload(ctx, session)
+    vi.spyOn(assets, 'saveImages').mockRejectedValue(new Error('private storage details'))
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'modify', target: target(ref) })
+    expect(result.isError).toBe(true)
+    expect(editImages).toHaveBeenCalledOnce()
+    expect(result.meta).toBeUndefined()
+    expect(JSON.stringify(result.content)).not.toContain('private storage details')
+  })
+
+  it('keeps edit sources in nested content with a long valid prompt and rejects a mismatched prompt', async () => {
+    const { ctx, session } = await setup()
+    const ref = await upload(ctx, session)
+    const prompt = 'a'.repeat(20_000)
+    const result = await execute(ctx, session, { operation: 'edit', prompt, target: target(ref) })
+    expect(result.isError).toBe(false)
+    expect(decodeImageResultContent(result.content, prompt)).toEqual(decodeImagePresentationMeta(result.meta))
+    expect(decodeImageResultContent(result.content, 'different instructions')).toBeUndefined()
+  })
+
+  it('keeps text generation independent of existing images', async () => {
+    const { ctx, session, editImages, generateImages } = await setup()
+    await upload(ctx, session)
+    const result = await execute(ctx, session, { prompt: 'unrelated new image' })
+    expect(result.isError).toBe(false)
+    expect(generateImages).toHaveBeenCalledOnce()
+    expect(editImages).not.toHaveBeenCalled()
+    expect(result.meta).not.toHaveProperty('edit')
+  })
+  it('rejects a shared bare upload/result id but keeps both explicit choices stable', async () => {
+    const { ctx, assets, session, editImages, generateImages } = await setup()
+    const large = pixelPng(255, 0, 0, 3072, 1536)
+    generateImages.mockResolvedValueOnce({ apiVersion: 1, traceId: 'synthetic', elapsedMs: 1,
+      responseBytes: large.byteLength, images: [{ b64Json: Buffer.from(large).toString('base64') }] })
+    const generated = await execute(ctx, session, { prompt: 'original' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const previewBytes = (await ctx.attachments.readImage(preview)).data
+    const uploaded = await ctx.attachments.saveImage({ data: previewBytes, mediaType: preview.mediaType, name: preview.name! })
+    session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'image', attachment: uploaded }] }), { surfaceOp: 'append' })
+    const ambiguous = await execute(ctx, session, { operation: 'edit', prompt: 'change it', target: target(uploaded) })
+    expect(ambiguous.isError).toBe(true)
+    expect(JSON.stringify(ambiguous.content)).toContain('identifies both an upload and a generated result')
+    expect(editImages).not.toHaveBeenCalled()
+    const fromOriginal = await execute(ctx, session, { operation: 'edit', prompt: 'change original', target: { assetId: firstAsset(generated).assetId } })
+    expect(fromOriginal.isError).toBe(false)
+    expect(editImages.mock.lastCall?.[0]).toMatchObject({ images: [{ data: large }] })
+    const fromUpload = await execute(ctx, session, { operation: 'edit', prompt: 'change copy', target: { attachment: uploaded } })
+    expect(fromUpload.isError).toBe(false)
+    expect(editImages.mock.lastCall?.[0]).toMatchObject({ images: [{ data: previewBytes }] })
+    persistResult(session, fromUpload)
+    await assets.removeImages([firstAsset(generated)])
+    const deniedOriginal = await execute(ctx, session, { operation: 'edit', prompt: 'original still required', target: { assetId: firstAsset(generated).assetId } })
+    expect(deniedOriginal.isError).toBe(true)
+    expect(editImages).toHaveBeenCalledTimes(2)
+    const canonical = decodeImagePresentationMeta(fromUpload.meta)!.edit!
+    const repeat = await execute(ctx, session, { operation: 'edit', prompt: 'change copy', ...canonical })
+    expect(repeat.isError).toBe(false)
+    expect(editImages.mock.lastCall?.[0]).toMatchObject({ images: [{ data: previewBytes }] })
+    expect(repeat.meta).toMatchObject({ edit: { target: { attachment: uploaded } } })
+  })
+
+  it('does not send any request when a reference has shared upload/result identity', async () => {
+    const { ctx, session, editImages } = await setup()
+    const chosen = await upload(ctx, session, 'subject.png', pixelPng(0, 0, 255))
+    const generated = await execute(ctx, session, { prompt: 'reference' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const bytes = (await ctx.attachments.readImage(preview)).data
+    const reference = await upload(ctx, session, 'color.png', bytes)
+    const result = await execute(ctx, session, { operation: 'edit', prompt: 'blue', target: { attachment: chosen },
+      references: [{ image: target(reference), purpose: 'palette' }] })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('Reference image 1: identifies both')
+    expect(editImages).not.toHaveBeenCalled()
+    const exact = await execute(ctx, session, { operation: 'edit', prompt: 'blue', target: { attachment: chosen },
+      references: [{ image: { attachment: reference }, purpose: 'palette' }] })
+    expect(exact.isError).toBe(false)
+    expect(exact.meta).toMatchObject({ edit: { references: [{ image: { attachment: reference }, purpose: 'palette' }] } })
+  })
+
+  it('retains upload occurrence from serialized inherited events without admitting later uploads', async () => {
+    const { ctx, assets, session, editImages } = await setup()
+    const generated = await execute(ctx, session, { prompt: 'old original' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const bytes = (await ctx.attachments.readImage(preview)).data
+    const uploaded = await upload(ctx, session, preview.name!, bytes)
+    const child = ctx.sessions.fork(session, undefined, SessionId('upload-child'))
+    const later = await upload(ctx, session, 'later.png', pixelPng(0, 0, 255))
+    await assets.removeImages([firstAsset(generated)])
+    const restored = ctx.sessions.prepare(SessionId('restored-upload-child'), {
+      seed: JSON.parse(JSON.stringify(child.snapshotEvents())), meta: JSON.parse(JSON.stringify(child.header)),
+      inheritedEventCount: child.inheritedEventCount,
+    })
+    expect((await execute(ctx, restored, { operation: 'edit', prompt: 'copy', target: { attachment: uploaded } })).isError).toBe(false)
+    expect((await execute(ctx, restored, { operation: 'edit', prompt: 'later', target: { attachment: later } })).isError).toBe(true)
+    expect(editImages).toHaveBeenCalledOnce()
+  })
+
+  it('admits an explicit user inbox image as an upload without treating text references as uploads', async () => {
+    const { ctx, assets, session, editImages } = await setup()
+    const generated = await execute(ctx, session, { prompt: 'old original' })
+    persistResult(session, generated)
+    const preview = decodeImagePresentationMeta(generated.meta)!.images[0]!.preview
+    const uploaded = await ctx.attachments.saveImage({ data: (await ctx.attachments.readImage(preview)).data,
+      mediaType: preview.mediaType, name: preview.name! })
+    const before = session.snapshotEvents.bind(session)
+    const text = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: JSON.stringify({ attachment: uploaded }) }] })
+    const image = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'image', attachment: uploaded }] })
+    const snapshot = vi.spyOn(session, 'snapshotEvents').mockImplementation(() => [...before(),
+      { type: 'agent/inbox/spliced', data: { inserted: [text] } }] as never)
+    await assets.removeImages([firstAsset(generated)])
+    expect((await execute(ctx, session, { operation: 'edit', prompt: 'copy', target: { attachment: uploaded } })).isError).toBe(true)
+    snapshot.mockImplementation(() => [...before(), { type: 'agent/inbox/spliced', data: { inserted: [image] } }] as never)
+    expect((await execute(ctx, session, { operation: 'edit', prompt: 'copy', target: { attachment: uploaded } })).isError).toBe(false)
+    expect(editImages).toHaveBeenCalledOnce()
+  })
+
+})
+
+it.each(['input-read', 'provider-request'] as const)('aborts and joins an edit on tool-fiber disposal during %s', async phase => {
+  const { ctx, session, editImages, generateImages, toolFiber, assets } = await setup()
+  const ref = await upload(ctx, session)
+  const entered = Promise.withResolvers<void>(), cancelled = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  let observed: AbortSignal | undefined
+  const block = async (signal: AbortSignal) => {
+    observed = signal; entered.resolve()
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => { cancelled.resolve(); resolve() }, { once: true }))
+    await release.promise
+    signal.throwIfAborted()
+  }
+  if (phase === 'input-read') {
+    const read = ctx.attachments.readImage.bind(ctx.attachments)
+    vi.spyOn(ctx.attachments, 'readImage').mockImplementation(async (image, signal) => {
+      const stored = await read(image, signal)
+      await block(signal!)
+      return stored
+    })
+  } else {
+    const reply = editImages.getMockImplementation()!
+    editImages.mockImplementation(async (input, context) => { await block(context.signal!); return reply(input, context) })
+  }
+  const save = vi.spyOn(assets, 'saveImages')
+  const caller = new AbortController()
+  const pending = execute(ctx, session, { operation: 'edit', prompt: 'change sky', target: target(ref) }, caller.signal)
+  await entered.promise
+  let disposed = false
+  const disposing = toolFiber.dispose().then(() => { disposed = true })
+  try {
+    await cancelled.promise
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(disposed).toBe(false)
+    expect(observed?.aborted).toBe(true)
+    expect(caller.signal.aborted).toBe(false)
+  } finally { release.resolve(); await disposing }
+  const result = await pending
+  expect(result.isError).toBe(true)
+  expect(JSON.stringify(result.content)).toContain('request may still be processing')
+  expect(save).not.toHaveBeenCalled()
+  expect(generateImages).not.toHaveBeenCalled()
+  if (phase === 'input-read') expect(editImages).not.toHaveBeenCalled()
+})
+
+it('joins an in-flight original save and removes it without committing previews after disposal', async () => {
+  const { ctx, assets, session, toolFiber } = await setup()
+  const ref = await upload(ctx, session)
+  const save = assets.saveImages.bind(assets)
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  let saved: Awaited<ReturnType<typeof save>> = []
+  vi.spyOn(assets, 'saveImages').mockImplementation(async (...args) => {
+    saved = await save(...args); entered.resolve(); await release.promise; return saved
+  })
+  const previews = vi.spyOn(ctx.attachments, 'saveImages')
+  const pending = execute(ctx, session, { operation: 'edit', prompt: 'change sky', target: target(ref) })
+  await entered.promise
+  let disposed = false
+  const disposing = toolFiber.dispose().then(() => { disposed = true })
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(disposed).toBe(false)
+  } finally { release.resolve(); await disposing }
+  expect((await pending).isError).toBe(true)
+  expect(previews).not.toHaveBeenCalled()
+  expect(saved.length).toBeGreaterThan(0)
+  for (const original of saved) expect(await assets.read(session.id, original.assetId)).toBeUndefined()
+})

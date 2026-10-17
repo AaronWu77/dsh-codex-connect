@@ -94,6 +94,8 @@ export function isValidOpenAICodexContextBudget(value: number, maximum: number):
 export interface OpenAICodexModelCatalogEntry {
   id: string
   name: string
+  /** Account-catalog availability; absent when only bundled metadata is known. */
+  available?: boolean
   /** Selected mode's advertised budget, even when a per-model override is active. */
   contextWindow: number
   /** Selected catalog default maximum output tokens, even when an override is active. */
@@ -142,11 +144,13 @@ export function decodeOpenAICodexModelCatalog(value: unknown): OpenAICodexModelC
       || (contextLimitSource !== 'codex-catalog' && contextLimitSource !== 'catalog-default')) return undefined
     const serviceTiers = decodeServiceTiers(record['serviceTiers'])
     const reasoningLevels = decodeReasoningLevels(record['reasoningLevels'])
+    if (record.available !== undefined && typeof record.available !== 'boolean') return undefined
     if (record['serviceTiers'] !== undefined && serviceTiers === undefined) return undefined
     if (record['reasoningLevels'] !== undefined && reasoningLevels === undefined) return undefined
     ids.add(id)
     catalog.push({
       id, name, contextWindow, maxTokens, maxContextWindow, contextLimitSource,
+      ...typeof record.available === 'boolean' ? { available: record.available } : {},
       ...serviceTiers === undefined ? {} : { serviceTiers },
       ...reasoningLevels === undefined ? {} : { reasoningLevels },
     })
@@ -212,4 +216,21 @@ export function decodeOpenAICodexModelCatalogStatus(value: unknown): OpenAICodex
     ...updatedAt === undefined ? {} : { updatedAt },
     unavailableModels: unavailableModels ?? [],
   }
+}
+
+/**
+ * List configured model ids the effective catalog does not advertise. A lapsed
+ * subscription removes models from one account's list, so a configured selection
+ * can outlive it; callers report the mismatch instead of failing a load.
+ * @param configured - model ids named by configuration, in configuration order.
+ * @param catalog - effective catalog entries for the current account.
+ * @returns each distinct configured id that cannot resolve against the catalog.
+ */
+export function openAICodexUnavailableConfiguredModels(
+  configured: readonly (string | undefined)[],
+  catalog: readonly Pick<OpenAICodexModelCatalogEntry, 'id'>[],
+): readonly string[] {
+  const available = new Set(catalog.map(model => model.id))
+  const named = configured.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+  return [...new Set(named)].filter(id => !available.has(id))
 }

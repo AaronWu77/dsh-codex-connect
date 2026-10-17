@@ -10,6 +10,8 @@ Community Alpha — not affiliated with or endorsed by OpenAI, ChatGPT, Codex, D
 
 Codex Connect adds the `openai-codex` model provider to the normal Harness agent loop. Harness continues to manage tools, permissions, approvals, attachments, session persistence, compaction, and recovery. Installing the plugin does not change your default model or search route, and it does not turn a ChatGPT subscription into an OpenAI Platform API key.
 
+This checkout is a local compatibility candidate for DSH `0.2.1-alpha.2`, not a published release pairing. PI `0.87.1` is an exact owned runtime dependency for Codex requests, independent of the Host PI version; the exact `pi-ai-host` alias to PI `1.0.2` supplies only host-compatible event streams. Strict Host typechecking, focused bridge/adapter/transport tests, and Host/Client builds pass; real OAuth and provider requests have not been validated on this candidate. The published installation guide below retains its historical pairing.
+
 ## Quick start
 
 This guide describes the published pairing below. Check `dsh --version` first; for another DSH version, use [Installation and upgrades](INSTALL.md). A moving npm tag such as `alpha` is not a compatibility guarantee.
@@ -53,9 +55,11 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 
 - **Accounts:** save up to 16 accounts on the DSH host and manually select the active account for subsequent requests. Account selection is not a per-session binding. Requests keep their captured account; the plugin does not rotate accounts or silently fail over. Each stored account also appears in the model picker as its own route — `openai-codex` for the current account, `openai-codex-2`, `openai-codex-3`, ... for the others — so another signed-in account's models stay selectable without switching first.
 - **Models and GPT-6:** the plugin supplies `gpt-6-astra` when pi-ai lacks it, with calibrated reasoning choices; saved Off/Minimal selections require an [explicit update](MIGRATION.md#astra-reasoning-selections). `gpt-6-sol` and `gpt-6-luna` join each account route when the live or cached official catalog advertises them. A configured `models` list must include their ids to show them in the picker. Listing a model is not proof of inference access; OpenAI controls entitlements and quotas.
-- **Live model catalog:** model names, context windows, output caps, reasoning levels, and service tiers come from `chatgpt.com` and are cached for six hours. Fallback order: the live read, this plugin's cache under `$DSH_HOME`, the official CLI cache at `~/.codex/models_cache.json` (read only), then the bundled catalog. A failed layer never shrinks or empties the picker. `contextWindowMode` picks the server default or its extended maximum, and `modelCatalogClientVersion` sets the version gate the endpoint requires. See [Model catalog](docs/reference.md#model-catalog).
-- **Fast Mode:** request priority service for one conversation, off by default. Actual speed and quota consumption depend on the service; no fixed speed multiplier is guaranteed.
+- **Live model catalog:** model names, context windows, output caps, reasoning levels, and service tiers come from `chatgpt.com` and are cached for six hours. Fallback order: the live read, this plugin's cache under `$DSH_HOME`, the official CLI cache at `~/.codex/models_cache.json` (read only), then the bundled catalog. A failed layer never shrinks or empties the picker. `contextWindowMode` picks the server default or its extended maximum, and `modelCatalogClientVersion` sets the version gate the endpoint requires. See [Model catalog](docs/reference.md#model-catalog). Each stored account owns its catalog and refresh TTL. A model removed from an accepted catalog keeps its last metadata and is rejected locally before credentials or inference traffic; a later catalog can restore it.
+- **Fast Mode:** request priority service for one conversation, off by default. The control is available for GPT models on the primary and numbered Codex account routes; its state remains conversation-scoped when switching accounts. Actual speed and quota consumption depend on the service; no fixed speed multiplier is guaranteed.
 - **Quota:** show the server-returned `5h` and `7d` windows and reset times, normally refreshed every 60 seconds while signed in. Missing windows are not invented; Spark uses its separate quota bucket. Other plugins read the same figures through the `codexQuota` client service, which reports every signed-in account — the active account from the settings poll, and each other stored account read on the DSH host — so a dashboard can show two accounts side by side.
+- **Quota & usage widget:** Codex Connect owns the sidebar quota card and detail dialog, retaining its compact layout, all-account windows, reset times and cell drill-downs. The account balance is the **DeepSeek platform balance**, including granted and topped-up funds, never Codex credits. Daily tokens use the retained Context own-event ledger, including archived and child-session usage and excluding inherited prefixes; no quota percentage is converted into tokens. Context remains the producer of that usage projection and owns context inspection, not the quota UI. No subscription-expiry or plan-status panel is added.
+- **Management center:** Settings → Plugins → Codex Connect opens Usage overview, Accounts, Models, Network and Capabilities directly, without a second disclosure card. The overview reuses the read-only usage dialog; the sidebar widget keeps its existing behavior. One staged form retains unsaved settings across tabs and applies only Save or Discard. Account authorization, default-account selection, removal and connection probes remain separate immediate operations; account removal requires confirmation. Model preview reads each stored account without activating it or sending inference requests. Global model visibility and token budgets do not select the current conversation model.
 - **Plugin updates:** check for newer Codex Connect releases without installing anything or recommending changes to DSH. Host compatibility is available through explicit local diagnostics.
 
 <p align="center">
@@ -71,12 +75,20 @@ All options below are off on a fresh installation. Edit them in **Settings → P
 | Proxy | `enableProxy` | Credential-free HTTP(S), scoped to this plugin's traffic. A failed proxy request does not silently retry directly. |
 | Codex Search | `enableSearch` | Selects Codex for the entire profile's search route; disabling restores the previously active route. |
 | Image viewing | `enableImageTool` | Adds `view_image` to vision-capable models for local files and validated public HTTP(S) images. |
-| GPT Image generation | `enableImageGeneration` | Prompt-only generation; availability, dimensions, and quota remain account- and service-controlled. |
+| GPT Image generation and editing | `enableImageGeneration` | Explicit generation or session-owned image editing; no silent fallback between operations. |
 | Auto-review | `enableAutoReview` | Sends bounded approval context, tool arguments, working directory, and the planned action to `chatgpt.com`, with confirmation on first enablement. Failures return to human approval. |
 
 Use the image generation capability included with your current GPT subscription. Generated originals are stored separately from attachment previews; disabling the capability or uninstalling the plugin does not delete them. See [Configuration and recovery](docs/reference.md#search-and-image-tools) for storage and access rules.
 
 Auto-review operates after Harness policy requires approval; it does not bypass that policy. See [Auto-review behavior](docs/auto-review.md) before enabling it.
+
+## Model Experience
+
+Image editing adds bounded, versioned selection handles derived from logged image metadata. Original image blocks remain in order; handles also survive non-Codex tool results and session replay. Explicit edits send one target and up to four reference images, increasing request input size; the plugin does not infer a KV-cache saving.
+
+## Known Limitations and Deferred Work
+
+Live OAuth, model entitlements and the image-edit endpoint require real-account acceptance after deployment. There is no automatic account switching or request replay.
 
 ## FAQ and important limits
 
@@ -123,6 +135,8 @@ pnpm run check:dsh-install
 ```
 
 `check` covers static checks, unit tests, build, compatibility, and packaging. `lint:metadata` checks package and release rules; `lint:source` checks host and browser TypeScript for unhandled or misused promises, invalid awaits, duplicate cases, and unreachable code. Browser regression and isolated DSH installation are separate commands. These checks use no real OAuth authorization and do not replace real-account acceptance.
+
+The browser suite loads the SDK's native client UI modules; their Harness-provided libraries are listed here as development dependencies. Before running it, install the Chromium build expected by the lockfile's Playwright with `pnpm exec playwright install chromium --only-shell`.
 
 ## License and acknowledgements
 

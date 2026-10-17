@@ -5,22 +5,28 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { defineTool, TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolExecutionResult, ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type { OpenAICodexTransportV1 } from './transport.ts'
+import type { OpenAICodexTransportV1, ImageRequestContext } from './transport.ts'
+import { isOpenAICodexRouteId } from './account-route-id.ts'
+import { OPENAI_CODEX_PROVIDER } from './store.ts'
 import { decodeStrictBase64, estimateBase64Bytes } from './base64.ts'
 import { detectEncodedImage } from './image-format.ts'
 import type { CodexImageMediaType, DetectedImage } from './image-format.ts'
 import type { OpenAICodexOriginalImageRef } from './image-assets-contract.ts'
 import type { OpenAICodexImageAssetStore } from './image-assets.ts'
-import { IMAGE_PRESENTATION_KIND, IMAGE_PRESENTATION_SCHEMA_VERSION } from './image-presentation.ts'
+import { IMAGE_PRESENTATION_KIND, IMAGE_PRESENTATION_SCHEMA_VERSION, IMAGE_RESULT_PREFIX, IMAGE_EDIT_RESULT_PREFIX } from './image-presentation.ts'
+import { decodeImageToolRequest, IMAGE_INPUT_SCHEMA, IMAGE_REFERENCES_SCHEMA, IMAGE_EDIT_SOURCES_SCHEMA } from './image-input-contract.ts'
+import type { ImageEditSources } from './image-input-contract.ts'
+import { ImageInputError, promptForImageEdit, resolveImageEditInputs } from './image-inputs.ts'
+import { imageTransportErrorMessage } from './image-error-contract.ts'
 
 /** Stable model-callable tool name. */
 export const IMAGE_GENERATE_TOOL_NAME = 'codex_connect_image_generate'
 const TRANSPORT_SERVICE = 'openaiCodexTransport'
-const PROMPT_MAX_LENGTH = 32_000
 const MAX_IMAGES_PER_RESPONSE = 4
 const CANCELED_REQUEST_NOTE = 'The request may still be processing.'
 
 interface ImageValue {
+  edit?: ImageEditSources
   images: Array<{
     original: OpenAICodexOriginalImageRef
     preview: {
@@ -47,30 +53,28 @@ function fixedTransportMessage(error: unknown): string {
   const code = typeof error === 'object' && error !== null && 'code' in error
     ? (error as { code?: unknown }).code
     : undefined
-  switch (code) {
-    case 'OPENAI_CODEX_SIGNED_OUT': return 'Sign in to OpenAI Codex before generating images.'
-    case 'OPENAI_CODEX_REAUTH_REQUIRED': return 'Renew OpenAI Codex authorization before generating images.'
-    case 'OPENAI_CODEX_RATE_LIMITED': return 'Image generation is temporarily unavailable. Try again later.'
-    case 'OPENAI_CODEX_TIMEOUT': return `Image generation timed out. ${CANCELED_REQUEST_NOTE}`
-    case 'OPENAI_CODEX_CANCELED': return `Image generation was canceled. ${CANCELED_REQUEST_NOTE}`
-    case 'OPENAI_CODEX_NETWORK_ERROR': return `The image generation request lost its network connection. ${CANCELED_REQUEST_NOTE}`
-    case 'OPENAI_CODEX_UPSTREAM_REJECTED': return 'The image generation request was rejected.'
-    case 'OPENAI_CODEX_UPSTREAM_UNAVAILABLE': return 'Image generation is temporarily unavailable.'
-    case 'OPENAI_CODEX_RESPONSE_TOO_LARGE': return 'The image generation response exceeded the safe size limit.'
-    case 'OPENAI_CODEX_MALFORMED_RESPONSE': return 'The image generation response was unreadable.'
-    default: return 'Image generation failed without exposing private response details.'
-  }
+  return imageTransportErrorMessage(code)
 }
 
 function extension(mediaType: CodexImageMediaType): string {
   return mediaType === 'image/jpeg' ? 'jpg' : mediaType.slice('image/'.length)
 }
 
-function outputContent(value: ImageValue): ToolContentBlock[] {
+function presentation(prompt: string, value: ImageValue) {
+  return {
+    kind: IMAGE_PRESENTATION_KIND,
+    schemaVersion: value.edit === undefined ? IMAGE_PRESENTATION_SCHEMA_VERSION : 2,
+    prompt,
+    images: value.images,
+    ...(value.edit === undefined ? {} : { operation: 'edit' as const, edit: value.edit }),
+  }
+}
+
+function outputContent(value: ImageValue, prompt: string): ToolContentBlock[] {
   const lines = value.images.map(({ original, preview }, index) =>
     `${String(index + 1)}. original ${original.mediaType}, ${String(original.width)}x${String(original.height)} px, ${String(original.bytes)} bytes; preview ${String(preview.width)}x${String(preview.height)} px, attachment ${preview.attachmentId}`)
   return [
-    { type: 'text', text: `Generated ${String(value.images.length)} image${value.images.length === 1 ? '' : 's'}:\n${lines.join('\n')}` },
+    { type: 'text', text: `${value.edit === undefined ? 'Generated' : 'Edited'} ${String(value.images.length)} image${value.images.length === 1 ? '' : 's'}:\n${lines.join('\n')}` },
     ...value.images.map(({ preview }) => ({
       type: 'image' as const,
       attachment: {
@@ -82,6 +86,9 @@ function outputContent(value: ImageValue): ToolContentBlock[] {
         name: preview.name,
       },
     })),
+    { type: 'text', text: value.edit === undefined
+      ? IMAGE_RESULT_PREFIX + JSON.stringify(value.images)
+      : IMAGE_EDIT_RESULT_PREFIX + JSON.stringify(presentation(prompt, value)) },
   ]
 }
 
@@ -118,14 +125,27 @@ async function generate(
   assets: OpenAICodexImageAssetStore,
   prompt: string,
   exec: ToolRunContext,
+  context: ImageRequestContext,
+  edit?: ImageEditSources,
 ): Promise<ImageValue> {
   let response: Awaited<ReturnType<OpenAICodexTransportV1['generateImages']>>
+  let resolvedEdit: ImageEditSources | undefined
   try {
-    response = await transport.generateImages({ prompt }, { signal: exec.signal })
+    if (edit === undefined) response = await transport.generateImages({ prompt }, context)
+    else {
+      if (transport.editImages === undefined) failure('This Codex Connect transport does not support editing. No generation was attempted.')
+      const instructions = promptForImageEdit(prompt, edit)
+      const resolved = await resolveImageEditInputs(ctx, assets, edit, exec)
+      resolvedEdit = resolved.edit
+      exec.signal.throwIfAborted()
+      response = await transport.editImages({ prompt: instructions, images: resolved.images }, context)
+    }
   } catch (error) {
+    if (error instanceof ImageInputError || error instanceof SafeToolError) failure(error.message)
     failure(fixedTransportMessage(error))
   }
 
+  exec.signal.throwIfAborted()
   const limits = ctx.attachments.imageLimits
   if (response.images.length < 1
     || response.images.length > MAX_IMAGES_PER_RESPONSE
@@ -167,6 +187,7 @@ async function generate(
   const sessionId = exec.agent?.id
   if (sessionId === undefined) failure('Image generation requires a session-owned tool call.')
   let originals: readonly OpenAICodexOriginalImageRef[]
+  exec.signal.throwIfAborted()
   try {
     originals = await assets.saveImages(String(sessionId), inputs.map((input, index) => {
       const parsed = parsedImages[index]
@@ -185,10 +206,15 @@ async function generate(
 
   let refs: readonly ImageAttachmentRef[]
   try {
+    exec.signal.throwIfAborted()
     refs = await ctx.attachments.saveImages(inputs)
   } catch {
     await assets.removeImages(originals)
     failure('The generated images could not be saved; no attachment references were returned.')
+  }
+  if (exec.signal.aborted) {
+    await assets.removeImages(originals)
+    exec.signal.throwIfAborted()
   }
   if (refs.length !== inputs.length || originals.length !== inputs.length) {
     await assets.removeImages(originals)
@@ -197,6 +223,7 @@ async function generate(
 
   try {
     return {
+      ...(resolvedEdit === undefined ? {} : { edit: resolvedEdit }),
       images: refs.map((ref, index) => {
         const original = originals[index]
         const name = inputs[index]?.name
@@ -219,19 +246,32 @@ function appendAbortNote(result: Readonly<ToolExecutionResult>): ToolContentBloc
 }
 
 /** Build one fiber-owned image tool, including in-flight call deduplication. */
-export function imageGenerateTool(ctx: Context, assets: OpenAICodexImageAssetStore): ToolDefinition {
+export function imageGenerateTool(
+  ctx: Context,
+  assets: OpenAICodexImageAssetStore,
+  resolveAccountKey?: (provider: string) => string | undefined,
+): ToolDefinition {
   const inFlight = new Map<string, Promise<ImageValue>>()
+  const lifetime = new AbortController()
+  ctx.effect(() => async () => {
+    lifetime.abort()
+    await Promise.allSettled(inFlight.values())
+  }, 'dsh-codex-connect: image tool requests')
   return defineTool({
     name: IMAGE_GENERATE_TOOL_NAME,
-    description: 'Generate an image from a text prompt, preserve the exact original, and save a DSH conversation preview. Supports one prompt only; output size and style are service defaults.',
+    description: 'Generate a new image, or edit an explicitly selected session image. For edits use operation=edit and target; optional ordered references have separate purposes. When image editing is enabled, Codex Connect places a model-visible handle line immediately after each request image, numbered in that message and containing its stable attachmentId. When the user edits an uploaded copy (including first/second attached image), copy the complete attachment reference from the adjacent handle line. An attachmentId shared by an upload and a generated result is ambiguous; ask rather than selecting an older original. For older generated originals use exact assetId handles from the conversation. Never guess or use global recent images; never swap target and reference. Ask when the target is ambiguous. An unavailable edit target must not become text-only generation. Results preserve originals and can be edited again; output size and style are service-controlled.',
     parameters: {
-      prompt: { type: 'string', required: true, description: 'A complete description of the image to generate.' },
+      prompt: { type: 'string', required: true, description: 'The requested new image or changes to the selected target.' },
+      operation: { type: 'string', enum: ['generate', 'edit'], description: 'Use edit whenever modifying a selected image. Omission is legacy text generation only.' },
+      target: IMAGE_INPUT_SCHEMA,
+      references: IMAGE_REFERENCES_SCHEMA,
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          edit: IMAGE_EDIT_SOURCES_SCHEMA,
           images: {
             type: 'array',
             required: true,
@@ -271,29 +311,41 @@ export function imageGenerateTool(ctx: Context, assets: OpenAICodexImageAssetSto
           },
         },
       },
-      render: (_args, value) => outputContent(value),
+      render: (args, value) => outputContent(value as ImageValue, args.prompt.trim()),
       presentationMeta: (args, value) => ({
         kind: IMAGE_PRESENTATION_KIND,
-        schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION,
-        prompt: args.prompt.trim(),
-        images: value.images,
+        schemaVersion: value.edit === undefined ? IMAGE_PRESENTATION_SCHEMA_VERSION : 2,
+        prompt: args.prompt.trim(), images: value.images,
+        ...(value.edit === undefined ? {} : { operation: 'edit', edit: value.edit }),
       }),
     },
     // Generation is deliberately exclusive: one prompt maps to one request batch.
     isConcurrencySafe: () => false,
     finalizeContent: (_exec, result) => appendAbortNote(result),
     async execute(args, exec) {
-      if (Object.keys(args).length !== 1 || !Object.hasOwn(args, 'prompt')) failure('Image generation accepts only the prompt field.')
-      const prompt = args.prompt.trim()
-      if (prompt.length === 0 || prompt.length > PROMPT_MAX_LENGTH) failure('Image prompt must contain 1 to 32000 characters.')
+      exec = { ...exec, signal: AbortSignal.any([exec.signal, lifetime.signal]) }
+      if (exec.signal.aborted) failure(imageTransportErrorMessage('OPENAI_CODEX_CANCELED'))
+      const request = decodeImageToolRequest(args)
+      if (request === undefined) failure('Invalid image request. Editing requires operation=edit, one explicit target and valid references; no generation was attempted.')
+      const prompt = request.prompt
       const transport = ctx.reflect.get(TRANSPORT_SERVICE) as OpenAICodexTransportV1 | undefined
       if (transport?.apiVersion !== 1) failure('The Codex Connect image transport is unavailable.')
 
+      const provider = exec.agent?.session.requestHeader?.()?.config.provider ?? exec.agent?.options.provider
+      const accountKey = provider === undefined ? undefined : resolveAccountKey?.(provider)
+      if (provider !== undefined && provider !== OPENAI_CODEX_PROVIDER && isOpenAICodexRouteId(provider) && accountKey === undefined) {
+        failure('The selected Codex image account is unavailable. No request was sent.')
+      }
+      const context: ImageRequestContext = { signal: exec.signal, ...(accountKey === undefined ? {} : { accountKey }) }
       const key = executionKey(exec)
       const current = inFlight.get(key)
       if (current !== undefined) return current
-      const pending = generate(ctx, transport, assets, prompt, exec)
-        .catch(error => { if (error instanceof SafeToolError) throw error; failure(fixedTransportMessage(error)) })
+      const pending = generate(ctx, transport, assets, prompt, exec, context, request.operation === 'edit' ? request.edit : undefined)
+        .catch(error => {
+          if (exec.signal.aborted) failure(imageTransportErrorMessage('OPENAI_CODEX_CANCELED'))
+          if (error instanceof SafeToolError) throw error
+          failure(fixedTransportMessage(error))
+        })
         .finally(() => { inFlight.delete(key) })
       inFlight.set(key, pending)
       return pending

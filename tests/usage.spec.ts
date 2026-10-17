@@ -401,6 +401,7 @@ describe('OpenAI Codex usage', () => {
       status: 'signed-in',
       usage: { rateLimits: [] },
       quotaError: 'OpenAI Codex usage request failed with HTTP 503',
+      quotaErrorCode: 'unavailable',
     })
     expect(status).not.toHaveProperty('expiresAt')
   })

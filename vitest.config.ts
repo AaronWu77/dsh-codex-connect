@@ -13,5 +13,6 @@ export default defineConfig({
     include: ['tests/**/*.spec.{ts,tsx}'],
     exclude: ['tests/browser/**'],
     testTimeout: 30_000,
+    server: { deps: { inline: [/@deepseek-ai[\/]dsh-client-ui-primitives/] } },
   },
 })

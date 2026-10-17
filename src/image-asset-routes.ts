@@ -1,29 +1,16 @@
+import { harnessHttpRejection } from './http-auth.ts'
 /** Same-origin download route for exact GPT Image output bytes. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { Session } from '@deepseek-ai/dsh-session'
 import type { OpenAICodexTrustedOriginsStore } from './trusted-origins.ts'
 import { trustedRequestDecision } from './auth-routes.ts'
 import { OPENAI_CODEX_IMAGE_ASSET_ID_PATTERN, OPENAI_CODEX_ORIGINAL_IMAGE_PATH } from './image-assets-contract.ts'
 import type { OpenAICodexImageAssetStore } from './image-assets.ts'
-import type { OpenAICodexOriginalImageRef } from './image-assets-contract.ts'
-import { decodeImagePresentationMeta } from './image-presentation.ts'
+import { inheritedImageOriginal } from './image-history.ts'
 
-/** Fork access follows copied result events, not every asset owned by an ancestor. */
-function inheritedOriginal(session: Session | undefined, assetId: string): OpenAICodexOriginalImageRef | undefined {
-  if (session?.header.parentSession === undefined) return undefined
-  for (const event of session.snapshotEvents()) {
-    if (event.seq >= session.inheritedEventCount) break
-    if (event.type !== 'tool/result') continue
-    const meta = decodeImagePresentationMeta(event.data.meta)
-    const original = meta?.images.find(image => image.original?.assetId === assetId)?.original
-    if (original !== undefined) return original
-  }
-  return undefined
-}
 
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, {
@@ -62,12 +49,14 @@ export function registerOpenAICodexOriginalImageRoute(
     path: OPENAI_CODEX_ORIGINAL_IMAGE_PATH,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      const rejection = harnessHttpRejection(ctx, req)
+      if (rejection !== undefined) { json(res, rejection.status, { error: rejection.error }); return }
       const decision = await trustedRequestDecision(req, trustedOrigins)
       if (!decision.trusted) return json(res, 403, { error: decision.error })
       const requested = query(req)
       if (requested === undefined) return json(res, 400, { error: 'invalid input' })
       const session = ctx.get('sessions')?.get(SessionId(requested.sessionId))
-      const stored = await assets.read(requested.sessionId, requested.assetId, inheritedOriginal(session, requested.assetId))
+      const stored = await assets.read(requested.sessionId, requested.assetId, inheritedImageOriginal(session, requested.assetId))
       if (stored === undefined) return json(res, 404, { error: 'original image not found' })
       res.writeHead(200, {
         'content-type': stored.ref.mediaType,

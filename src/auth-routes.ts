@@ -1,3 +1,4 @@
+import { harnessHttpRejection, HttpRouteScope } from './http-auth.ts'
 /** Same-origin Web settings routes for OpenAI Codex OAuth. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -9,10 +10,12 @@ import { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './au
 import type { CapturedOpenAICodexAccount, OpenAICodexCredentialStore } from './store.ts'
 import {
   isOpenAICodexReauthRequiredError,
+  OpenAICodexUsageHttpError,
   OPENAI_CODEX_REAUTH_REQUIRED_MESSAGE,
   readOpenAICodexRateLimits,
 } from './usage.ts'
 import type { OpenAICodexUsage } from './usage.ts'
+import type { OpenAICodexQuotaErrorCode } from './quota-contract.ts'
 import {
   OPENAI_CODEX_AUTH_LOGIN_PATH,
   OPENAI_CODEX_AUTH_CALLBACK_PATH,
@@ -54,7 +57,7 @@ export type OpenAICodexWebAuthStatus =
   | { status: 'signed-out' }
   | { status: 'signing-in' }
   | { status: 'reauth-required'; message: typeof OPENAI_CODEX_REAUTH_REQUIRED_MESSAGE }
-  | { status: 'signed-in'; usage: OpenAICodexUsage; quotaError?: string }
+  | { status: 'signed-in'; usage: OpenAICodexUsage; quotaError?: string; quotaErrorCode?: OpenAICodexQuotaErrorCode }
   | { status: 'error'; message: string }
 
 interface LoginChallenge {
@@ -123,6 +126,7 @@ export class OpenAICodexWebAuth {
   private authorizationTimer: ReturnType<typeof setTimeout> | undefined
   private transition: Promise<void> | undefined
   private disposed = false
+  private readonly lifetime = new AbortController()
   private pendingManualPrompt: PendingManualPrompt | undefined
   private manualPromptClosed = false
   private readonly challengeTimeoutMs: number
@@ -147,10 +151,10 @@ export class OpenAICodexWebAuth {
   }
 
   /** Read current public state, consulting durable storage while idle. */
-  async status(snapshot?: CapturedOpenAICodexAccount): Promise<OpenAICodexWebAuthStatus> {
+  async status(snapshot?: CapturedOpenAICodexAccount, signal?: AbortSignal): Promise<OpenAICodexWebAuthStatus> {
     if (this.operation !== undefined && this.state.status === 'signing-in') return this.state
     if (this.state.status === 'error') return this.state
-    return this.readStoredStatus(snapshot)
+    return this.readStoredStatus(snapshot, signal)
   }
 
   /** Start or join the current browser-login operation. */
@@ -219,11 +223,13 @@ export class OpenAICodexWebAuth {
   /** Stop the owned callback listener during plugin disposal. */
   async dispose(): Promise<void> {
     this.disposed = true
+    this.lifetime.abort()
     await this.finishLogin('dispose')
   }
 
   private async finishLogin(action: 'cancel' | 'logout' | 'dispose'): Promise<void> {
     while (this.transition !== undefined) await this.transition
+    if (this.disposed && action !== 'dispose') throw new Error('OpenAI Codex plugin disposed')
     const operation = this.operation
     this.cancelSignIn(new Error(action === 'dispose' ? 'OpenAI Codex plugin disposed' : 'OpenAI Codex sign-in cancelled'))
     const transition = (async () => {
@@ -340,12 +346,12 @@ export class OpenAICodexWebAuth {
     for (const waiter of this.challengeWaiters.splice(0)) waiter.resolve(challenge)
   }
 
-  private async readStoredStatus(snapshot?: CapturedOpenAICodexAccount): Promise<OpenAICodexWebAuthStatus> {
+  private async readStoredStatus(snapshot?: CapturedOpenAICodexAccount, signal?: AbortSignal): Promise<OpenAICodexWebAuthStatus> {
     const credentials = snapshot ?? await this.store.captureActiveAccount()
     const stored = await openAICodexAuthStatus(credentials)
     if (!stored.authenticated) return { status: 'signed-out' }
     try {
-      const readUsage = () => readOpenAICodexRateLimits(credentials)
+      const readUsage = () => readOpenAICodexRateLimits(credentials, signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal]))
       return {
         status: 'signed-in',
         usage: await (this.proxyManager?.run(this.resolveProxyUrl(), readUsage) ?? readUsage()),
@@ -354,7 +360,8 @@ export class OpenAICodexWebAuth {
       if (isOpenAICodexReauthRequiredError(error)) {
         return { status: 'reauth-required', message: OPENAI_CODEX_REAUTH_REQUIRED_MESSAGE }
       }
-      return { status: 'signed-in', usage: { rateLimits: [] }, quotaError: safeMessage(error) }
+      return { status: 'signed-in', usage: { rateLimits: [] }, quotaError: safeMessage(error),
+        quotaErrorCode: error instanceof OpenAICodexUsageHttpError && error.status === 429 ? 'rate-limited' : 'unavailable' }
     }
   }
 
@@ -476,6 +483,7 @@ export async function trustedRequest(
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
+  if (res.destroyed) return
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -502,7 +510,20 @@ function contentLength(req: IncomingMessage): number | undefined {
 }
 
 /** Collect one small JSON body without exposing or logging its contents. */
-async function readFastModeBody(req: IncomingMessage): Promise<unknown> {
+async function readFastModeBody(req: IncomingMessage, signal: AbortSignal): Promise<unknown> {
+  signal.throwIfAborted()
+  const abort = (): void => { req.destroy() }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    const value = await collectFastModeBody(req)
+    signal.throwIfAborted()
+    return value
+  } finally {
+    signal.removeEventListener('abort', abort)
+  }
+}
+
+async function collectFastModeBody(req: IncomingMessage): Promise<unknown> {
   const declared = contentLength(req)
   if (declared !== undefined && (!Number.isFinite(declared) || declared > OPENAI_CODEX_FAST_MODE_BODY_LIMIT)) {
     throw new RangeError('Fast Mode request body is too large')
@@ -608,160 +629,161 @@ export function registerOpenAICodexAuthRoutes(
   resolveProxyUrl?: () => string | undefined,
   authorizationTimeoutMs?: number,
 ): void {
-  const auth = new OpenAICodexWebAuth(store, { proxyManager, resolveProxyUrl, authorizationTimeoutMs })
   const storedFilename = (store as OpenAICodexCredentialStore & { filename?: unknown }).filename
   const fastMode = fastModeOverride ?? new FastModeRegistry()
   const trustedOrigins = trustedOriginsOverride ?? (typeof storedFilename === 'string'
     ? new OpenAICodexTrustedOriginsStore(join(dirname(storedFilename), OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME))
     : new OpenAICodexTrustedOriginsStore())
-  ctx.effect(() => {
+  ctx.effect(function* () {
+    const auth = new OpenAICodexWebAuth(store, { proxyManager, resolveProxyUrl, authorizationTimeoutMs })
+    const scope = new HttpRouteScope(ctx)
+    yield async () => { scope.abort(); await auth.dispose(); await scope.dispose() }
     const authorize = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+      const rejection = harnessHttpRejection(ctx, req)
+      if (rejection !== undefined) {
+        json(res, rejection.status, { error: rejection.error })
+        return false
+      }
       const decision = await trustedRequestDecision(req, trustedOrigins)
       if (decision.trusted) return true
       json(res, 403, { error: decision.error })
       return false
     }
-    const routes = [
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_STATUS_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          const snapshot = await store.captureActiveAccount()
-          const [status, accounts] = await Promise.all([auth.status(snapshot), snapshot.accounts()])
-          json(res, 200, { ...status, accounts })
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_LOGIN_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          try {
-            json(res, 200, await auth.signIn())
-          } catch (error: unknown) {
-            json(res, 500, { error: safeMessage(error) })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_STATUS_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        const snapshot = await store.captureActiveAccount()
+        const [status, accounts] = await Promise.all([auth.status(snapshot, signal), snapshot.accounts()])
+        json(res, 200, { ...status, accounts })
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_LOGIN_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        try {
+          json(res, 200, await auth.signIn())
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_CALLBACK_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        const type = header(req, 'content-type')
+        if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
+          return json(res, 415, { error: 'unsupported content type' })
+        }
+        try {
+          const raw = await readFastModeBody(req, signal)
+          if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return json(res, 400, { error: 'invalid input' })
+          const body = raw as Record<string, unknown>
+          if (Object.keys(body).length !== 1 || typeof body['callbackUrl'] !== 'string') {
+            return json(res, 400, { error: 'invalid input' })
           }
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_CALLBACK_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          const type = header(req, 'content-type')
-          if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
-            return json(res, 415, { error: 'unsupported content type' })
-          }
-          try {
-            const raw = await readFastModeBody(req)
-            if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return json(res, 400, { error: 'invalid input' })
-            const body = raw as Record<string, unknown>
-            if (Object.keys(body).length !== 1 || typeof body['callbackUrl'] !== 'string') {
-              return json(res, 400, { error: 'invalid input' })
-            }
-            const status = auth.submitCallback(body['callbackUrl'])
-            return json(res, status, status === 200 ? { ok: true } : {
-              error: status === 409 ? 'manual callback unavailable' : 'invalid callback URL',
-            })
-          } catch (error: unknown) {
-            return json(res, error instanceof RangeError ? 413 : 400, {
-              error: error instanceof RangeError ? 'request body too large' : 'invalid input',
-            })
-          }
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_CANCEL_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          try {
-            await auth.cancel()
-            json(res, 200, await auth.status())
-          } catch (error: unknown) {
-            json(res, 500, { error: safeMessage(error) })
-          }
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_LOGOUT_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          try {
-            await auth.signOut()
-            json(res, 200, { ok: true })
-          } catch (error: unknown) {
-            json(res, 500, { error: safeMessage(error) })
-          }
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_AUTH_ACCOUNTS_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'DELETE') {
-            return json(res, 405, { error: 'method not allowed' })
-          }
-          if (!await authorize(req, res)) return
-          if (req.method === 'GET') return json(res, 200, { accounts: await store.accounts() })
-          const type = header(req, 'content-type')
-          if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
-            return json(res, 415, { error: 'unsupported content type' })
-          }
-          try {
-            const raw = await readFastModeBody(req)
-            if (req.method === 'POST') {
-              const body = activateAccountBody(raw)
-              if (body === undefined) return json(res, 400, { error: 'invalid input' })
-              return json(res, 200, await auth.activateAccount(body.accountKey))
-            }
-            const body = removeAccountBody(raw)
+          const status = auth.submitCallback(body['callbackUrl'])
+          return json(res, status, status === 200 ? { ok: true } : {
+            error: status === 409 ? 'manual callback unavailable' : 'invalid callback URL',
+          })
+        } catch (error: unknown) {
+          return json(res, error instanceof RangeError ? 413 : 400, {
+            error: error instanceof RangeError ? 'request body too large' : 'invalid input',
+          })
+        }
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_CANCEL_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        try {
+          await auth.cancel()
+          json(res, 200, await auth.status(undefined, signal))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_LOGOUT_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        try {
+          await auth.signOut()
+          json(res, 200, { ok: true })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_AUTH_ACCOUNTS_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'DELETE') {
+          return json(res, 405, { error: 'method not allowed' })
+        }
+        if (!await authorize(req, res) || signal.aborted) return
+        if (req.method === 'GET') return json(res, 200, { accounts: await store.accounts() })
+        const type = header(req, 'content-type')
+        if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
+          return json(res, 415, { error: 'unsupported content type' })
+        }
+        try {
+          const raw = await readFastModeBody(req, signal)
+          if (req.method === 'POST') {
+            const body = activateAccountBody(raw)
             if (body === undefined) return json(res, 400, { error: 'invalid input' })
-            return json(res, 200, await auth.removeAccount(body.accountKey, body.replacementAccountKey))
-          } catch (error: unknown) {
-            if (error instanceof RangeError) return json(res, 413, { error: 'request body too large' })
-            if (error instanceof TypeError) return json(res, 400, { error: 'invalid input' })
-            const mapped = accountMutationError(error)
-            return json(res, mapped.status, { error: mapped.error })
+            return json(res, 200, await auth.activateAccount(body.accountKey))
           }
-        },
-      }),
-      ctx.webServer.register({
-        kind: 'exact',
-        path: OPENAI_CODEX_FAST_MODE_PATH,
-        handler: async (req, res) => {
-          if (req.method !== 'GET' && req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-          if (!await authorize(req, res)) return
-          if (req.method === 'GET') {
-            const sessionId = fastModeSessionIdFromQuery(req)
-            if (sessionId === undefined) return json(res, 400, { error: 'invalid input' })
-            return json(res, 200, { enabled: fastMode.isEnabled(sessionId) })
-          }
-          const type = header(req, 'content-type')
-          if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
-            return json(res, 415, { error: 'unsupported content type' })
-          }
-          try {
-            const body = fastModeBody(await readFastModeBody(req))
-            if (body === undefined) return json(res, 400, { error: 'invalid input' })
-            fastMode.set(body.sessionId, body.enabled)
-            return json(res, 200, { enabled: fastMode.isEnabled(body.sessionId) })
-          } catch (error: unknown) {
-            return json(res, error instanceof RangeError ? 413 : 400, { error: error instanceof RangeError ? 'request body too large' : 'invalid input' })
-          }
-        },
-      }),
-    ]
-    return async () => {
-      for (const dispose of routes) dispose()
-      await auth.dispose()
-    }
+          const body = removeAccountBody(raw)
+          if (body === undefined) return json(res, 400, { error: 'invalid input' })
+          return json(res, 200, await auth.removeAccount(body.accountKey, body.replacementAccountKey))
+        } catch (error: unknown) {
+          if (error instanceof RangeError) return json(res, 413, { error: 'request body too large' })
+          if (error instanceof TypeError) return json(res, 400, { error: 'invalid input' })
+          const mapped = accountMutationError(error)
+          return json(res, mapped.status, { error: mapped.error })
+        }
+      },
+    })
+    yield scope.register({
+      kind: 'exact',
+      path: OPENAI_CODEX_FAST_MODE_PATH,
+      handler: async (req, res, signal) => {
+        if (req.method !== 'GET' && req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!await authorize(req, res) || signal.aborted) return
+        if (req.method === 'GET') {
+          const sessionId = fastModeSessionIdFromQuery(req)
+          if (sessionId === undefined) return json(res, 400, { error: 'invalid input' })
+          return json(res, 200, { enabled: fastMode.isEnabled(sessionId) })
+        }
+        const type = header(req, 'content-type')
+        if (type === undefined || !/^application\/json(?:\s*;|$)/iu.test(type.trim())) {
+          return json(res, 415, { error: 'unsupported content type' })
+        }
+        try {
+          const body = fastModeBody(await readFastModeBody(req, signal))
+          if (body === undefined) return json(res, 400, { error: 'invalid input' })
+          fastMode.set(body.sessionId, body.enabled)
+          return json(res, 200, { enabled: fastMode.isEnabled(body.sessionId) })
+        } catch (error: unknown) {
+          return json(res, error instanceof RangeError ? 413 : 400, { error: error instanceof RangeError ? 'request body too large' : 'invalid input' })
+        }
+      },
+    })
   }, 'dsh-codex-connect: Web OAuth routes')
 }

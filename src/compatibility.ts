@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url'
 
 export const COMPATIBILITY_SCHEMA_VERSION = 1 as const
 export const SUPPORTED_NODE_RANGE = '^22.19.0 || >=24.0.0'
-export const SUPPORTED_DSH_PLUGIN_API_VERSION = '0.1.2-rc.1'
-export const SUPPORTED_DSH_PLUGIN_API_VERSIONS = [SUPPORTED_DSH_PLUGIN_API_VERSION, '0.1.5-alpha.1', '0.1.5-rc.1', '0.1.5-rc.2', '0.1.7-rc.1', '0.1.7-rc.2'] as const
+export const SUPPORTED_DSH_PLUGIN_API_VERSION = '0.2.1-alpha.2'
+export const SUPPORTED_DSH_PLUGIN_API_VERSIONS = [SUPPORTED_DSH_PLUGIN_API_VERSION] as const
 export const SUPPORTED_DSH_PLUGIN_API_RANGE = SUPPORTED_DSH_PLUGIN_API_VERSIONS.join(' || ')
-export const SUPPORTED_PI_AI_RANGE = '^0.84.2 || 0.85.1'
+export const SUPPORTED_PI_AI_RANGE = '0.87.1'
 export const PI_AI_PACKAGE = '@earendil-works/pi-ai'
 
 export const DSH_PLUGIN_API_PACKAGES = [
@@ -16,7 +16,6 @@ export const DSH_PLUGIN_API_PACKAGES = [
   '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-home-paths',
   '@deepseek-ai/dsh-host-webserver',
-  '@deepseek-ai/dsh-invariants',
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-llm-pi-ai',
   '@deepseek-ai/dsh-fs',
@@ -101,7 +100,7 @@ function piAiVersionStatus(value: string): CompatibilityStatus {
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
-  return major === 0 && ((minor === 84 && patch >= 2) || (minor === 85 && patch === 1)) ? 'compatible' : 'unverified'
+  return major === 0 && ((minor === 84 && patch >= 2) || ((minor === 85 || minor === 87) && patch === 1)) ? 'compatible' : 'unverified'
 }
 
 function parseNodeVersion(value: string): [number, number, number] | undefined {
@@ -166,7 +165,7 @@ export function evaluateCompatibility(input: CompatibilityEvaluationInput = {}):
   const dshVersion = packages['@deepseek-ai/dsh-llm'].installed
   const piVersion = packages[PI_AI_PACKAGE].installed
   const matchedPair = dshVersion === packages['@deepseek-ai/dsh-llm-pi-ai'].installed
-    && (dshVersion === SUPPORTED_DSH_PLUGIN_API_VERSION ? piVersion?.startsWith('0.84.') === true : piVersion === '0.85.1')
+    && piVersion === '0.87.1'
   return {
     schemaVersion: COMPATIBILITY_SCHEMA_VERSION,
     status: status === 'compatible' && !matchedPair ? 'unverified' : status,

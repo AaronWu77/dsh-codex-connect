@@ -2,8 +2,9 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { routeContext } from './route-context.ts'
+import { Socket } from 'node:net'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { expect, it, vi } from 'vitest'
 import { OpenAICodexAccountStore } from '../src/client/account-store.ts'
 import { registerOpenAICodexAuthRoutes } from '../src/auth-routes.ts'
@@ -18,10 +19,8 @@ it.each(['switch', 'login-commit'])('keeps cancel quota and labels together afte
   try {
     for (const id of ['b', 'a']) await store.modify(OPENAI_CODEX_PROVIDER, async () => makeCredential(id))
     const routes: Array<{ path: string; handler(req: IncomingMessage, res: ServerResponse): void | Promise<void> }> = []
-    const context = {
-      webServer: { register: (route: typeof routes[number]) => { routes.push(route); return () => {} } },
-      effect: (factory: () => (() => void | Promise<void>)) => { disposers.push(factory()) },
-    } as unknown as Context
+    const context = routeContext(route => {routes.push(route);return () => {routes.splice(routes.indexOf(route),1)}})
+    disposers.push(() => context.fiber.dispose())
     registerOpenAICodexAuthRoutes(context, store)
     vi.stubGlobal('fetch', async (path: string, init?: RequestInit) => {
       const route = routes.find(candidate => candidate.path === String(path))
@@ -31,8 +30,12 @@ it.each(['switch', 'login-commit'])('keeps cancel quota and labels together afte
       }
       let code = 200
       let body = ''
-      const response = { writeHead: (status: number) => { code = status; return response }, end: (value: string) => { body = value } } as unknown as ServerResponse
-      await route.handler({ method: init?.method ?? 'GET', headers: { host: '127.0.0.1:3081' }, socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage, response)
+      const socket = new Socket(); Object.defineProperty(socket,'remoteAddress',{value:'127.0.0.1'})
+      const request = new IncomingMessage(socket); request.method=init?.method??'GET'; request.headers={host:'127.0.0.1:3081'}
+      const response = new ServerResponse(request)
+      vi.spyOn(response,'writeHead').mockImplementation(status=>{code=status;return response})
+      vi.spyOn(response,'end').mockImplementation(value=>{body=String(value);return response})
+      await route.handler(request, response)
       return new Response(body, { status: code })
     })
     const [first, second] = views as [OpenAICodexAccountStore, OpenAICodexAccountStore]

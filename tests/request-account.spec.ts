@@ -2,7 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { IncomingMessage, type ServerResponse } from 'node:http'
+import { Socket } from 'node:net'
 import { expect, it, vi } from 'vitest'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from '../src/store.ts'
 import { readOpenAICodexRateLimits } from '../src/usage.ts'
@@ -75,7 +76,7 @@ it.each(['usage', 'search', 'images'])('keeps %s on expired account A when B is 
 it('returns account labels from the same snapshot as quota during a concurrent switch', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-status-snapshot-'))
   const store = new OpenAICodexCredentialStore(join(root, 'auth.json'))
-  const disposers: Array<() => void | Promise<void>> = []
+  const ctx = new Context()
   try {
     for (const id of ['b', 'a']) await store.modify(OPENAI_CODEX_PROVIDER, async () => ({
       type: 'oauth', accountId: id, access: access(id), refresh: 'fixture-refresh', expires: Date.now() + 3_600_000,
@@ -92,16 +93,16 @@ it('returns account labels from the same snapshot as quota during a concurrent s
       return Response.json({ rate_limit: { primary_window: { used_percent: 17, limit_window_seconds: 18_000 } } })
     })
     const routes: Array<{ path: string; handler(req: IncomingMessage, res: ServerResponse): void | Promise<void> }> = []
-    const ctx = {
-      webServer: { register: (route: typeof routes[number]) => { routes.push(route); return () => {} } },
-      effect: (factory: () => (() => void | Promise<void>)) => { disposers.push(factory()) },
-    } as unknown as Context
+    ctx.provide('webServer', { register: (route: typeof routes[number]) => { routes.push(route); return () => {} } })
+    ctx.provide('connection', { requestRejection: () => undefined })
     registerOpenAICodexAuthRoutes(ctx, store)
     let body = ''
-    const res = { writeHead: () => res, end: (value: string) => { body = value } } as unknown as ServerResponse
-    await routes.find(route => route.path === OPENAI_CODEX_AUTH_STATUS_PATH)!.handler({
-      method: 'GET', headers: { host: '127.0.0.1:3081' }, socket: { remoteAddress: '127.0.0.1' },
-    } as IncomingMessage, res)
+    const res = { once() { return this }, off() { return this }, destroy() { return this }, writeHead: () => res, end: (value: string) => { body = value } } as unknown as ServerResponse
+    const socket = new Socket()
+    Object.defineProperty(socket, 'remoteAddress', { value: '127.0.0.1' })
+    const req = new IncomingMessage(socket)
+    req.method = 'GET'; req.headers = { host: '127.0.0.1:3081' }
+    await routes.find(route => route.path === OPENAI_CODEX_AUTH_STATUS_PATH)!.handler(req, res)
     const value = JSON.parse(body) as { accounts: unknown; usage: unknown }
     expect(value.accounts).toEqual(originalAccounts)
     expect(JSON.stringify(value.usage)).toContain('83')
@@ -109,7 +110,7 @@ it('returns account labels from the same snapshot as quota during a concurrent s
   } finally {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
-    for (const dispose of disposers) await dispose()
+    await ctx.fiber.dispose()
     await rm(root, { recursive: true, force: true })
   }
 })

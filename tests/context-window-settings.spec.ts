@@ -113,3 +113,13 @@ describe('context windows through the real Host settings and LLM registry', () =
     expect((await runtime.llm.listModels(provider)).map(entry => entry.id)).toEqual([other])
   })
 })
+
+it('preserves accepted budgets on unrelated Host edits and rejects new unverified budgets', async () => {
+  const runtime = await boot({ contextWindowOverrides: { [model]: 300_000 }, maxTokensOverrides: { [model]: 10_000 } })
+  await runtime.settings.update(ns, { enableNewSessionFastMode: false })
+  expect(runtime.settings.describe().find(entry => entry.ns === ns)?.value).toMatchObject({
+    contextWindowOverrides: { [model]: 300_000 }, maxTokensOverrides: { [model]: 10_000 }, enableNewSessionFastMode: false,
+  })
+  await expect(runtime.settings.update(ns, { contextWindowOverrides: { 'unverified-live-model': 200_000 } })).rejects.toThrow('unknown model id')
+  expect(runtime.settings.describe().find(entry => entry.ns === ns)?.value).toMatchObject({ contextWindowOverrides: { [model]: 300_000 } })
+})

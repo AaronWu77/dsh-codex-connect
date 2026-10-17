@@ -5,6 +5,9 @@ import type { OpenAICodexUsage } from './usage.ts'
 /** Same-origin endpoint exposing every non-active stored account's rolling windows. */
 export const OPENAI_CODEX_QUOTA_PATH = '/plugins/dsh-openai-codex/quota'
 
+/** A failed read does not imply that quota is exhausted. */
+export type OpenAICodexQuotaErrorCode = 'reauth-required' | 'rate-limited' | 'unavailable'
+
 /** One stored account's quota result from one Host read. */
 export interface OpenAICodexQuotaAccount {
   /** Stable browser-safe account key. */
@@ -13,6 +16,8 @@ export interface OpenAICodexQuotaAccount {
   readonly usage?: OpenAICodexUsage
   /** True when this read could not produce figures; the client keeps its last ones. */
   readonly unavailable?: true
+  /** Classified failure of this read; held usage can still be present in the client. */
+  readonly errorCode?: OpenAICodexQuotaErrorCode
 }
 
 /** Per-account quota response returned by the Host route. */

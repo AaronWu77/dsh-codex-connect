@@ -25,6 +25,7 @@ import {
   openAICodexAccountLabel,
 } from '../account-contract.ts'
 import { OPENAI_CODEX_QUOTA_PATH } from '../quota-contract.ts'
+import type { OpenAICodexQuotaErrorCode } from '../quota-contract.ts'
 import { requestJson } from './request-json.ts'
 
 /** How long the last reported quota survives refreshes that report nothing. */
@@ -78,6 +79,8 @@ export interface CodexQuotaAccount {
   readonly fetchedAt?: number
   /** True when this round could not read the account; its last real figures stand. */
   readonly unavailable?: boolean
+  /** Current read failure; rate-limited does not mean quota exhaustion. */
+  readonly errorCode?: OpenAICodexQuotaErrorCode
 }
 
 /** The quota snapshot the service exposes. */
@@ -112,6 +115,7 @@ interface HostQuotaAccount {
   readonly accountKey: string
   readonly usage?: OpenAICodexUsage
   readonly unavailable?: true
+  readonly errorCode?: OpenAICodexQuotaErrorCode
 }
 
 /** The signed-in usage, or null for every other account state. */
@@ -162,12 +166,16 @@ function decodeQuotaPayload(value: unknown): readonly HostQuotaAccount[] | undef
   const entries = (value as Record<string, unknown>)['accounts']
   if (!Array.isArray(entries) || entries.length > OPENAI_CODEX_ACCOUNT_LIMIT) return undefined
   const decoded: HostQuotaAccount[] = []
+  const seen = new Set<string>()
   for (const entry of entries) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
     const record = entry as Record<string, unknown>
     const accountKey = record['accountKey']
-    if (typeof accountKey !== 'string' || !OPENAI_CODEX_ACCOUNT_KEY_PATTERN.test(accountKey)) return undefined
+    if (typeof accountKey !== 'string' || !OPENAI_CODEX_ACCOUNT_KEY_PATTERN.test(accountKey) || seen.has(accountKey)) return undefined
+    seen.add(accountKey)
     const unavailable = record['unavailable'] === true
+    const errorCode = record['errorCode']
+    if (errorCode !== undefined && (!unavailable || (errorCode !== 'reauth-required' && errorCode !== 'rate-limited' && errorCode !== 'unavailable'))) return undefined
     let usage: OpenAICodexUsage | undefined
     if (record['usage'] !== undefined) {
       try {
@@ -182,6 +190,7 @@ function decodeQuotaPayload(value: unknown): readonly HostQuotaAccount[] | undef
       accountKey,
       ...(usage === undefined ? {} : { usage }),
       ...(unavailable ? { unavailable: true as const } : {}),
+      ...(errorCode === undefined ? {} : { errorCode }),
     })
   }
   return decoded
@@ -194,6 +203,7 @@ function sameWindows(left: readonly CodexQuotaWindow[], right: readonly CodexQuo
     const a = left[index]!
     const b = right[index]!
     if (a.bucketId !== b.bucketId
+      || a.bucketName !== b.bucketName
       || a.remainingPercent !== b.remainingPercent
       || a.windowSeconds !== b.windowSeconds
       || a.resetAt !== b.resetAt) return false
@@ -233,8 +243,10 @@ function sameResetCredits(left: OpenAICodexResetCredits | undefined, right: Open
 function sameAccount(left: CodexQuotaAccount, right: CodexQuotaAccount): boolean {
   return left.accountKey === right.accountKey
     && left.label === right.label
+    && left.maskedEmail === right.maskedEmail
     && left.active === right.active
     && (left.unavailable ?? false) === (right.unavailable ?? false)
+    && left.errorCode === right.errorCode
     && sameWindows(left.windows, right.windows)
     && sameCredits(left.credits, right.credits)
     && sameResetCredits(left.resetCredits, right.resetCredits)
@@ -265,13 +277,16 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
   let current: CodexQuota | null = null
   let activeFigures: CodexQuotaFigures | null = null
   let activeAt = 0
+  let activeAccountKey: string | undefined
   let activeUnavailable = false
+  let activeErrorCode: OpenAICodexQuotaErrorCode | undefined
   const otherFigures = new Map<string, { figures: CodexQuotaFigures; at: number }>()
-  const unavailableAccounts = new Set<string>()
+  const unavailableAccounts = new Map<string, OpenAICodexQuotaErrorCode>()
   let unsubscribeAccount: (() => void) | undefined
   let staleTimer: ReturnType<typeof setTimeout> | undefined
   let pollTimer: ReturnType<typeof setTimeout> | undefined
   let pollController: AbortController | undefined
+  let secondaryIdentity = ''
 
   const notify = (): void => { for (const listener of listeners) listener() }
 
@@ -282,8 +297,8 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
 
   /** Rebuild the published snapshot from the account list and every held figure. */
   const buildSnapshot = (): CodexQuota | null => {
-    // No figure anywhere keeps the original "nothing to show yet" signal.
-    if (activeFigures === null && otherFigures.size === 0) return null
+    // Preserve read failures even when no account has returned usable figures yet.
+    if (activeFigures === null && otherFigures.size === 0 && !activeUnavailable && unavailableAccounts.size === 0) return null
     const summaries = account.getSnapshot().accounts
     const activeSummary = summaries.find(summary => summary.active)
     const ordered = activeSummary === undefined
@@ -295,6 +310,7 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
       const figures = isActive ? activeFigures : held?.figures
       const at = isActive ? activeAt : held?.at
       const unavailable = isActive ? activeUnavailable : unavailableAccounts.has(summary.accountKey)
+      const errorCode = isActive ? activeErrorCode : unavailableAccounts.get(summary.accountKey)
       return {
         accountKey: summary.accountKey,
         label: summary.displayName,
@@ -305,6 +321,7 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
         ...(figures?.resetCredits === undefined ? {} : { resetCredits: figures.resetCredits }),
         ...(at === undefined || at === 0 ? {} : { fetchedAt: at }),
         ...(unavailable ? { unavailable: true } : {}),
+        ...(errorCode === undefined ? {} : { errorCode }),
       }
     })
     let newest = activeAt
@@ -334,6 +351,7 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
       activeFigures = null
       activeAt = 0
       activeUnavailable = false
+      activeErrorCode = undefined
       changed = true
     }
     for (const [key, entry] of [...otherFigures]) {
@@ -364,29 +382,51 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
   const prune = (): void => {
     const present = new Set(account.getSnapshot().accounts.map(summary => summary.accountKey))
     for (const key of [...otherFigures.keys()]) if (!present.has(key)) otherFigures.delete(key)
-    for (const key of [...unavailableAccounts]) if (!present.has(key)) unavailableAccounts.delete(key)
+    for (const key of [...unavailableAccounts.keys()]) if (!present.has(key)) unavailableAccounts.delete(key)
   }
 
   /** Fold one account-store snapshot into the active account's held figures. */
   const syncActive = (): void => {
     const snapshot = account.getSnapshot()
+    const nextSecondaryIdentity = snapshot.accounts.filter(summary => !summary.active).map(summary => summary.accountKey).sort().join(',')
+    const secondaryChanged = nextSecondaryIdentity !== secondaryIdentity
+    secondaryIdentity = nextSecondaryIdentity
+    const nextAccountKey = snapshot.accounts.find(summary => summary.active)?.accountKey
+    if (nextAccountKey !== activeAccountKey) {
+      if (activeAccountKey !== undefined && activeFigures !== null) {
+        otherFigures.set(activeAccountKey, { figures: activeFigures, at: activeAt })
+        if (activeUnavailable) unavailableAccounts.set(activeAccountKey, activeErrorCode ?? 'unavailable')
+      }
+      const held = nextAccountKey === undefined ? undefined : otherFigures.get(nextAccountKey)
+      activeFigures = held?.figures ?? null
+      activeAt = held?.at ?? 0
+      activeUnavailable = nextAccountKey !== undefined && unavailableAccounts.has(nextAccountKey)
+      if (nextAccountKey !== undefined) otherFigures.delete(nextAccountKey)
+      activeAccountKey = nextAccountKey
+    }
     const figures = figuresOf(usageOf(snapshot))
     if (figures === null) {
       activeUnavailable = activeReadFailed(snapshot.status)
+      activeErrorCode = snapshot.status.status === 'reauth-required' ? 'reauth-required' : activeUnavailable ? snapshot.status.status === 'signed-in' ? snapshot.status.quotaErrorCode ?? 'unavailable' : 'unavailable' : undefined
     } else {
       activeFigures = figures
       activeAt = Date.now()
       activeUnavailable = false
+      activeErrorCode = undefined
     }
     prune()
     armStaleTimer()
     publish()
+    if (secondaryChanged) {
+      stopPolling()
+      if (secondaryIdentity !== '') void poll()
+    }
   }
 
   /** Hold every other account's figures when a whole round could not complete. */
   const markUnavailable = (): void => {
     for (const summary of account.getSnapshot().accounts) {
-      if (!summary.active) unavailableAccounts.add(summary.accountKey)
+      if (!summary.active) unavailableAccounts.set(summary.accountKey, 'unavailable')
     }
     armStaleTimer()
     publish()
@@ -397,12 +437,16 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
     const readAt = Date.now()
     const summaries = account.getSnapshot().accounts
     const activeAccountKey = summaries.find(summary => summary.active)?.accountKey
+    const returned = new Set(entries.map(entry => entry.accountKey))
+    for (const summary of summaries) {
+      if (!summary.active && !returned.has(summary.accountKey)) unavailableAccounts.set(summary.accountKey, 'unavailable')
+    }
     for (const entry of entries) {
       if (entry.accountKey === activeAccountKey) continue
       if (!summaries.some(summary => summary.accountKey === entry.accountKey)) continue
       const figures = entry.usage === undefined ? null : figuresOf(entry.usage)
       if (figures === null) {
-        unavailableAccounts.add(entry.accountKey)
+        unavailableAccounts.set(entry.accountKey, entry.errorCode ?? 'unavailable')
         continue
       }
       otherFigures.set(entry.accountKey, { figures, at: readAt })
@@ -432,7 +476,7 @@ export function createCodexQuotaService(account: OpenAICodexAccountStore): Codex
 
   /** Read every non-active account once; never overlap two live rounds. */
   const poll = async (): Promise<void> => {
-    if (pollController !== undefined || listeners.size === 0) return
+    if (pollController !== undefined || listeners.size === 0 || secondaryIdentity === '') return
     const controller = new AbortController()
     pollController = controller
     try {

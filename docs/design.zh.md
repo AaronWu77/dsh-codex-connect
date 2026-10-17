@@ -28,4 +28,4 @@ Host 将 `llm-openai-codex` 注册为插件自有的能力 settings namespace。
 
 注册前检查现有 provider id；发现 `openai-codex` 已被占用时，给出旧 bundle 或手动 provider 配置的定向迁移提示。boot-free CLI doctor 只报告包/运行时版本、OAuth 路径元数据、能力默认值和安全提示。
 
-Alpha 4.27 固定使用 Harness `0.1.2-rc.1` 开发依赖，并跟随其 pi-ai 版本范围 `^0.84.2`。Node.js 支持范围仍为 `^22.19.0 || >=24.0.0`。keyed `settings.plugin.item` 集成保持不变，客户端类型继续从 Session Controller、Settings、Store 和 Renderer 的所属包导入。已发布兼容性记录列出 Alpha 4.27 与 DSH `0.1.2-rc.1` 的精确组合。资格、额度、模型、服务端上下文容量和后端协议仍由上游控制。测试仅使用临时 OAuth 文档和模拟网络响应，CI 不执行真实认证。
+Codex Connect 0.1.0-alpha.4.35 固定使用 Harness `0.2.1-alpha.2` 开发依赖和 pi-ai `0.87.1`。Node.js 支持范围仍为 `^22.19.0 || >=24.0.0`。keyed `settings.plugin.item` 集成保持不变，客户端类型继续从 Session Controller、Settings、Store 和 Renderer 的所属包导入。这是本地兼容候选，不是已发布的 alpha.2 配对。精确的 PI `1.0.2` alias 只负责公共事件流构造，PI `0.87.1` 继续规范化 transcript 并执行请求，原事件对象与终止消息保持不变。固定的请求 provider 不支持宿主原始 provider 事件观察器。历史已发布记录仍保留 Alpha 4.35 与 DSH `0.2.0-rc.2` 的配对。资格、额度、模型、服务端上下文容量和后端协议仍由上游控制。测试仅使用临时 OAuth 文档和模拟网络响应，CI 不执行真实认证。

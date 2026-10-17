@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { routeContext } from './route-context.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -19,6 +19,7 @@ const trustedOrigins = { has: async () => false } as unknown as OpenAICodexTrust
 function response(): ServerResponse & { status?: number; body?: string } {
   const observed: { status?: number; body?: string } = {}
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     writeHead(status: number) {
       observed.status = status
       return this
@@ -33,6 +34,7 @@ function response(): ServerResponse & { status?: number; body?: string } {
 
 function request(method: string, url = '/'): IncomingMessage {
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     method,
     url,
     socket: { remoteAddress: '127.0.0.1' },
@@ -42,17 +44,10 @@ function request(method: string, url = '/'): IncomingMessage {
 
 function capture(manager: OpenAICodexProxyManager): CapturedRoute[] {
   const routes: CapturedRoute[] = []
-  const ctx = {
-    webServer: {
-      register(route: CapturedRoute) {
-        routes.push(route)
-        return () => undefined
-      },
-    },
-    effect(factory: () => void | (() => void | Promise<void>)) {
-      return factory()
-    },
-  } as unknown as Context
+  const ctx = routeContext((route) => {
+    routes.push(route)
+    return () => undefined
+  })
   registerOpenAICodexProxyRoutes(ctx, trustedOrigins, manager)
   return routes
 }
@@ -99,6 +94,6 @@ describe('OpenAI Codex proxy routes', () => {
     const valid = response()
     await route.handler(request('POST', `${OPENAI_CODEX_PROXY_TEST_PATH}?proxyUrl=${encodeURIComponent('http://127.0.0.1:7897')}`), valid)
     expect(valid.status).toBe(200)
-    expect(probe).toHaveBeenCalledWith('http://127.0.0.1:7897')
+    expect(probe).toHaveBeenCalledWith('http://127.0.0.1:7897', expect.any(AbortSignal))
   })
 })

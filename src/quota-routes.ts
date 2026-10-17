@@ -1,3 +1,4 @@
+import { harnessHttpRejection, HttpRouteScope } from './http-auth.ts'
 /**
  * Same-origin route exposing every stored account's rolling quota windows.
  *
@@ -15,7 +16,7 @@ import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 import type { OpenAICodexCredentialStore } from './store.ts'
 import { OPENAI_CODEX_QUOTA_PATH } from './quota-contract.ts'
 import type { OpenAICodexQuotaAccount, OpenAICodexQuotaPayload } from './quota-contract.ts'
-import { readOpenAICodexRateLimits } from './usage.ts'
+import { isOpenAICodexReauthRequiredError, OpenAICodexUsageHttpError, readOpenAICodexRateLimits } from './usage.ts'
 import { trustedRequestDecision } from './auth-routes.ts'
 
 /** Host dependencies the quota route reads stored accounts through. */
@@ -31,6 +32,7 @@ export interface OpenAICodexQuotaRouteOptions {
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
+  if (res.destroyed) return
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -49,27 +51,36 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 async function readAccount(
   options: OpenAICodexQuotaRouteOptions,
   accountKey: string,
+  signal: AbortSignal,
 ): Promise<OpenAICodexQuotaAccount> {
   try {
     const credentials = await options.store.captureAccount(accountKey)
-    const readUsage = (): ReturnType<typeof readOpenAICodexRateLimits> => readOpenAICodexRateLimits(credentials)
+    const readUsage = (): ReturnType<typeof readOpenAICodexRateLimits> => readOpenAICodexRateLimits(credentials, signal)
     const usage = await (options.proxyManager?.run(options.resolveProxyUrl?.(), readUsage) ?? readUsage())
     return { accountKey, usage }
-  } catch {
+  } catch (error) {
     // One account's failure must not blank the others; the client holds its last figures.
-    return { accountKey, unavailable: true }
+    const errorCode = isOpenAICodexReauthRequiredError(error) ? 'reauth-required'
+      : error instanceof OpenAICodexUsageHttpError && error.status === 429 ? 'rate-limited' : 'unavailable'
+    return { accountKey, unavailable: true, errorCode }
   }
 }
 
 /** Register the read-only per-account quota route consumed by the client service. */
 export function registerOpenAICodexQuotaRoute(ctx: Context, options: OpenAICodexQuotaRouteOptions): void {
-  ctx.effect(() => ctx.webServer.register({
+  ctx.effect(function* () {
+    const scope = new HttpRouteScope(ctx)
+    yield () => scope.dispose()
+    yield scope.register({
     kind: 'exact',
     path: OPENAI_CODEX_QUOTA_PATH,
-    handler: async (req: IncomingMessage, res: ServerResponse) => {
+    handler: async (req, res, signal) => {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      const rejection = harnessHttpRejection(ctx, req)
+      if (rejection !== undefined) { json(res, rejection.status, { error: rejection.error }); return }
       const decision = await trustedRequestDecision(req, options.trustedOrigins)
       if (!decision.trusted) return json(res, 403, { error: decision.error })
+      if (signal.aborted) return
       try {
         const summaries = await options.store.accounts()
         const activeAccountKey = summaries.find(summary => summary.active)?.accountKey
@@ -77,13 +88,15 @@ export function registerOpenAICodexQuotaRoute(ctx: Context, options: OpenAICodex
         // so this route neither re-reads it nor duplicates that race.
         const accounts = await Promise.all(summaries
           .filter(summary => summary.accountKey !== activeAccountKey)
-          .map(summary => readAccount(options, summary.accountKey)))
-        const payload: OpenAICodexQuotaPayload = { accounts }
+          .map(summary => readAccount(options, summary.accountKey, signal)))
+        const remaining = new Set((await options.store.accounts()).map(account => account.accountKey))
+        const payload: OpenAICodexQuotaPayload = { accounts: accounts.filter(account => remaining.has(account.accountKey)) }
         return json(res, 200, payload)
       } catch {
         // An unreadable credential document still answers, so the client keeps its figures.
         return json(res, 200, { accounts: [] } satisfies OpenAICodexQuotaPayload)
       }
     },
-  }), 'dsh-codex-connect: quota route')
+    })
+  }, 'dsh-codex-connect: quota route')
 }

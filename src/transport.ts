@@ -1,6 +1,8 @@
 /** Fixed, bounded OAuth transport shared with optional Codex image capabilities. */
 
 import { randomUUID } from 'node:crypto'
+import { IMAGE_EDIT_MAX_REQUEST_BYTES, snapshotImageEditRequest } from './image-edit-request.ts'
+import type { ImageEditRequest, InlineEditImage } from './image-edit-request.ts'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import { readOpenAICodexRequestAuth } from './auth.ts'
@@ -20,6 +22,9 @@ export const OPENAI_CODEX_TRANSPORT_API_VERSION = 1 as const
 
 /** Stage-zero verified image-generation endpoint. */
 export const OPENAI_CODEX_IMAGE_GENERATION_URL = 'https://chatgpt.com/backend-api/codex/images/generations'
+
+/** Fixed image edit endpoint; unsupported edits never use the generation route. */
+export const OPENAI_CODEX_IMAGE_EDIT_URL = 'https://chatgpt.com/backend-api/codex/images/edits'
 
 /** Network deadline covering the request and bounded response read. */
 export const OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS = 120_000
@@ -108,6 +113,8 @@ export interface ImageGenerationRequest {
 
 /** Request lifecycle supplied by the Host tool in PR-3. */
 export interface ImageRequestContext {
+  /** Captured route account; absence retains the active image-account behavior. */
+  readonly accountKey?: string
   readonly signal?: AbortSignal | undefined
 }
 
@@ -128,6 +135,8 @@ export interface ImageGenerationResponse {
 /** Versioned Host-only API provided by the core plugin. */
 export interface OpenAICodexTransportV1 {
   readonly apiVersion: 1
+  /** Optional increment: callers reject edits when absent, without generating. */
+  editImages?(input: ImageEditRequest, context: ImageRequestContext): Promise<ImageGenerationResponse>
   generateImages(
     input: ImageGenerationRequest,
     context: ImageRequestContext,
@@ -142,7 +151,10 @@ function responseTooLarge(): OpenAICodexTransportError {
 export async function readOpenAICodexBoundedBody(response: Response, maxBytes: number): Promise<Uint8Array> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new TypeError('maxBytes must be a non-negative safe integer')
   const declared = response.headers.get('content-length')
-  if (declared !== null && /^\d+$/u.test(declared) && Number(declared) > maxBytes) throw responseTooLarge()
+  if (declared !== null && /^\d+$/u.test(declared) && Number(declared) > maxBytes) {
+    try { await response.body?.cancel() } catch (_error) { /* The size rejection remains authoritative after cleanup. */ }
+    throw responseTooLarge()
+  }
   if (response.body === null) return new Uint8Array()
 
   const reader = response.body.getReader()
@@ -233,6 +245,8 @@ function parseSuccess(bytes: Uint8Array): readonly GeneratedImagePayload[] {
 /** Core-owned Cordis service for the optional image package. */
 export class OpenAICodexTransport extends Service implements OpenAICodexTransportV1 {
   readonly apiVersion = OPENAI_CODEX_TRANSPORT_API_VERSION
+  private readonly lifetime = new AbortController()
+  private readonly pending = new Set<Promise<ImageGenerationResponse>>()
 
   constructor(
     ctx: Context,
@@ -242,19 +256,45 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
     private readonly resolveImageModelHint: () => string = () => DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT,
   ) {
     super(ctx, OPENAI_CODEX_TRANSPORT_SERVICE)
+    ctx.effect(() => async () => {
+      this.lifetime.abort()
+      await Promise.allSettled([...this.pending])
+    })
+  }
+
+  private requestImages(input: ImageGenerationRequest, context: ImageRequestContext, images?: readonly InlineEditImage[]): Promise<ImageGenerationResponse> {
+    const signal = context.signal === undefined ? this.lifetime.signal : AbortSignal.any([context.signal, this.lifetime.signal])
+    const captured = { signal, ...(context.accountKey === undefined ? {} : { accountKey: context.accountKey }) }
+    const operation = () => this.generateImagesWithoutProxy(input, captured, images)
+    const request = this.proxyManager?.run(this.resolveProxyUrl(), operation) ?? operation()
+    this.pending.add(request)
+    void request.then(() => { this.pending.delete(request) }, () => { this.pending.delete(request) })
+    return request
   }
 
   async generateImages(
     input: ImageGenerationRequest,
     context: ImageRequestContext,
   ): Promise<ImageGenerationResponse> {
-    const operation = () => this.generateImagesWithoutProxy(input, context)
-    return this.proxyManager?.run(this.resolveProxyUrl(), operation) ?? operation()
+    return this.requestImages(input, context)
+  }
+
+  /** Snapshot authorized image bytes before queueing; one request, no automatic retry. */
+  async editImages(input: ImageEditRequest, context: ImageRequestContext): Promise<ImageGenerationResponse> {
+    if (isAborted(context.signal)) throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.canceled)
+    let snapshot: ReturnType<typeof snapshotImageEditRequest>
+    try {
+      snapshot = snapshotImageEditRequest(input)
+    } catch {
+      throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.invalidRequest)
+    }
+    return this.requestImages({ prompt: snapshot.prompt }, context, snapshot.images)
   }
 
   private async generateImagesWithoutProxy(
     input: ImageGenerationRequest,
     context: ImageRequestContext,
+    images?: readonly InlineEditImage[],
   ): Promise<ImageGenerationResponse> {
     if (typeof input?.prompt !== 'string' || input.prompt.trim().length === 0
       || input.prompt.length > OPENAI_CODEX_IMAGE_PROMPT_MAX_LENGTH) {
@@ -270,7 +310,13 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
       throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.invalidRequest)
     }
 
-    const credentials = await this.credentials.captureActiveAccount()
+    const body = JSON.stringify({ model: imageModelHint, prompt: input.prompt, ...(images === undefined ? {} : { images }) })
+    if (images !== undefined && Buffer.byteLength(body, 'utf8') > IMAGE_EDIT_MAX_REQUEST_BYTES) {
+      throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.invalidRequest)
+    }
+    const credentials = context.accountKey === undefined
+      ? await this.credentials.captureActiveAccount()
+      : await this.credentials.captureAccount(context.accountKey)
     const stored = await credentials.read(OPENAI_CODEX_PROVIDER)
     if (stored?.type !== 'oauth') {
       throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.signedOut)
@@ -306,7 +352,7 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
     }, OPENAI_CODEX_IMAGE_REQUEST_TIMEOUT_MS)
 
     try {
-      const response = await fetch(OPENAI_CODEX_IMAGE_GENERATION_URL, {
+      const response = await globalThis.fetch(images === undefined ? OPENAI_CODEX_IMAGE_GENERATION_URL : OPENAI_CODEX_IMAGE_EDIT_URL, {
         method: 'POST',
         redirect: 'manual',
         signal: controller.signal,
@@ -317,7 +363,7 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
           accept: 'application/json',
           'user-agent': 'dsh-codex-connect',
         },
-        body: JSON.stringify({ model: imageModelHint, prompt: input.prompt }),
+        body,
       })
       if (!response.ok) {
         try {
@@ -328,16 +374,19 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
         throw statusError(response)
       }
       if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+        try { await response.body?.cancel() } catch (_error) { /* Preserve the malformed-response classification after cleanup. */ }
         throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.malformedResponse)
       }
       const bytes = await readOpenAICodexBoundedBody(response, OPENAI_CODEX_IMAGE_MAX_RESPONSE_BYTES)
-      const images = parseSuccess(bytes)
+      const responseImages = parseSuccess(bytes)
+      if (isAborted(context.signal)) throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.canceled)
+      if (timedOut) throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.timeout)
       return {
         apiVersion: OPENAI_CODEX_TRANSPORT_API_VERSION,
         traceId,
         elapsedMs: Date.now() - startedAt,
         responseBytes: bytes.byteLength,
-        images,
+        images: responseImages,
       }
     } catch (error: unknown) {
       if (isOpenAICodexTransportError(error)) throw error
@@ -347,6 +396,7 @@ export class OpenAICodexTransport extends Service implements OpenAICodexTranspor
       if (timedOut) throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.timeout)
       throw new OpenAICodexTransportError(OPENAI_CODEX_TRANSPORT_ERROR_CODES.networkError)
     } finally {
+      controller.abort()
       clearTimeout(timer)
       context.signal?.removeEventListener('abort', onCallerAbort)
     }

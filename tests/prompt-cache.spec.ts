@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { normalizeContext } from '@earendil-works/pi-ai'
 import type { AssistantMessageEventStream, Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import {
   deriveOpenAICodexPromptCacheKey,
@@ -30,10 +31,10 @@ function model(provider: string): Model<'openai-codex-responses'> {
   return { provider, id: 'gpt-5', name: 'GPT-5', api: 'openai-codex-responses', contextWindow: 1, input: ['text'] } as unknown as Model<'openai-codex-responses'>
 }
 
-const context = {
+const context = normalizeContext({
   systemPrompt: 'you are a careful assistant',
-  messages: [{ role: 'user', content: [{ type: 'text', text: 'hello there' }] }],
-} as unknown as PiContext
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'hello there' }], timestamp: 0 }],
+})
 
 describe('OpenAI Codex prompt cache key', () => {
   it('uses the Harness session id as the stable per-session key', () => {
@@ -52,11 +53,39 @@ describe('OpenAI Codex prompt cache key', () => {
     const key = deriveOpenAICodexPromptCacheKey(context, undefined)
     expect(key).toMatch(/^codex-[0-9a-f]{40}$/)
     expect(deriveOpenAICodexPromptCacheKey(context, undefined)).toBe(key)
-    expect(deriveOpenAICodexPromptCacheKey({ ...context, systemPrompt: 'different' }, undefined)).not.toBe(key)
-    expect(deriveOpenAICodexPromptCacheKey({ ...context, messages: [{ role: 'user', content: [{ type: 'text', text: 'other' }] }] } as unknown as PiContext, undefined)).not.toBe(key)
-    // An empty context has no stable identity, so no key is sent.
-    expect(deriveOpenAICodexPromptCacheKey({ messages: [] } as unknown as PiContext, undefined)).toBeUndefined()
-    expect(deriveOpenAICodexPromptCacheKey({ messages: [], systemPrompt: '' } as unknown as PiContext, undefined)).toBeUndefined()
+    const changedSystem = normalizeContext({
+      systemPrompt: 'different',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello there' }], timestamp: 0 }],
+    })
+    const changedUser = normalizeContext({
+      systemPrompt: 'you are a careful assistant',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'other' }], timestamp: 0 }],
+    })
+    expect(deriveOpenAICodexPromptCacheKey(changedSystem, undefined)).not.toBe(key)
+    expect(deriveOpenAICodexPromptCacheKey(changedUser, undefined)).not.toBe(key)
+    expect(deriveOpenAICodexPromptCacheKey(normalizeContext({ messages: [] }), undefined)).toBeUndefined()
+    expect(deriveOpenAICodexPromptCacheKey(normalizeContext({ messages: [], systemPrompt: '' }), undefined)).toBeUndefined()
+  })
+})
+
+describe('normalized system prompt cache identity', () => {
+  it('derives a key for system-only contexts and preserves legacy prompt identity', () => {
+    const input = { systemPrompt: 'only instructions', messages: [] }
+    const normalized = normalizeContext(input)
+    expect(deriveOpenAICodexPromptCacheKey(normalized, undefined)).toMatch(/^codex-[0-9a-f]{40}$/)
+    expect(deriveOpenAICodexPromptCacheKey(normalized, undefined))
+      .toBe(deriveOpenAICodexPromptCacheKey(input, undefined))
+  })
+
+  it('includes effective system sections and their updates', () => {
+    const a = normalizeContext({ messages: [{ role: 'system', content: '', sections: { policy: 'A' }, timestamp: 0 }] })
+    const b = normalizeContext({ messages: [{ role: 'system', content: '', sections: { policy: 'B' }, timestamp: 0 }] })
+    expect(deriveOpenAICodexPromptCacheKey(a, undefined)).toMatch(/^codex-[0-9a-f]{40}$/)
+    expect(deriveOpenAICodexPromptCacheKey(a, undefined)).not.toBe(deriveOpenAICodexPromptCacheKey(b, undefined))
+    const updated = normalizeContext({ messages: [...a.messages, { role: 'system', content: '', sections: { policy: 'B' }, timestamp: 1 }] })
+    expect(deriveOpenAICodexPromptCacheKey(updated, undefined)).toBe(deriveOpenAICodexPromptCacheKey(b, undefined))
+    const removed = normalizeContext({ messages: [...a.messages, { role: 'system', content: '', sections: { policy: null }, timestamp: 1 }] })
+    expect(deriveOpenAICodexPromptCacheKey(removed, undefined)).toBeUndefined()
   })
 })
 
@@ -90,7 +119,7 @@ describe('OpenAI Codex payload transform', () => {
     const fixture = providerFixture()
     const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, { derivePromptCacheKey: deriveOpenAICodexPromptCacheKey })
     const options: SimpleStreamOptions = {}
-    wrapped.streamSimple(model('openai-codex'), { messages: [] } as PiContext, options)
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), options)
     expect(fixture.streamSimple).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), options)
   })
 

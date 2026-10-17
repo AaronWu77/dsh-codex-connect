@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
+import { routeContext } from './route-context.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OPENAI_CODEX_QUOTA_PATH } from '../src/quota-contract.ts'
@@ -18,29 +18,23 @@ function access(account: string): string {
   return `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: account } })).toString('base64')}.fixture`
 }
 
-function capture(store: OpenAICodexCredentialStore): CapturedRoute {
+function capture(store: OpenAICodexCredentialStore): CapturedRoute & { dispose(): Promise<void> } {
   let captured: CapturedRoute | undefined
-  const ctx = {
-    webServer: {
-      register(route: CapturedRoute) {
-        captured = route
-        return () => undefined
-      },
-    },
-    effect(factory: () => void | (() => void | Promise<void>)) {
-      return factory()
-    },
-  } as unknown as Context
+  const ctx = routeContext((route) => {
+    captured = route
+    return () => undefined
+  })
   registerOpenAICodexQuotaRoute(ctx, {
     store,
     trustedOrigins: { has: async () => false } as unknown as OpenAICodexTrustedOriginsStore,
   })
   if (captured === undefined) throw new Error('quota route was not registered')
-  return captured
+  return Object.assign(captured, { dispose: () => ctx.fiber.dispose() })
 }
 
 function request(method = 'GET', remoteAddress = '127.0.0.1'): IncomingMessage {
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     method,
     socket: { remoteAddress },
     headers: { host: '127.0.0.1:3081' },
@@ -50,6 +44,7 @@ function request(method = 'GET', remoteAddress = '127.0.0.1'): IncomingMessage {
 function response(): ServerResponse & { observed: { status?: number; body?: string } } {
   const observed: { status?: number; body?: string } = {}
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     observed,
     writeHead(status: number) {
       observed.status = status
@@ -166,4 +161,42 @@ describe('Codex Connect quota route', () => {
     expect(res.observed.status).toBe(200)
     expect(JSON.parse(res.observed.body ?? 'null')).toEqual({ accounts: [] })
   })
+})
+
+it.each([[401, 'reauth-required'], [403, 'reauth-required'], [429, 'rate-limited'], [503, 'unavailable']] as const)('classifies quota HTTP %s without claiming exhaustion', async (status, errorCode) => {
+  const store = await storeWith(['b', 'a'])
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status })))
+  const res = response()
+  await capture(store).handler(request(), res)
+  expect(res.observed.status).toBe(200)
+  expect(JSON.parse(res.observed.body ?? 'null')).toMatchObject({ accounts: [{ unavailable: true, errorCode }] })
+})
+
+it('drops an account removed while its quota read was in flight', async () => {
+  const store = await storeWith(['b', 'a'])
+  const removed = (await store.accounts()).find(account => !account.active)!.accountKey
+  const entered = Promise.withResolvers<void>()
+  const finish = Promise.withResolvers<Response>()
+  vi.stubGlobal('fetch', vi.fn(async () => { entered.resolve(); return finish.promise }))
+  const res = response()
+  const pending = capture(store).handler(request(), res)
+  try { await entered.promise; await store.removeAccount(removed) }
+  finally { finish.resolve(usageResponse(41)); await pending }
+  expect(JSON.parse(res.observed.body ?? 'null')).toEqual({ accounts: [] })
+})
+
+it('aborts quota network work and waits for it when the route owner is disposed', async () => {
+  const store = await storeWith(['b', 'a'])
+  const entered = Promise.withResolvers<void>()
+  let signal: AbortSignal | null | undefined
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+    signal = init.signal; entered.resolve()
+    return new Promise<Response>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }))
+  }))
+  const route = capture(store)
+  const pending = route.handler(request(), response())
+  await entered.promise
+  await route.dispose()
+  await pending
+  expect(signal?.aborted).toBe(true)
 })

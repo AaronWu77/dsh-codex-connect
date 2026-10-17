@@ -37,3 +37,39 @@ it('clears the deadline after a complete response', async () => {
   expect(value).toEqual({ ok: true })
   expect(vi.getTimerCount()).toBe(0)
 })
+
+it.each(['headers', 'body'] as const)('settles parent cancellation during stalled %s and ignores late completion', async phase => {
+  vi.useFakeTimers()
+  const headers = Promise.withResolvers<Response>()
+  const body = Promise.withResolvers<unknown>()
+  const started = Promise.withResolvers<void>()
+  let signal: AbortSignal | null | undefined
+  vi.stubGlobal('fetch', async (_path: string, init: RequestInit) => {
+    signal = init.signal; started.resolve()
+    return phase === 'headers' ? headers.promise : { json: () => body.promise }
+  })
+  const controller = new AbortController()
+  const pending = requestJson('/test', { signal: controller.signal })
+  const reason = new Error('component disposed')
+  const rejected = expect(pending).rejects.toBe(reason)
+  await started.promise
+  controller.abort(reason)
+  await rejected
+  expect(signal?.aborted).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
+  headers.resolve(Response.json({ late: true })); body.resolve({ late: true })
+  await Promise.resolve()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('bounds an uncooperative headers transport by the same deadline', async () => {
+  vi.useFakeTimers()
+  const headers = Promise.withResolvers<Response>()
+  vi.stubGlobal('fetch', () => headers.promise)
+  const pending = requestJson('/test', {})
+  const rejected = expect(pending).rejects.toBeInstanceOf(BrowserRequestTimeoutError)
+  await vi.advanceTimersByTimeAsync(BROWSER_REQUEST_TIMEOUT_MS)
+  await rejected
+  headers.resolve(Response.json({ late: true }))
+  expect(vi.getTimerCount()).toBe(0)
+})

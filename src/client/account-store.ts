@@ -33,7 +33,7 @@ export type AccountStatus =
   | { status: 'signed-out' }
   | { status: 'signing-in' }
   | { status: 'reauth-required'; message: string }
-  | { status: 'signed-in'; usage: OpenAICodexUsage; quotaError?: string }
+  | { status: 'signed-in'; usage: OpenAICodexUsage; quotaError?: string; quotaErrorCode?: import('../quota-contract.ts').OpenAICodexQuotaErrorCode }
   | { status: 'remote-web-origin-not-trusted' }
   | { status: 'error'; message: string }
 
@@ -173,7 +173,10 @@ function parseStatus(value: unknown): AccountStatus {
   if (value['status'] === 'signed-out' || value['status'] === 'signing-in') return { status: value['status'] }
   if (value['status'] === 'signed-in') {
     if (value['quotaError'] !== undefined && typeof value['quotaError'] !== 'string') throw new AccountRequestError('Invalid account response')
+    const code = value['quotaErrorCode']
+    if (code !== undefined && (value['quotaError'] === undefined || !['reauth-required','rate-limited','unavailable'].includes(String(code)))) throw new AccountRequestError('Invalid account response')
     return {
+      ...(code === 'reauth-required' || code === 'rate-limited' || code === 'unavailable' ? { quotaErrorCode: code } : {}),
       status: 'signed-in',
       usage: decodeOpenAICodexUsage(value['usage']),
       ...(typeof value['quotaError'] === 'string' ? { quotaError: value['quotaError'] } : {}),

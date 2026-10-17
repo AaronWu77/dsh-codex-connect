@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { routeContext } from './route-context.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import {
@@ -17,17 +17,10 @@ interface CapturedRoute {
 
 function routes(registry = new FastModeRegistry()): CapturedRoute[] {
   const captured: CapturedRoute[] = []
-  const ctx = {
-    webServer: {
-      register(route: CapturedRoute) {
-        captured.push(route)
-        return () => undefined
-      },
-    },
-    effect(factory: () => void | (() => void | Promise<void>)) {
-      return factory()
-    },
-  } as unknown as Context
+  const ctx = routeContext((route) => {
+    captured.push(route)
+    return () => undefined
+  })
   registerOpenAICodexAuthRoutes(ctx, store, undefined, registry)
   return captured
 }
@@ -41,6 +34,7 @@ function request(options: {
   body?: string
 }): IncomingMessage {
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     method: options.method,
     url: options.url ?? OPENAI_CODEX_FAST_MODE_PATH,
     socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
@@ -56,6 +50,7 @@ function request(options: {
 function response(): ServerResponse & { status?: number; body?: string } {
   const observed: { status: number | undefined; body: string | undefined } = { status: undefined, body: undefined }
   return {
+    once() { return this }, off() { return this }, destroy() { return this },
     writeHead(status: number) {
       observed.status = status
       return this

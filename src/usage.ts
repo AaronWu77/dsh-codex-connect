@@ -12,6 +12,11 @@ export const OPENAI_CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/w
 
 const USAGE_REQUEST_TIMEOUT_MS = 15_000
 
+/** HTTP failure evidence; callers must not interpret generic 429 as quota exhaustion. */
+export class OpenAICodexUsageHttpError extends Error {
+  constructor(readonly status: number) { super(`OpenAI Codex usage request failed with HTTP ${status}`) }
+}
+
 /** Release a discarded response without replacing the HTTP failure with a cancellation error. */
 async function cancelDiscardedResponseBody(response: Response): Promise<void> {
   try {
@@ -383,8 +388,9 @@ export function parseOpenAICodexUsage(value: unknown): OpenAICodexUsage {
  */
 export async function readOpenAICodexRateLimits(
   store: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>,
+  cancellation?: AbortSignal,
 ): Promise<OpenAICodexUsage> {
-  const signal = AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS)
+  const signal = cancellation === undefined ? AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS) : AbortSignal.any([cancellation, AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS)])
   const auth = await readOpenAICodexRequestAuth(store, signal).catch((error: unknown) => {
     if (error instanceof OpenAICodexRequestAuthError && error.code === 'REAUTH_REQUIRED') {
       throw new OpenAICodexReauthRequiredError()
@@ -396,7 +402,7 @@ export async function readOpenAICodexRateLimits(
   if (access === undefined || access.length === 0 || typeof accountId !== 'string' || accountId.length === 0) {
     throw new Error('OpenAI Codex is signed out')
   }
-  const response = await fetch(OPENAI_CODEX_USAGE_URL, {
+  const response = await globalThis.fetch(OPENAI_CODEX_USAGE_URL, {
     method: 'GET',
     redirect: 'error',
     headers: {
@@ -413,7 +419,7 @@ export async function readOpenAICodexRateLimits(
     if (response.status === 401 || response.status === 403) {
       throw new OpenAICodexReauthRequiredError()
     }
-    throw new Error(`OpenAI Codex usage request failed with HTTP ${response.status}`)
+    throw new OpenAICodexUsageHttpError(response.status)
   }
   let value: unknown
   try {

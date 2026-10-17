@@ -30,7 +30,7 @@ An explicit OAuth `invalid_grant` rejection during refresh shows the reauthoriza
 For GPT Codex conversations, the Composer shows Fast Mode and quota:
 
 - **Fast Mode** requests priority service (`service_tier: 'priority'`) for that conversation only. It is off by default and does not change the model. Actual speed and quota consumption depend on the service; a fixed speed multiplier is not guaranteed.
-- **Quota bars** normally refresh every 60 seconds while signed in and show only the `5h` and `7d` windows returned by the server, with the exact remaining percentage and reset time. `gpt-5.3-codex-spark` uses its separate Spark bucket. Codex Connect never invents missing windows or suppresses returned windows based on a plan name.
+- **Quota bars** read secondary accounts after the saved account list is available and refresh immediately when the secondary account set changes, without selecting those accounts. Repeated status updates share the existing poll. A missing account result is shown as unavailable, retaining earlier figures only within their existing lifetime. They normally refresh every 60 seconds while signed in and show only the `5h` and `7d` windows returned by the server, with the exact remaining percentage and reset time. `gpt-5.3-codex-spark` uses its separate Spark bucket. Codex Connect never invents missing windows or suppresses returned windows based on a plan name.
 
 Other plugins render quota through the `codexQuota` client service. It keeps the active account's `windows` and `credits` exactly as before and adds an `accounts` array listing every signed-in account, active first, then document order. Each entry carries a short label derived from the hashed account key (`acct <suffix>`), its windows, disclosed credits, refresh time, and an `unavailable` flag. Only the active account comes from the account page's own poll; every other stored account is read on the DSH host, roughly every 60 seconds while a consumer subscribes, through `GET /plugins/dsh-openai-codex/quota`. That route returns hashed account keys and the same secret-free usage projection as the status route — never an email, token, or provider account id. A failed account keeps its last real figures for five minutes, so one account's failure never blanks another's cells.
 
@@ -65,14 +65,16 @@ Direct connection is the default. An enabled credential-free HTTP(S) proxy appli
 - `enableSearch: true` registers Codex as an available search provider and selects it for profile-wide searches. Disabling it unregisters the provider and restores the route that was active before Codex Search was enabled.
 - Search has a 30-second total deadline covering authentication, response headers and body reading. Responses larger than 1 MiB are rejected, and unfinished response bodies are cancelled on failure. Caller cancellation can end a search sooner.
 - `enableImageTool: true` registers `view_image` on vision-capable models. Remote reads accept credential-free public HTTP(S) only and revalidate DNS and redirects.
-- `enableImageGeneration: true` registers prompt-only GPT Image generation. Use the image generation capability included with your current GPT subscription. Availability, dimensions, and quota remain account- and service-controlled.
-- `imageModelHint` is an optional profile-scoped setting in Plugin configuration or the profile config. Empty uses `gpt-image-2`; a custom value accepts 1–128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. Saving changes the `model` field of subsequent image requests to the same fixed endpoint; clearing restores the default. The tool still accepts only `prompt`. This is an unverified route hint: the service may ignore or reject it, and it does not guarantee the returned model.
+- `enableImageGeneration: true` registers explicit GPT Image generation and editing. An edit requires a session-owned target; it never silently becomes a generation request. Availability, dimensions, and quota remain account- and service-controlled.
+- `imageModelHint` is an optional profile-scoped setting in Plugin configuration or the profile config. Empty uses `gpt-image-2`; a custom value accepts 1–128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. Saving changes the `model` field of subsequent image requests to the same fixed endpoint; clearing restores the default. Generation accepts a prompt; editing additionally requires explicit source selectors. This is an unverified route hint: the service may ignore or reject it, and it does not guarantee the returned model.
 
 Generated originals are stored under `$DSH_HOME/dsh-codex-connect/images/v1`; the conversation receives a separate DSH attachment preview. The result card reports dimensions and file sizes and can download either representation. Originals are owner-only, integrity-checked, and available only to the creating session and forks that inherited the result. Disabling or uninstalling the plugin does not delete those files automatically.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/en/image-generation.png" alt="GPT Image result with prompt, download actions, and image details" width="780">
 </p>
+
+Edits accept one target plus up to four references, each with a purpose. Sources must be logged image attachments or retained original results from the current session or its inherited fork prefix; arbitrary paths, URLs and another session’s asset ids are not accepted. Original and preview bytes are separate choices, and preview-only editing requires explicit consent. Non-Codex tool results receive durable versioned handles; Codex routes derive the same handles from logged content. The image card queues an explicit follow-up instruction rather than executing an edit invisibly. Missing editing support refuses the operation; it never retries generation.
 
 ### Auto-review
 
@@ -101,6 +103,8 @@ The main plugin options are:
 | Field | Default | Meaning |
 |---|---:|---|
 | `models` | full catalog | Visible Codex model ids; an empty array hides all entries |
+| `enableNewSessionFastMode` | `false` | Seed priority only for newly started main conversations |
+| `enableNewSubagentFastMode` | `false` | Seed priority only for newly started subagent conversations |
 | `enableProxy` | `false` | Use `proxyUrl` for Codex Connect traffic |
 | `proxyUrl` | `http://127.0.0.1:7890` | Credential-free HTTP(S) proxy origin; inactive until enabled |
 | `contextWindowOverrides` | none | Per-model client context-budget overrides |
@@ -122,6 +126,8 @@ The main plugin options are:
 
 `maxTokensOverrides` takes the same map with the same per-model ceiling. Each value becomes the request default output cap DSH reports for that model and the `maxTokens` on its resolved model record; it does not change the context window and does not prove the account can generate that much. Use `null` the same way to mask or reset.
 
+The two Fast Mode defaults apply independently only to new `startup` sessions. Loading, resuming or re-announcing a session does not seed the default again or override an explicit manual off choice. Neither option changes account selection. Model previews distinguish authentication, trust, removed accounts, Host unavailability, timeouts and malformed data; retained entries remain labeled as old data. An unavailable catalog does not block unrelated saves of unchanged accepted budgets. An unadopted proxy candidate remains a separate draft until adopted or discarded.
+
 ### Model catalog
 
 The plugin reads the model catalog from `GET https://chatgpt.com/backend-api/codex/models?client_version=<version>` as the active account, through the configured proxy, and caches it for six hours. The request sends `authorization: Bearer <account access token>`, `chatgpt-account-id: <account id>`, `originator: deepseek-harness`, and `If-None-Match` with the stored `etag`; an HTTP 304 keeps the cached value. The live payload supplies each model's `context_window`, `max_context_window`, `max_output_tokens`, `supported_reasoning_levels`, and `service_tiers`.
@@ -137,7 +143,7 @@ A failure at any layer is logged at most once per failure streak and never throw
 
 ### Prompt caching
 
-Every Codex request carries a `prompt_cache_key` so OpenAI can reuse a cached prefix across turns. The key is the Harness session id; `cacheRetention: "none"` on a request suppresses both the key and the cache. When no session id is available, the plugin derives a stable key from the system prompt and the first user message instead. A different key only causes a prompt-cache miss; it never changes the answer. `store: false` and `include: ["reasoning.encrypted_content"]` remain in the request body. Set `debugLogPayloadFields: true` to write the field names of each Codex request to the plugin log for verification; it records names only, never request or response content, and is off by default.
+Every Codex request carries a `prompt_cache_key` so OpenAI can reuse a cached prefix across turns. The key is the Harness session id; `cacheRetention: "none"` on a request suppresses both the key and the cache. When no session id is available, the plugin derives a stable key from the effective system prompt (including transcript section updates in pi-ai 0.87.1) and the first non-empty user message instead. Legacy prompt fields remain supported; a system-only request also receives a key, while a context with neither system text nor user text sends none. A different key only causes a prompt-cache miss; it never changes the answer. `store: false` and `include: ["reasoning.encrypted_content"]` remain in the request body. Set `debugLogPayloadFields: true` to write the field names of each Codex request to the plugin log for verification; it records names only, never request or response content, and is off by default.
 
 ## Diagnostics and recovery
 

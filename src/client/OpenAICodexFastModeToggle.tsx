@@ -1,12 +1,13 @@
+import { requestJson } from './request-json.ts'
 /** Per-conversation OpenAI Codex Fast Mode control for the Composer row. */
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { OPENAI_CODEX_FAST_MODE_PATH } from '../fast-mode-paths.ts'
+import { isOpenAICodexRouteId } from '../account-route-id.ts'
 import type { OpenAICodexSettingsKey } from './locales.ts'
 
-const CODEX_PROVIDER = 'openai-codex'
 const FAST_MODE_ACTIVE_COLOR = '#f97316'
 
 type Translate = (key: OpenAICodexSettingsKey, params?: Record<string, unknown>) => string
@@ -33,7 +34,8 @@ function readEnabled(value: unknown): boolean | undefined {
 function isEligible(state: ModelDirectoryState): boolean {
   const current = state.current
   return state.status === 'ready'
-    && current?.provider === CODEX_PROVIDER
+    && current !== null
+    && isOpenAICodexRouteId(current.provider)
     && typeof current.model === 'string'
     && current.model.startsWith('gpt-')
 }
@@ -47,8 +49,8 @@ function requestUrl(sessionId: string): string {
 }
 
 /**
- * Render a real SVG lightning button only for GPT models on the exact Codex
- * provider.  Host state is read and written through the session-addressed
+ * Render the lightning button for GPT models on every Codex account route.
+ * Host state is read and written through the session-addressed
  * route; no global model slot or persistent settings are changed.
  */
 export function OpenAICodexFastModeToggle({
@@ -82,13 +84,13 @@ export function OpenAICodexFastModeToggle({
     setState({ status: 'loading', enabled: false })
     void (async () => {
       try {
-        const response = await fetch(requestUrl(sessionId), {
+        const { response, value } = await requestJson(requestUrl(sessionId), {
           method: 'GET',
           credentials: 'same-origin',
           headers: { accept: 'application/json' },
           signal: controller.signal,
         })
-        const enabled = response.ok ? readEnabled(await response.json().catch(() => undefined)) : undefined
+        const enabled = response.ok ? readEnabled(value) : undefined
         if (!disposed && !controller.signal.aborted) {
           setState(enabled === undefined
             ? { status: 'error', enabled: false }
@@ -127,7 +129,7 @@ export function OpenAICodexFastModeToggle({
     setState(current => ({ ...current, status: 'loading' }))
     void (async () => {
       try {
-        const response = await fetch(OPENAI_CODEX_FAST_MODE_PATH, {
+        const { response, value } = await requestJson(OPENAI_CODEX_FAST_MODE_PATH, {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -137,7 +139,7 @@ export function OpenAICodexFastModeToggle({
           body: JSON.stringify({ sessionId, enabled: next }),
           signal: controller.signal,
         })
-        const enabled = response.ok ? readEnabled(await response.json().catch(() => undefined)) : undefined
+        const enabled = response.ok ? readEnabled(value) : undefined
         if (!controller.signal.aborted) {
           setState(enabled === undefined
             ? { status: 'error', enabled: state.enabled }

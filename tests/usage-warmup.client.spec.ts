@@ -1,0 +1,61 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { startUsageWarmup } from '../src/client/usage-warmup.ts'
+
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+describe('daily usage warm-up observation', () => {
+  it('starts idle history once, observes completion and refreshes the catalog', async () => {
+    vi.useFakeTimers()
+    let reads = 0
+    const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/status')
+      ? Response.json({ state: ++reads === 1 ? 'idle' : 'done', pollMs: 500 }) : Response.json({ ok: true }))
+    vi.stubGlobal('fetch', fetcher)
+    const refresh = vi.fn(async () => {})
+    const report = vi.fn()
+    const dispose = startUsageWarmup(refresh, report)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetcher).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(report).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(fetcher).toHaveBeenCalledTimes(3)
+    } finally { await dispose() }
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('joins running history without starting another pass and stops on unmount', async () => {
+    vi.useFakeTimers()
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ state: 'running', pollMs: 500 }))
+    vi.stubGlobal('fetch', fetcher)
+    const refresh = vi.fn(async () => {})
+    const dispose = startUsageWarmup(refresh, vi.fn())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    await dispose()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(refresh).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('refreshes known data and reports incomplete history without retries', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ state: 'partial', pollMs: 500 })))
+    const refresh = vi.fn(async () => {})
+    const report = vi.fn()
+    const dispose = startUsageWarmup(refresh, report)
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(1))
+    await dispose()
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+  it('contains unavailable or malformed status and cancels an uncooperative read', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ state: 'unknown' })))
+    const report = vi.fn()
+    let dispose = startUsageWarmup(vi.fn(), report)
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(1))
+    await dispose()
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(() => new Promise(() => {})))
+    const reportCancelled = vi.fn()
+    dispose = startUsageWarmup(vi.fn(), reportCancelled)
+    await dispose()
+    expect(reportCancelled).not.toHaveBeenCalled()
+  })
+})

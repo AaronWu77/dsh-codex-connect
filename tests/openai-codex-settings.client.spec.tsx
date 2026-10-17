@@ -299,8 +299,8 @@ describe('OpenAI Codex Plugin configuration card', () => {
     const summary = await screen.findByText(new RegExp(`${en.fiveHourLimit} 72.5% remaining`, 'u'))
     expect(summary.textContent).toContain(`${en.weeklyLimit} 80% remaining`)
     expect(screen.queryByText(/Resets/u)).toBeNull()
-    expect(formatOpenAICodexResetAt(resetAt)).toBeTruthy()
-    expect(formatOpenAICodexResetAt(undefined)).toBeUndefined()
+    expect(formatOpenAICodexResetAt(en.dateLocale, resetAt)).toBeTruthy()
+    expect(formatOpenAICodexResetAt(en.dateLocale, undefined)).toBeUndefined()
   })
 
   it('disables account actions while a login request is pending', async () => {
@@ -794,7 +794,7 @@ describe('OpenAI Codex Plugin configuration card', () => {
     expect(screen.getAllByText('Work account').length).toBeGreaterThan(0)
     expect(screen.getByText(en.resetCardsAvailable.replace('{count}', '2'))).toBeTruthy()
     expect(screen.getByText('Full reset')).toBeTruthy()
-    expect(screen.getByText(en.resetCardExpiry.replace('{time}', formatOpenAICodexResetAt(1_752_710_400) ?? ''))).toBeTruthy()
+    expect(screen.getByText(en.resetCardExpiry.replace('{time}', formatOpenAICodexResetAt(en.dateLocale, 1_752_710_400) ?? ''))).toBeTruthy()
     expect(screen.getByText(en.resetCardNoExpiry)).toBeTruthy()
 
     view.rerender(<OpenAICodexSettings t={t} quota={service(quotaOf(undefined))} embedded />)
@@ -802,4 +802,54 @@ describe('OpenAI Codex Plugin configuration card', () => {
     expect(screen.getByText(en.accountUsageHeading)).toBeTruthy()
     expect(screen.queryByText(en.resetCardsAvailable.replace('{count}', '2'))).toBeNull()
   })
+})
+
+it('saves unrelated settings while the catalog is unavailable and preserves accepted model budgets', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({}, 503)))
+  const { scope, mutate } = settingsScopeFixture(true, {
+    ...DEFAULT_OPENAI_CODEX_SETTINGS,
+    contextWindowOverrides: { 'retired-model': 12345 }, maxTokensOverrides: { 'retired-model': 6789 },
+  })
+  render(<OpenAICodexConfiguration scope={scope} t={t} activeModule="capabilities" />)
+  fireEvent.click(await screen.findByRole('checkbox', { name: new RegExp(en.enableSearch) }))
+  const save = screen.getByRole<HTMLButtonElement>('button', { name: en.save })
+  expect(save.disabled).toBe(false)
+  fireEvent.click(save)
+  await screen.findByText(en.settingsSaved)
+  expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['enableSearch'], value: true }], expect.any(Number))
+  expect(scope.getSnapshot().value).toMatchObject({ contextWindowOverrides: { 'retired-model': 12345 }, maxTokensOverrides: { 'retired-model': 6789 } })
+})
+
+it('preserves an unadopted manual proxy draft across same-field and unrelated Host updates', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json(modelCatalogFixture([]))))
+  const { scope, mutate } = settingsScopeFixture()
+  render(<OpenAICodexConfiguration scope={scope} t={t} activeModule="network" />)
+  fireEvent.click(screen.getByRole('tab', { name: en.manualEntry }))
+  const input = screen.getByRole<HTMLInputElement>('textbox', { name: en.proxyAddress })
+  fireEvent.change(input, { target: { value: 'http://127.0.0.1:8112' } })
+  await act(async () => { await scope.set('enableSearch', true); await scope.set('proxyUrl', 'http://127.0.0.1:8222') })
+  expect(input.value).toBe('http://127.0.0.1:8112')
+  expect(scope.getSnapshot().value?.enableProxy).toBe(false)
+  expect(mutate).not.toHaveBeenCalled()
+})
+
+it('does not adopt a late successful proxy test for an edited URL', async () => {
+  const oldUrl = 'http://127.0.0.1:8110'
+  const pending = Promise.withResolvers<Response>()
+  const entered = Promise.withResolvers<void>()
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    if (requestPath(input).startsWith(OPENAI_CODEX_PROXY_TEST_PATH)) { entered.resolve(); return pending.promise }
+    return json(modelCatalogFixture([]))
+  }))
+  const { scope, mutate } = settingsScopeFixture()
+  render(<OpenAICodexConfiguration scope={scope} t={t} activeModule="network" />)
+  fireEvent.click(screen.getByRole('tab', { name: en.manualEntry }))
+  const input = screen.getByRole('textbox', { name: en.proxyAddress })
+  fireEvent.change(input, { target: { value: oldUrl } })
+  fireEvent.click(screen.getByRole('button', { name: en.testProxy }))
+  await entered.promise
+  fireEvent.change(input, { target: { value: 'http://127.0.0.1:8111' } })
+  await act(async () => { pending.resolve(json({ proxyUrl: oldUrl, reachable: true, classification: 'reachable', status: 401 })); await pending.promise })
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: en.useThisProxy }).disabled).toBe(true)
+  expect(mutate).not.toHaveBeenCalled()
 })

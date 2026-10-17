@@ -20,11 +20,7 @@ export interface OpenAICodexSettingsInjected {
   configScope: ConfigForm<OpenAICodexSettingsConfig>
   /** Shared across Models and Plugin settings by the browser-plugin owner. */
   account?: OpenAICodexAccountStore
-  /**
-   * Opens the Quota & Usage dashboard, when that plugin provides its handle
-   * (`contextOverview`). This card owns the account actions; the dashboard owns
-   * the usage breakdown, so the card only summarises and jumps.
-   */
+  /** Opens the Codex-owned usage dialog; the card retains account actions and its summary. */
   onOpenUsage?: () => void
   /** Per-account quota service, when the browser plugin publishes it. */
   quota?: CodexQuotaService
@@ -34,6 +30,8 @@ export interface OpenAICodexSettingsInjected {
 export type OpenAICodexSettingsProps = Partial<OpenAICodexSettingsInjected> & {
   /** Omit the page heading and outer card chrome inside Plugin configuration. */
   embedded?: boolean
+  /** Management centers expose account actions directly and keep usage in their overview. */
+  management?: boolean
   /** Models exposes account controls only; advanced options remain under Plugins. */
   accountOnly?: boolean
 }
@@ -85,16 +83,38 @@ function windowLabel(seconds: number, t: OpenAICodexSettingsInjected['t']): stri
   return Number.isInteger(hours) ? t('hourLimit', { count: hours }) : t('usageWindow')
 }
 
-function formatPercent(percent: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(percent)
+/**
+ * Format one percentage in the interface language.
+ * @param locale - locale carried by the copy dictionary.
+ * @param percent - percentage value.
+ * @returns the localized number.
+ */
+function formatPercent(locale: string, percent: number): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(percent)
 }
 
-/** Format a server-declared Unix-second reset in the user's local timezone. */
-export function formatOpenAICodexResetAt(resetAt: number | undefined): string | undefined {
-  if (resetAt === undefined || !Number.isSafeInteger(resetAt) || resetAt <= 0) return undefined
-  const date = new Date(resetAt * 1_000)
+/**
+ * Format one epoch-millisecond instant in the interface language.
+ * @param locale - locale carried by the copy dictionary.
+ * @param at - epoch milliseconds; an unrepresentable instant reports nothing.
+ * @returns the localized date and time.
+ */
+export function formatOpenAICodexTimestamp(locale: string, at: number | undefined): string | undefined {
+  if (at === undefined || !Number.isFinite(at)) return undefined
+  const date = new Date(at)
   if (!Number.isFinite(date.getTime())) return undefined
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}
+
+/**
+ * Format a server-declared Unix-second reset in the user's local timezone and interface language.
+ * @param locale - locale carried by the copy dictionary.
+ * @param resetAt - server reset time in Unix seconds; absent or invalid reports nothing.
+ * @returns the localized reset time.
+ */
+export function formatOpenAICodexResetAt(locale: string, resetAt: number | undefined): string | undefined {
+  if (resetAt === undefined || !Number.isSafeInteger(resetAt) || resetAt <= 0) return undefined
+  return formatOpenAICodexTimestamp(locale, resetAt * 1_000)
 }
 
 function QuotaBar({
@@ -108,7 +128,7 @@ function QuotaBar({
   detail?: string
   t: OpenAICodexSettingsInjected['t']
 }) {
-  const display = formatPercent(percent)
+  const display = formatPercent(t('dateLocale'), percent)
   return (
     <div style={quotaGroupStyle}>
       <div style={quotaLabelStyle}>
@@ -150,7 +170,7 @@ export function UsageLimits({ usage, quotaError, t, heading = true }: {
               label={`${limit.name ?? limit.id} · ${windowLabel(window.windowSeconds, t)}`}
               percent={window.remainingPercent}
               detail={t('resetAt', {
-                time: formatOpenAICodexResetAt(window.resetAt) ?? t('resetUnavailable'),
+                time: formatOpenAICodexResetAt(t('dateLocale'), window.resetAt) ?? t('resetUnavailable'),
               })}
               t={t}
             />
@@ -210,7 +230,7 @@ export function UsageSummary({ usage, quotaError, onOpen, t }: {
     <div style={quotaGroupStyle}>
       <div style={rowStyle}>
         <span style={bodyStyle}>
-          {windows.length === 0 ? t('quotaUnavailable') : windows.map(window => [windowLabel(window.windowSeconds, t), t('percentRemaining', { percent: formatPercent(window.remainingPercent) })].join(' ')).join(' · ')}
+          {windows.length === 0 ? t('quotaUnavailable') : windows.map(window => [windowLabel(window.windowSeconds, t), t('percentRemaining', { percent: formatPercent(t('dateLocale'), window.remainingPercent) })].join(' ')).join(' · ')}
         </span>
         {onOpen === undefined
           ? null
@@ -237,15 +257,22 @@ export function AccountUsage({ accounts, quota, t }: {
 }) {
   const rows = quota.accounts ?? []
   if (rows.length === 0) return null
+  const updatedAt = formatOpenAICodexTimestamp(t('dateLocale'), quota.fetchedAt)
   return (
     <div style={quotaGroupStyle}>
-      <h3 style={quotaTitleStyle}>{t('accountUsageHeading')}</h3>
+      <div style={rowStyle}>
+        <h3 style={quotaTitleStyle}>{t('accountUsageHeading')}</h3>
+        {updatedAt === undefined ? null : <span style={bodyStyle}>{t('usageUpdatedAt', { time: updatedAt })}</span>}
+      </div>
       {rows.map(account => {
         const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
         const windows = OVERVIEW_WINDOW_SECONDS
           .map(seconds => account.windows.find(window => window.windowSeconds === seconds))
           .filter(window => window !== undefined)
         const resetCredits = account.resetCredits
+        // Soonest expiry first: the card a user is about to lose is the useful order.
+        const resetCards = [...resetCredits?.credits ?? []]
+          .sort((left, right) => (left.expiresAt ?? Number.MAX_SAFE_INTEGER) - (right.expiresAt ?? Number.MAX_SAFE_INTEGER))
         return (
           <div key={account.accountKey} style={quotaGroupStyle}>
             <div style={quotaLabelStyle}>
@@ -254,7 +281,7 @@ export function AccountUsage({ accounts, quota, t }: {
                 ? t('usageNoData')
                 : windows.map(window => [
                   windowLabel(window.windowSeconds, t),
-                  t('percentRemaining', { percent: formatPercent(window.remainingPercent) }),
+                  t('percentRemaining', { percent: formatPercent(t('dateLocale'), window.remainingPercent) }),
                 ].join(' ')).join(' · ')}</span>
             </div>
             {resetCredits === undefined ? null : (
@@ -262,8 +289,8 @@ export function AccountUsage({ accounts, quota, t }: {
                 <span>{t('resetCardsAvailable', { count: resetCredits.availableCount })}</span>
               </div>
             )}
-            {(resetCredits?.credits ?? []).map((credit, index) => {
-              const expires = formatOpenAICodexResetAt(credit.expiresAt)
+            {resetCards.map((credit, index) => {
+              const expires = formatOpenAICodexResetAt(t('dateLocale'), credit.expiresAt)
               return (
                 <div key={`${credit.id}-${index}`} style={quotaLabelStyle}>
                   <span>{credit.title ?? t('resetCardUnnamed')}</span>
@@ -327,7 +354,7 @@ export function AccountActions({ t, store, snapshot, compact = false }: {
 }
 
 /** Saved-account summary and explicit account-management actions. */
-export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControlsId, onToggleQuota, compact = false }: {
+export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControlsId, onToggleQuota, compact = false, management = false }: {
   t: OpenAICodexSettingsInjected['t']
   store: OpenAICodexAccountStore
   snapshot: AccountSnapshot
@@ -335,6 +362,7 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
   quotaControlsId?: string
   onToggleQuota?: () => void
   compact?: boolean
+  management?: boolean
 }) {
   const accountsPanelId = useId()
   const [expanded, setExpanded] = useState(false)
@@ -378,13 +406,13 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
             {t(quotaExpanded === true ? 'hideQuota' : 'viewQuota')}
           </button>
         )}
-        <button type="button" style={buttonStyle} aria-expanded={expanded} aria-controls={accountsPanelId} onClick={() => { setExpanded(!expanded) }}>
+        {management ? null : <button type="button" style={buttonStyle} aria-expanded={expanded} aria-controls={accountsPanelId} onClick={() => { setExpanded(!expanded) }}>
           {t(expanded ? 'hideAccounts' : 'manageAccounts')}
-        </button>
+        </button>}
       </div>
     </div>
     {authorizing ? <p style={bodyStyle}>{t('addingAccountKeepsCurrent')}</p> : null}
-    {expanded ? <div id={accountsPanelId} style={accountPanelStyle}>
+    {expanded || management ? <div id={accountsPanelId} style={accountPanelStyle}>
       <div style={{ ...rowStyle, padding: '10px 14px', background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.04))' }}>
         <strong>{t('savedAccounts')} · {accounts.length}</strong>
         <button type="button" style={primaryButtonStyle} disabled={busy || authorizing} onClick={() => { void store.signIn() }}>
@@ -526,7 +554,7 @@ export function AccountFeedback({ t, snapshot, store }: {
 }
 
 /** OpenAI Codex account status and OAuth actions. */
-export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsage, embedded = false, accountOnly = false }: OpenAICodexSettingsProps) {
+export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsage, embedded = false, accountOnly = false, management = false }: OpenAICodexSettingsProps) {
   if (t === undefined) throw new Error('OpenAI Codex settings requires its translation function')
   const [localAccount] = useState(() => new OpenAICodexAccountStore())
   const store = account ?? localAccount
@@ -597,9 +625,9 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
             <span>{label}</span>
           </div>
         </div>
-        <AccountManager t={t} store={store} snapshot={snapshot} />
+        <AccountManager t={t} store={store} snapshot={snapshot} management={management} />
         <AccountFeedback t={t} snapshot={snapshot} store={store} />
-        {status.status === 'signed-in'
+        {!management && status.status === 'signed-in'
           ? <UsageSummary
               usage={status.usage}
               {...status.quotaError === undefined ? {} : { quotaError: status.quotaError }}
@@ -607,8 +635,8 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
               t={t}
             />
           : null}
-        {quotaSnapshot === null ? null : <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
-        {accountOnly ? <p style={bodyStyle}>{t('modelsAccountHelp')}</p> : null}
+        {management || quotaSnapshot === null ? null : <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
+        {accountOnly && !management ? <p style={bodyStyle}>{t('modelsAccountHelp')}</p> : null}
         </div>
         {accountOnly ? null : <OpenAICodexConfiguration
           t={t}

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import {
   assertOpenAICodexMaxTokensOverrides,
@@ -237,6 +237,29 @@ describe('maximum-output-token overrides', () => {
 })
 
 describe('multi-route adapter', () => {
+  it('retains withdrawn models and blocks resolution and streaming before credential or network access', async () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{ slug: 'gpt-6.1-sol', context_window: 272000 }] })
+    const withdrawn = live.map(model => ({ ...model, withdrawn: true as const }))
+    const credentials = new Proxy({} as OpenAICodexCredentialStore, { get() { throw new Error('Credentials must not be read') } })
+    const network = vi.fn(() => { throw new Error('Network must not be reached') })
+    vi.stubGlobal('fetch', network)
+    try {
+      const adapter = createOpenAICodexAdapter(credentials, () => undefined,
+        undefined, () => ['gpt-6.1-sol'], undefined, undefined, undefined, undefined,
+        () => [{ routeId: 'openai-codex', displayName: 'First', accountKey: 'first' },
+          { routeId: 'openai-codex-2', displayName: 'Second', accountKey: 'second' }],
+        { catalogLayer: key => ({ live: key === 'second' ? withdrawn : live, mode: 'default' }) })
+      expect(await adapter.listModels('openai-codex-2')).toContainEqual(expect.objectContaining({
+        id: 'gpt-6.1-sol', description: expect.stringContaining('no longer advertises'),
+      }))
+      await expect(adapter.resolveModel('openai-codex', 'gpt-6.1-sol')).resolves.toMatchObject({ id: 'gpt-6.1-sol' })
+      await expect(adapter.resolveModel('openai-codex-2', 'gpt-6.1-sol')).rejects.toMatchObject({ code: 'INVALID_CONFIG' })
+      const stream = adapter.stream({ provider: 'openai-codex-2', model: 'gpt-6.1-sol', messages: [] })
+      await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'INVALID_CONFIG' })
+      expect(network).not.toHaveBeenCalled()
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it('resolves every bound route under its own provider id and catalog', async () => {
     const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
       undefined, undefined, undefined, undefined, undefined, undefined,
@@ -270,7 +293,7 @@ describe('multi-route adapter', () => {
         { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct two)', accountKey: 'acct_two' },
       ], { catalogLayer: () => ({ live, mode: 'default' }) })
     for (const route of [OPENAI_CODEX_PROVIDER, 'openai-codex-2']) {
-      expect((await adapter.listModels(route)).map(model => model.id)).toEqual(visible)
+      expect((await adapter.listModels(route)).map(model => model.id).sort()).toEqual([...visible].sort())
       await expect(adapter.resolveModel(route, 'gpt-6-luna')).resolves.toMatchObject({
         id: 'gpt-6-luna', provider: route,
       })

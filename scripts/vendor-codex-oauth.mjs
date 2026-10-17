@@ -9,7 +9,7 @@ const metadata = JSON.parse(await readFile(resolve(source, 'package.json'), 'utf
 if (metadata.version !== '0.84.4') throw new Error('Review the upstream OAuth diff before changing the vendor pin')
 const files = ['auth/oauth/openai-codex.js', 'auth/oauth/device-code.js', 'auth/oauth/oauth-page.js', 'auth/oauth/pkce.js', 'utils/provider-env.js']
 for (const file of files) {
-  let body = await readFile(resolve(source, 'dist', file), 'utf8')
+  let body = (await readFile(resolve(source, 'dist', file), 'utf8')).replace(/\r\n/gu, '\n')
   body = body.replace(/^\/\/# sourceMappingURL=.*\n?/gm, '')
   if (file === files[0]) {
     const jwtDecode = '        const decoded = atob(payload);'
@@ -52,7 +52,8 @@ ${tokenReader}`)
   }
   const target = resolve(root, 'vendor/pi-ai-oauth', file)
   if (!process.argv.includes('--write')) {
-    if (await readFile(target, 'utf8') !== body) throw new Error(`Vendor drift: ${file}`)
+    const checkedIn = (await readFile(target, 'utf8')).replace(/\r\n/gu, '\n')
+    if (checkedIn !== body) throw new Error(`Vendor drift: ${file}`)
   } else {
     await mkdir(dirname(target), { recursive: true })
     await writeFile(target, body)

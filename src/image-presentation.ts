@@ -1,10 +1,18 @@
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { decodeOpenAICodexOriginalImageRef } from './image-assets-contract.ts'
 import type { OpenAICodexOriginalImageRef } from './image-assets-contract.ts'
+import { decodeImageEditSources } from './image-input-contract.ts'
+import type { ImageEditSources } from './image-input-contract.ts'
+
 
 /** Stable metadata marker for generated image result views. */
 export const IMAGE_PRESENTATION_KIND = 'codex-connect-images'
 export const IMAGE_PRESENTATION_SCHEMA_VERSION = 1
+
+/** PTC persists rendered content, but does not project presentationMeta. */
+export const IMAGE_RESULT_PREFIX = 'codex-connect-image-result-v1:'
+export const IMAGE_EDIT_RESULT_PREFIX = 'codex-connect-image-result-v2:'
+
 
 export interface ImagePresentationItem {
   preview: ImageAttachmentRef
@@ -14,9 +22,11 @@ export interface ImagePresentationItem {
 
 export interface ImagePresentationMeta {
   kind: typeof IMAGE_PRESENTATION_KIND
-  schemaVersion: typeof IMAGE_PRESENTATION_SCHEMA_VERSION
+  schemaVersion: typeof IMAGE_PRESENTATION_SCHEMA_VERSION | 2
   prompt: string
   images: ImagePresentationItem[]
+  operation?: 'edit'
+  edit?: ImageEditSources
 }
 
 function positiveSafeInteger(value: unknown): value is number {
@@ -63,7 +73,9 @@ export function decodeImagePresentationMeta(value: unknown): ImagePresentationMe
       images: (previews as ImageAttachmentRef[]).map(preview => ({ preview })),
     }
   }
-  if (candidate.schemaVersion !== IMAGE_PRESENTATION_SCHEMA_VERSION) return undefined
+  if (candidate.schemaVersion !== IMAGE_PRESENTATION_SCHEMA_VERSION && candidate.schemaVersion !== 2) return undefined
+  const edit = candidate.schemaVersion === 2 ? decodeImageEditSources(candidate.edit) : undefined
+  if (candidate.schemaVersion === 2 && (candidate.operation !== 'edit' || edit === undefined)) return undefined
   const images: ImagePresentationItem[] = []
   for (const value of candidate.images) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
@@ -75,8 +87,44 @@ export function decodeImagePresentationMeta(value: unknown): ImagePresentationMe
   }
   return {
     kind: IMAGE_PRESENTATION_KIND,
-    schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION,
+    schemaVersion: candidate.schemaVersion,
     prompt: candidate.prompt,
     images,
+    ...(edit === undefined ? {} : { operation: 'edit' as const, edit }),
   }
+}
+
+/** Recover PTC results without interpreting arbitrary prose or granting asset access. */
+export function decodeImageResultContent(content: readonly unknown[], prompt: string): ImagePresentationMeta | undefined {
+  if (prompt.length < 1 || prompt.length > 32_000) return undefined
+  const previews: ImageAttachmentRef[] = []
+  const envelopes: string[] = []
+  for (const value of content) {
+    if (typeof value !== 'object' || value === null) continue
+    const block = value as Record<string, unknown>
+    if (block.type === 'image') {
+      const ref = imageRef(block.attachment)
+      if (ref === undefined) return undefined
+      previews.push(ref)
+    }
+    if (block.type === 'text' && typeof block.text === 'string'
+      && (block.text.startsWith(IMAGE_RESULT_PREFIX) || block.text.startsWith(IMAGE_EDIT_RESULT_PREFIX))) envelopes.push(block.text)
+  }
+  if (previews.length < 1 || previews.length > 4 || envelopes.length > 1) return undefined
+  const envelope = envelopes[0]
+  if (envelope !== undefined) {
+    if (envelope.length > (envelope.startsWith(IMAGE_EDIT_RESULT_PREFIX) ? 256_000 : 16_000)) return undefined
+    try {
+      const isEdit = envelope.startsWith(IMAGE_EDIT_RESULT_PREFIX)
+      const payload: unknown = JSON.parse(envelope.slice(isEdit ? IMAGE_EDIT_RESULT_PREFIX.length : IMAGE_RESULT_PREFIX.length))
+      const decoded = decodeImagePresentationMeta(isEdit ? payload : { kind: IMAGE_PRESENTATION_KIND, schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION, prompt, images: payload })
+      if (decoded === undefined || decoded.prompt !== prompt || decoded.images.length !== previews.length
+        || decoded.images.some((image, index) => JSON.stringify(image.preview) !== JSON.stringify(previews[index]))) return undefined
+      return decoded
+    } catch {
+      return undefined
+    }
+  }
+  // Historical PTC logs retain previews, not original IDs. Never infer an original.
+  return { kind: IMAGE_PRESENTATION_KIND, schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION, prompt, images: previews.map(preview => ({ preview })) }
 }

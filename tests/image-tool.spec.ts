@@ -130,7 +130,9 @@ describe('Codex image generation tool', () => {
     const result = await execute(ctx, { prompt: '  draw a pixel  ' })
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected image generation to succeed')
-    expect(generateImages).toHaveBeenCalledWith({ prompt: 'draw a pixel' }, { signal })
+    expect(generateImages).toHaveBeenCalledWith({ prompt: 'draw a pixel' }, { signal: expect.any(AbortSignal) })
+    const requestSignal = generateImages.mock.calls[0]?.[1]?.signal
+    expect(requestSignal?.aborted).toBe(false)
     expect(saved).toHaveLength(1)
     expect(result.value).toMatchObject({ images: [{
       original: { mediaType: 'image/png', name: 'codex-image-1.png', width: 1, height: 1 },
@@ -146,6 +148,7 @@ describe('Codex image generation tool', () => {
           name: 'codex-image-1.png',
         }),
       },
+      expect.objectContaining({ type: 'text', text: expect.stringMatching(/^codex-connect-image-result-v1:/) }),
     ])
     expect(result.meta).toEqual({
       kind: 'codex-connect-images',
@@ -158,6 +161,8 @@ describe('Codex image generation tool', () => {
     })
 
     await ctx.fiber.dispose()
+    expect(requestSignal?.aborted).toBe(true)
+    expect(signal.aborted).toBe(false)
     context = undefined
     const failed = await setup({ generateImages: async () => { throw new Error('private response body') } })
     const failure = await execute(failed.ctx, { prompt: 'private prompt' })

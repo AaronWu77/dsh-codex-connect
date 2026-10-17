@@ -23,12 +23,7 @@ export const OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'
 /** Account-key characters kept in a secondary route label. */
 export const OPENAI_CODEX_ROUTE_LABEL_SUFFIX_LENGTH = OPENAI_CODEX_ACCOUNT_LABEL_LENGTH
 
-/** Whether a route id belongs to this plugin's Codex route family. */
-export function isOpenAICodexRouteId(routeId: string): boolean {
-  if (routeId === OPENAI_CODEX_PROVIDER) return true
-  const suffix = routeId.slice(OPENAI_CODEX_PROVIDER.length)
-  return suffix.startsWith('-') && /^\d+$/u.test(suffix.slice(1))
-}
+export { isOpenAICodexRouteId } from './account-route-id.ts'
 
 /** Build the stable, key-only selector label (`OpenAI Codex (acct 43a31b)`). */
 export function openAICodexAccountRouteLabel(accountKey: string): string {

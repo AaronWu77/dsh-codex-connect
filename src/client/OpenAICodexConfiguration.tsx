@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
+import type { OpenAICodexAccountStore } from './account-store.ts'
+import { AccountModelCatalog } from './AccountModelCatalog.tsx'
+import { requestJson } from './request-json.ts'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { OpenAICodexSettingsConfig } from '../settings-contract.ts'
 import {
@@ -34,13 +37,16 @@ export interface OpenAICodexConfigurationProps {
   activeModule?: OpenAICodexSettingsModule
   /** Stable prefix that associates external module tabs with these panels. */
   panelIdPrefix?: string
+  /** Management reveals actions only for changes or feedback. */
+  management?: boolean
+  account?: OpenAICodexAccountStore
 }
 
 /** Modules shared by the Plugin settings page and the Models settings dialog. */
 export type OpenAICodexSettingsModule = 'account' | 'models' | 'network' | 'capabilities'
 
 const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 18, borderTop: '1px solid var(--dsw-alias-border-l2)' }
-const headingStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const headingStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
 const bodyStyle: CSSProperties = { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' }
 const fieldsetStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 13, margin: 0, padding: 0, border: 0 }
 const modelListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
@@ -113,6 +119,8 @@ const CONFIG_FIELDS = [
   'contextWindowOverrides',
   'maxTokensOverrides',
   'contextWindowMode',
+  'enableNewSessionFastMode',
+  'enableNewSubagentFastMode',
   'debugLogPayloadFields',
   'enableProxy',
   'proxyUrl',
@@ -182,7 +190,7 @@ function sameField(
 }
 
 /** Edit the Host-owned llm-openai-codex settings section with Save/Discard staging. */
-export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix }: OpenAICodexConfigurationProps) {
+export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix, management = false, account }: OpenAICodexConfigurationProps) {
   const subscribe = useCallback((listener: () => void) => scope?.subscribe(listener) ?? (() => undefined), [scope])
   const getSnapshot = useCallback(() => scope?.getSnapshot() ?? UNAVAILABLE_SNAPSHOT, [scope])
   const snapshot = useSyncExternalStore(
@@ -200,46 +208,62 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   const [catalogStatus, setCatalogStatus] = useState<OpenAICodexModelCatalogStatus | undefined>()
   const [catalogRefreshing, setCatalogRefreshing] = useState(false)
   const [catalogRefreshFailed, setCatalogRefreshFailed] = useState(false)
+  const [catalogRefreshRevision, setCatalogRefreshRevision] = useState(0)
+  const subscribeAccount = useCallback((listener: () => void) => account?.subscribe(listener) ?? (() => {}), [account])
+  const selectedAccount = useCallback(() => account?.getSnapshot().accounts.find(candidate => candidate.active)?.accountKey, [account])
+  const activeAccountKey = useSyncExternalStore(subscribeAccount, selectedAccount)
   const [expandedModels, setExpandedModels] = useState<Readonly<Record<string, boolean>>>({})
   const [proxyDetection, setProxyDetection] = useState<ProxyDetectionState>({ status: 'idle' })
   const [proxyMode, setProxyMode] = useState<'auto' | 'manual'>('auto')
   const [manualProxyUrl, setManualProxyUrl] = useState(snapshot.value?.proxyUrl ?? '')
+  const [manualProxyEdited, setManualProxyEdited] = useState(false)
   const [manualProbe, setManualProbe] = useState<OpenAICodexProxyProbeResult | undefined>()
   const [manualProbeBusy, setManualProbeBusy] = useState(false)
   const [currentProxyCheck, setCurrentProxyCheck] = useState<CurrentProxyCheckState>({ status: 'idle' })
   const [autoReviewConfirmOpen, setAutoReviewConfirmOpen] = useState(false)
   const [localModule, setLocalModule] = useState<(typeof CONFIGURATION_MODULES)[number]>('models')
   const localPanelIdPrefix = useId()
+  const proxyDetectionController = useRef<AbortController | undefined>(undefined)
+  const manualProbeController = useRef<AbortController | undefined>(undefined)
+  const currentProxyCheckController = useRef<AbortController | undefined>(undefined)
   const proxyDetectionRequest = useRef(0)
   const manualProbeRequest = useRef(0)
   const currentProxyCheckRequest = useRef(0)
   const catalogRequest = useRef(0)
+
+  const replaceManualProxyInput = useCallback((value: string): void => {
+    manualProbeController.current?.abort()
+    manualProbeRequest.current += 1
+    setManualProbeBusy(false)
+    setManualProbe(undefined)
+    setManualProxyUrl(value)
+  }, [])
 
   /** Read the effective catalog and its provenance; both routes share one request identity. */
   const loadCatalog = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     const request = ++catalogRequest.current
     try {
       const [catalogResponse, statusResponse] = await Promise.all([
-        fetch(OPENAI_CODEX_MODEL_CATALOG_PATH, {
+        requestJson(OPENAI_CODEX_MODEL_CATALOG_PATH, {
           method: 'GET',
           credentials: 'same-origin',
           headers: { accept: 'application/json' },
           ...signal === undefined ? {} : { signal },
         }),
-        fetch(OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, {
+        requestJson(OPENAI_CODEX_MODEL_CATALOG_STATUS_PATH, {
           method: 'GET',
           credentials: 'same-origin',
           headers: { accept: 'application/json' },
           ...signal === undefined ? {} : { signal },
         }),
       ])
-      if (!catalogResponse.ok) throw new Error(`model catalog request failed: ${String(catalogResponse.status)}`)
-      const catalog = decodeOpenAICodexModelCatalog(await catalogResponse.json())
+      if (!catalogResponse.response.ok) throw new Error(`model catalog request failed: ${String(catalogResponse.response.status)}`)
+      const catalog = decodeOpenAICodexModelCatalog(catalogResponse.value)
       if (catalog === undefined) throw new Error('model catalog response was invalid')
       if (request !== catalogRequest.current) return false
       setModelCatalog(catalog)
       setModelCatalogError(false)
-      if (statusResponse.ok) setCatalogStatus(decodeOpenAICodexModelCatalogStatus(await statusResponse.json()))
+      if (statusResponse.response.ok) setCatalogStatus(decodeOpenAICodexModelCatalogStatus(statusResponse.value))
       return true
     } catch {
       if (request === catalogRequest.current) setModelCatalogError(true)
@@ -251,8 +275,8 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     if (scope === undefined) return
     const controller = new AbortController()
     void loadCatalog(controller.signal)
-    return () => { controller.abort() }
-  }, [loadCatalog, scope])
+    return () => { catalogRequest.current += 1; controller.abort() }
+  }, [loadCatalog, scope, activeAccountKey])
 
   /** Ask the Host for one forced live read, then re-read the effective catalog. */
   const refreshCatalog = async (): Promise<void> => {
@@ -260,15 +284,16 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     setCatalogRefreshing(true)
     setCatalogRefreshFailed(false)
     try {
-      const response = await fetch(OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, {
+      const { response, value } = await requestJson(OPENAI_CODEX_MODEL_CATALOG_REFRESH_PATH, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
       })
       if (!response.ok) throw new Error(`model catalog refresh failed: ${String(response.status)}`)
-      const status = decodeOpenAICodexModelCatalogStatus(await response.json())
+      const status = decodeOpenAICodexModelCatalogStatus(value)
       if (status !== undefined) setCatalogStatus(status)
       await loadCatalog()
+      setCatalogRefreshRevision(revision => revision + 1)
     } catch {
       setCatalogRefreshFailed(true)
     } finally {
@@ -280,9 +305,15 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     if (!dirty && !busy) {
       baseline.current = snapshot.value
       setDraft(snapshot.value)
-      setManualProxyUrl(snapshot.value?.proxyUrl ?? '')
     }
   }, [busy, dirty, snapshot.revision, snapshot.value])
+
+  useEffect(() => {
+    const accepted = snapshot.value?.proxyUrl ?? ''
+    // Exact accepted text no longer needs local ownership; different candidates survive saves.
+    if (manualProxyEdited && manualProxyUrl === accepted) setManualProxyEdited(false)
+    if (!manualProxyEdited && manualProxyUrl !== accepted) replaceManualProxyInput(accepted)
+  }, [manualProxyEdited, manualProxyUrl, snapshot.value?.proxyUrl, replaceManualProxyInput])
 
   useEffect(() => {
     if (feedback !== 'saved') return
@@ -291,12 +322,16 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   }, [feedback])
 
   useEffect(() => () => {
+    proxyDetectionController.current?.abort()
+    manualProbeController.current?.abort()
+    currentProxyCheckController.current?.abort()
     proxyDetectionRequest.current += 1
     manualProbeRequest.current += 1
     currentProxyCheckRequest.current += 1
   }, [])
 
   const clearCurrentProxyCheck = (): void => {
+    currentProxyCheckController.current?.abort()
     currentProxyCheckRequest.current += 1
     setCurrentProxyCheck({ status: 'idle' })
   }
@@ -316,7 +351,8 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     setFeedback('idle')
     setProxyDetection({ status: 'idle' })
     setProxyMode('auto')
-    setManualProxyUrl(scope?.getSnapshot().value?.proxyUrl ?? '')
+    replaceManualProxyInput(scope?.getSnapshot().value?.proxyUrl ?? '')
+    setManualProxyEdited(false)
     manualProbeRequest.current += 1
     setManualProbe(undefined)
     setManualProbeBusy(false)
@@ -336,16 +372,20 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   }
 
   const detectProxy = async (): Promise<void> => {
+    proxyDetectionController.current?.abort()
+    const controller = new AbortController()
+    proxyDetectionController.current = controller
     const request = ++proxyDetectionRequest.current
     setProxyDetection({ status: 'detecting' })
     try {
-      const response = await fetch(OPENAI_CODEX_PROXY_DETECT_PATH, {
+      const { response, value: payload } = await requestJson(OPENAI_CODEX_PROXY_DETECT_PATH, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`proxy detection failed: ${String(response.status)}`)
-      const value = await response.json() as ProxyDetectionResponse
+      const value = payload as ProxyDetectionResponse
       if (!Array.isArray(value.candidates) || !Array.isArray(value.results)) throw new Error('proxy detection response was invalid')
       if (request !== proxyDetectionRequest.current) return
       setProxyDetection(value.candidates.length > 0
@@ -366,7 +406,8 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     const tested = manualProbe?.reachable === true && manualProbe.proxyUrl === normalized ? manualProbe : detected
     if (tested === undefined) return
     setDraft({ ...draft, proxyUrl: normalized, enableProxy: true })
-    setManualProxyUrl(normalized)
+    replaceManualProxyInput(normalized)
+    setManualProxyEdited(true)
     setDirty(true)
     setFeedback('idle')
     setManualProbe(tested)
@@ -376,17 +417,21 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   const testManualProxy = async (): Promise<void> => {
     const normalized = normalizeOpenAICodexProxyUrl(manualProxyUrl)
     if (normalized === undefined) return
+    manualProbeController.current?.abort()
+    const controller = new AbortController()
+    manualProbeController.current = controller
     const request = ++manualProbeRequest.current
     setManualProbeBusy(true)
     try {
       const path = `${OPENAI_CODEX_PROXY_TEST_PATH}?proxyUrl=${encodeURIComponent(normalized)}`
-      const response = await fetch(path, {
+      const { response, value: payload } = await requestJson(path, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`proxy test failed: ${String(response.status)}`)
-      const result = await response.json() as OpenAICodexProxyProbeResult
+      const result = payload as OpenAICodexProxyProbeResult
       if (request === manualProbeRequest.current && normalizeOpenAICodexProxyUrl(manualProxyUrl) === normalized) setManualProbe(result)
     } catch {
       if (request === manualProbeRequest.current && normalizeOpenAICodexProxyUrl(manualProxyUrl) === normalized) {
@@ -405,17 +450,21 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     const saved = scope?.getSnapshot().value
     const normalized = saved?.enableProxy === true ? normalizeOpenAICodexProxyUrl(saved.proxyUrl) : undefined
     if (normalized === undefined) return
+    currentProxyCheckController.current?.abort()
+    const controller = new AbortController()
+    currentProxyCheckController.current = controller
     const request = ++currentProxyCheckRequest.current
     setCurrentProxyCheck({ status: 'checking' })
     try {
       const path = `${OPENAI_CODEX_PROXY_TEST_PATH}?proxyUrl=${encodeURIComponent(normalized)}`
-      const response = await fetch(path, {
+      const { response, value: payload } = await requestJson(path, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`proxy test failed: ${String(response.status)}`)
-      const result = await response.json() as OpenAICodexProxyProbeResult
+      const result = payload as OpenAICodexProxyProbeResult
       const current = scope?.getSnapshot().value
       if (request !== currentProxyCheckRequest.current || current?.enableProxy !== true || normalizeOpenAICodexProxyUrl(current.proxyUrl) !== normalized) return
       setCurrentProxyCheck(result.reachable ? { status: 'success', result } : { status: 'failed', result })
@@ -445,14 +494,16 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     && snapshot.value?.enableProxy === true
     && normalizeOpenAICodexProxyUrl(draft.proxyUrl) === normalizeOpenAICodexProxyUrl(snapshot.value.proxyUrl)
   const validProxySelection = draft?.enableProxy !== true || acceptedProxyUnchanged || testedProxy
-  const validOverrides = (overrides: Readonly<Record<string, number>> | undefined): boolean =>
+  const validOverrides = (overrides: Readonly<Record<string, number>> | undefined, accepted: Readonly<Record<string, number>> | undefined): boolean =>
     isValidOpenAICodexContextWindowOverrides(overrides ?? {})
     && Object.entries(overrides ?? {}).every(([id, budget]) => {
+      if (!Number.isSafeInteger(budget) || budget <= 0) return false
+      if (accepted?.[id] === budget) return true
       const model = modelCatalog?.find(entry => entry.id === id)
       return model !== undefined && isValidOpenAICodexContextBudget(budget, model.maxContextWindow)
     })
-  const validContexts = draft !== undefined && validOverrides(draft.contextWindowOverrides)
-  const validMaxTokens = draft !== undefined && validOverrides(draft.maxTokensOverrides)
+  const validContexts = draft !== undefined && validOverrides(draft.contextWindowOverrides, snapshot.value?.contextWindowOverrides)
+  const validMaxTokens = draft !== undefined && validOverrides(draft.maxTokensOverrides, snapshot.value?.maxTokensOverrides)
   const valid = validModel && validTokens && validProxy && validImageModelHint && validContexts && validMaxTokens && validProxySelection
 
   const save = async (): Promise<void> => {
@@ -463,7 +514,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     try {
       const current = scope.getSnapshot()
       const original = baseline.current
-      if (current.value === undefined || original === undefined || current.revision === undefined) {
+      if (current.status !== 'ready' || !current.writable || current.value === undefined || original === undefined || current.revision === undefined) {
         throw new Error('Host settings are unavailable')
       }
       const changed = CONFIG_FIELDS.filter(field => !sameField(field, original[field], desired[field]))
@@ -518,10 +569,11 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
   }
 
   return (
-    <section style={{ ...sectionStyle, display: visibleModule === 'account' && !dirty ? 'none' : sectionStyle.display }} aria-label={t('configurationHeading')}>
+    <section style={{ ...sectionStyle, display: visibleModule === 'account' && !dirty && !manualProxyEdited && (!management || feedback === 'idle') ? 'none' : sectionStyle.display }} aria-label={t('configurationHeading')}>
       {loading ? <p style={bodyStyle} role="status">{t('settingsLoading')}</p> : null}
       {snapshot.status === 'unavailable' ? <p style={errorStyle} role="alert">{t('settingsUnavailable')}</p> : null}
       {snapshot.status === 'ready' && !snapshot.writable ? <p style={errorStyle} role="alert">{t('settingsReadOnly')}</p> : null}
+      {management && account && visibleModule === 'models' ? <AccountModelCatalog account={account} t={t} active refreshRevision={catalogRefreshRevision} /> : null}
       {draft === undefined ? null : (
         <>
           {activeModule === undefined ? (
@@ -555,7 +607,8 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           <fieldset style={fieldsetStyle} disabled={!editable}>
           <div id={`${panelPrefix}-models`} role="tabpanel" aria-labelledby={`${panelPrefix}-models-tab`} hidden={visibleModule !== 'models'} style={{ ...fieldsetStyle, display: visibleModule === 'models' ? fieldsetStyle.display : 'none' }}>
           <div>
-            <h3 style={headingStyle}>{t('modelCatalog')}</h3>
+            <h3 style={headingStyle}>{t(management ? 'managementGlobalModels' : 'modelCatalog')}</h3>
+            {management ? <p style={bodyStyle}>{t('managementModelScope')}</p> : null}
             <p style={{ ...bodyStyle, marginTop: 4 }}>{t('modelCatalogIntro')}</p>
           </div>
           {modelCatalog === undefined && !modelCatalogError ? <p style={bodyStyle} role="status">{t('modelCatalogLoading')}</p> : null}
@@ -791,7 +844,8 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
                     manualProbeRequest.current += 1
                     setManualProbeBusy(false)
                     setManualProbe(undefined)
-                    setManualProxyUrl(event.currentTarget.value)
+                    replaceManualProxyInput(event.currentTarget.value)
+                      setManualProxyEdited(true)
                     setFeedback('idle')
                   }}
                 />
@@ -904,6 +958,11 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
               <span style={bodyStyle}>{t('enableImageGenerationHelp')}</span>
             </span>
           </label>
+          <div style={formGridStyle}>
+            <label style={toggleRowStyle}><input type="checkbox" checked={draft.enableNewSessionFastMode} onChange={e => update('enableNewSessionFastMode', e.currentTarget.checked)} /><span>{t('newSessionFastMode')}</span></label>
+            <label style={toggleRowStyle}><input type="checkbox" checked={draft.enableNewSubagentFastMode} onChange={e => update('enableNewSubagentFastMode', e.currentTarget.checked)} /><span>{t('newSubagentFastMode')}</span></label>
+            <p style={bodyStyle}>{t('fastDefaultsHelp')}</p>
+          </div>
           <label style={formFieldStyle}>
             <span style={labelStyle}>{t('imageModelHint')}</span>
             <input
@@ -965,13 +1024,14 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
       {visibleModule === 'network' && !validProxy && draft !== undefined ? <p style={errorStyle} role="alert">{t('invalidProxyUrl')}</p> : null}
       {visibleModule === 'capabilities' && !validImageModelHint && draft !== undefined ? <p style={errorStyle} role="alert">{t('invalidImageModelHint')}</p> : null}
       {visibleModule === 'capabilities' ? <p style={bodyStyle}>{t('routingNote')}</p> : null}
-      <div style={{ ...actionsStyle, position: 'sticky', bottom: 0, zIndex: 1, padding: '10px 0', background: 'var(--dsw-alias-bg-layer-1, white)' }}>
+      {!management || dirty || manualProxyEdited || busy || feedback !== 'idle' ? <div className={management ? 'cc-manage-actions' : undefined} style={{ ...actionsStyle, position: 'sticky', bottom: 0, zIndex: 1, padding: '10px 0', background: 'var(--dsw-alias-bg-layer-1)' }}>
         <span aria-live="polite">
+          {management && dirty && feedback === 'idle' ? <span style={bodyStyle}>{t('managementUnsaved')}</span> : null}
           {feedback === 'saved' ? <span style={successStyle}>{t('settingsSaved')}</span> : null}
           {feedback === 'error' ? <span style={errorStyle}>{t('settingsSaveFailed')}</span> : null}
         </span>
         <span style={buttonsStyle}>
-          <button type="button" style={{ ...buttonStyle, minHeight: 44 }} disabled={!dirty || busy} onClick={discard}>{t('discard')}</button>
+          <button type="button" style={{ ...buttonStyle, minHeight: 44 }} disabled={(!dirty && !manualProxyEdited) || busy} onClick={discard}>{t('discard')}</button>
           <button
             type="button"
             style={{ ...primaryButtonStyle, minHeight: 44 }}
@@ -981,7 +1041,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
             {busy ? t('saving') : t('save')}
           </button>
         </span>
-      </div>
+      </div> : null}
     </section>
   )
 }

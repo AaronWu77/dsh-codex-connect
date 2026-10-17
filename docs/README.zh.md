@@ -10,6 +10,8 @@
 
 Codex Connect 为标准 Harness agent loop 添加 `openai-codex` 模型提供方。工具、权限、审批、附件、会话持久化、压缩与恢复继续由 Harness 管理。安装插件不会改变默认模型或搜索路由，也不会把 ChatGPT 订阅变成 OpenAI Platform API Key。
 
+本 checkout 是 DSH `0.2.1-alpha.2` 的本地兼容候选，不是已发布的版本组合。Codex 请求由插件自身精确依赖的 PI `0.87.1` 执行，不随宿主 PI 版本变化；精确指向 PI `1.0.2` 的 `pi-ai-host` alias 只提供宿主兼容的事件流。严格 Host 类型检查、聚焦 bridge/adapter/transport 测试及 Host/Client 构建已通过；尚未在此候选上验证真实 OAuth 或 provider 请求。下方已发布安装指南保留历史配对。
+
 ## 快速开始
 
 本指南介绍下方已发布的组合。请先运行 `dsh --version`；其他 DSH 版本请查阅[安装与升级](../INSTALL.md)。`alpha` 等会移动的 npm tag 不代表兼容性保证。
@@ -53,9 +55,11 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 
 - **账户：**在 DSH 主机上保存最多 16 个账户，手动选择后续请求使用的活动账户，不按会话绑定。请求保持已固定的账户，插件不会自动轮换或静默故障切换。每个已保存账户也会在模型选择器中作为独立路由出现——当前账户使用 `openai-codex`，其他账户使用 `openai-codex-2`、`openai-codex-3` 等——因此无需先切换账户即可直接选择其他已登录账户的模型。
 - **模型与 GPT-6：**pi-ai 尚无 `gpt-6-astra` 时插件补充该模型并校准推理档位；已保存的 Off/Minimal 选择需要[明确更新](../MIGRATION.md#astra-reasoning-selections)。实时或官方缓存目录列出 `gpt-6-sol`、`gpt-6-luna` 时，两款模型会加入每个账户路由；如果配置了 `models` 白名单，还须把这些 ID 加进去才会出现在选择器。模型列出不等于可调用，权限与额度由 OpenAI 决定。
-- **实时模型目录：**模型名称、上下文窗口、输出上限、推理档位和服务层级来自 `chatgpt.com`，缓存六小时。回退顺序为：实时读取、本插件位于 `$DSH_HOME` 的缓存、官方 CLI 缓存 `~/.codex/models_cache.json`（只读）、插件内置目录。任何一层失败都不会缩小或清空选择器。`contextWindowMode` 选择服务端默认值或其扩展上限，`modelCatalogClientVersion` 设置端点要求的版本校验值。详见[模型目录](reference.zh.md#模型目录)。
-- **Fast Mode：**为单个对话请求优先服务，默认关闭。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
+- **实时模型目录：**模型名称、上下文窗口、输出上限、推理档位和服务层级来自 `chatgpt.com`，缓存六小时。回退顺序为：实时读取、本插件位于 `$DSH_HOME` 的缓存、官方 CLI 缓存 `~/.codex/models_cache.json`（只读）、插件内置目录。任何一层失败都不会缩小或清空选择器。`contextWindowMode` 选择服务端默认值或其扩展上限，`modelCatalogClientVersion` 设置端点要求的版本校验值。详见[模型目录](reference.zh.md#模型目录)。 每个已保存账户独立维护目录及刷新有效期。模型从成功读取的目录中撤回后保留最后的元数据，并在读取凭据或发送推理请求之前本地拒绝；后续目录重新列出时恢复可用。
+- **Fast Mode：**为单个对话请求优先服务，默认关闭。主账户和带数字后缀的 Codex 账户路由使用 GPT 模型时均显示开关；切换账户后仍保持当前对话的设置。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
 - **额度：**显示服务端返回的 `5h`、`7d` 窗口及重置时间，已登录时通常每 60 秒刷新一次。不虚构缺失窗口；Spark 使用独立额度桶。其他插件可通过 `codexQuota` 客户端服务读取同一批数据：该服务报告每个已登录账户——活动账户来自设置页轮询，其他已保存账户由 DSH 主机读取——因此仪表盘可以并排显示两个账户。
+- **额度与用量卡片：**Codex Connect 管理侧栏额度卡片及详情对话框，保留紧凑布局、所有账户的额度窗口、重置时间和单元格下钻。账户余额明确为 **DeepSeek 平台余额**，含赠金与充值，不是 Codex credits。每日 Token 沿用 Context 保留的自身事件账本，包含归档与子会话用量、排除继承前缀；不会把额度百分比转换成 Token。Context 继续提供这项用量投影并负责上下文查看，不再承载额度界面。本次不增加订阅到期或套餐状态面板。
+- **管理中心：**设置 → 插件 → Codex Connect 直接展示用量概览、账号管理、模型、网络和能力，不再套一层折叠卡。概览复用只读用量弹窗；侧栏小卡保持原有功能。同一个设置表单在切换页签时保留未保存草稿，仅在“保存”或“放弃修改”后处理。账号授权、默认账号切换、移除及连接测试是单独的即时操作；移除账号需要确认。模型预览按已保存账号读取，不切换默认账号，也不发送推理请求。全局模型显示范围和 Token 预算不会选择当前对话的模型。
 - **插件更新：**检查 Codex Connect 新版本，不自动安装，也不建议更改 DSH。宿主兼容性信息通过主动运行的本地诊断查看。
 
 <p align="center">
@@ -71,12 +75,20 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 | 代理 | `enableProxy` | 不带凭据的 HTTP(S)，只作用于本插件流量。代理请求失败不会静默改走直连。 |
 | Codex 搜索 | `enableSearch` | 将整个 profile 的搜索路由切换为 Codex；关闭后恢复之前的路由。 |
 | 图片查看 | `enableImageTool` | 为视觉模型添加 `view_image`，读取本地文件和经过校验的公网 HTTP(S) 图片。 |
-| GPT Image 图片生成 | `enableImageGeneration` | 只接受提示词；可用性、尺寸和额度仍由账户及服务端控制。 |
+| GPT Image 图片生成与编辑 | `enableImageGeneration` | 显式生成，或编辑当前会话有权使用的图片；两种操作之间不会静默回退。 |
 | 自动审查 | `enableAutoReview` | 将有界的审批上下文、工具参数、工作目录和待执行动作发送到 `chatgpt.com`，首次启用需要确认。失败时交还人工审批。 |
 
 使用你当前 GPT 订阅计划提供的图片生成能力。生成原文件与附件预览分开保存；关闭能力或卸载插件不会删除这些文件。存储和访问规则见[配置与恢复](reference.zh.md#搜索与图片工具)。
 
 自动审查在 Harness 策略判定需要审批后执行，不会绕过该策略。启用前请阅读[自动审查行为](auto-review.zh.md)。
+
+## 模型体验
+
+图片编辑添加有界、带版本的选择句柄，数据来自已记录的图片元数据。原有图片块顺序不变；非 Codex 工具结果和会话重放也保留句柄。显式编辑发送一个目标和最多四张参考图片，会增加请求输入大小；插件不推断 KV-cache 节省。
+
+## 已知限制与暂缓工作
+
+部署后仍需使用真实账号验收 OAuth、模型权限及图片编辑端点。插件不自动切换账号或重放请求。
 
 ## 常见问题与重要限制
 
@@ -123,6 +135,8 @@ pnpm run check:dsh-install
 ```
 
 `check` 包含静态检查、单元测试、构建、兼容性和打包检查。`lint:metadata` 检查包元数据与发布规则；`lint:source` 检查宿主与浏览器 TypeScript 中未处理或误用的 Promise、无效 await、重复 case 和不可达代码。浏览器回归与隔离 DSH 安装是另外两个命令。这些检查不使用真实 OAuth 授权，也不能替代真实账户验收。
+
+浏览器测试会加载 SDK 的原生客户端 UI 模块；Harness 提供给这些模块的库在本仓库中列为开发依赖。运行前，请用 `pnpm exec playwright install chromium --only-shell` 安装锁文件中 Playwright 所需的 Chromium 构建。
 
 ## 许可证与致谢
 

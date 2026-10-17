@@ -25,7 +25,6 @@ export default [
   {
     entry: {
       index: 'src/index.ts',
-      invariant: 'src/invariant.ts',
       bin: 'src/bin.ts',
     },
     outDir: 'lib',
@@ -47,13 +46,13 @@ export default [
     deps: {
       neverBundle: [
         '@earendil-works/pi-ai',
+        '@earendil-works/pi-ai-host',
         '@deepseek-ai/schemastery',
         '@deepseek-ai/cordis',
         '@deepseek-ai/dsh-agent',
         '@deepseek-ai/dsh-attachment',
         '@deepseek-ai/dsh-fs',
         '@deepseek-ai/dsh-host-webserver',
-        '@deepseek-ai/dsh-invariants',
         '@deepseek-ai/dsh-llm',
         '@deepseek-ai/dsh-llm-pi-ai',
         '@deepseek-ai/dsh-session',

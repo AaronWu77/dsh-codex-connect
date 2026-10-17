@@ -35,7 +35,7 @@ function capture(store: OpenAICodexImageAssetStore, sessions?: SessionStore): Ca
   const ctx = {
     webServer: { register(value: CapturedRoute) { route = value; return () => undefined } },
     effect(factory: () => void | (() => void)) { return factory() },
-    get: () => sessions,
+    get: (name: string) => name === 'connection' ? { requestRejection: () => undefined } : sessions,
   } as unknown as Context
   registerOpenAICodexOriginalImageRoute(
     ctx,

@@ -319,7 +319,7 @@ export class OpenAICodexProxyManager {
   }
 
   /** Probe one proxy without credentials, model calls, quota calls, or settings writes. */
-  async probe(proxyUrl: string): Promise<OpenAICodexProxyProbeResult> {
+  async probe(proxyUrl: string, signal?: AbortSignal): Promise<OpenAICodexProxyProbeResult> {
     const normalized = normalizeOpenAICodexProxyUrl(proxyUrl)
     if (normalized === undefined) {
       return { proxyUrl, reachable: false, classification: 'invalid' }
@@ -329,7 +329,7 @@ export class OpenAICodexProxyManager {
         method: 'GET',
         redirect: 'manual',
         headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS),
+        signal: signal === undefined ? AbortSignal.timeout(OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(OPENAI_CODEX_PROXY_PROBE_TIMEOUT_MS)]),
       }))
       await response.body?.cancel()
       return {
@@ -365,6 +365,7 @@ export class OpenAICodexProxyManager {
 /** Probe the bounded automatic candidate set in parallel. */
 export async function detectOpenAICodexProxies(
   manager: OpenAICodexProxyManager,
+  signal?: AbortSignal,
 ): Promise<readonly OpenAICodexProxyProbeResult[]> {
-  return Promise.all(listOpenAICodexProxyCandidates().map(candidate => manager.probe(candidate)))
+  return Promise.all(listOpenAICodexProxyCandidates().map(candidate => manager.probe(candidate, signal)))
 }

@@ -124,7 +124,7 @@ describe('Models account navigation', () => {
       const pluginModel = plugin.getByRole('group', { name: 'GPT-5.6 Sol', exact: true })
       await pluginModel.getByRole('button', { name: en.contextAdjust, exact: true }).click()
       await expect.element(pluginModel.getByRole('spinbutton', { name: en.contextTokens })).toHaveValue(350_000)
-      await pluginModel.getByRole('button', { name: en.contextReset, exact: true }).click()
+      await pluginModel.getByRole('group', { name: en.contextTokens, exact: true }).getByRole('button', { name: en.contextReset, exact: true }).click()
       await plugin.getByRole('button', { name: en.save, exact: true }).click()
       await vi.waitFor(() => { expect(snapshot.value?.contextWindowOverrides).toEqual({}) })
       await more.click()

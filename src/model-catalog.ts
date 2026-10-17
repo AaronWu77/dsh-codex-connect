@@ -12,8 +12,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { readOpenAICodexRequestAuth } from './auth.ts'
-import type { OpenAICodexCredentialStore } from './store.ts'
+import { readOpenAICodexAccountRequestAuth } from './auth.ts'
+import type { OpenAICodexAccountSummary, OpenAICodexCredentialStore } from './store.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 import type {
   OpenAICodexCatalogSource,
@@ -41,8 +41,11 @@ export const OPENAI_CODEX_MODEL_CATALOG_TTL_MS = 6 * 60 * 60 * 1_000
 /** Total deadline for one catalog read, including authentication. */
 const CATALOG_REQUEST_TIMEOUT_MS = 15_000
 
-/** Cache document version owned by this plugin. */
-const CATALOG_CACHE_VERSION = 1
+/** Cache document version owned by this plugin; it stores one layer per account. */
+const CATALOG_CACHE_VERSION = 2
+
+/** Cache document version that stored a single account's models at the top level. */
+const LEGACY_CATALOG_CACHE_VERSION = 1
 
 /** One server-advertised Codex model. */
 export interface OpenAICodexLiveModel {
@@ -66,12 +69,17 @@ export interface OpenAICodexLiveModel {
   serviceTiers: readonly OpenAICodexModelServiceTier[]
   /** Server input modalities when the model declares them. */
   inputModalities: readonly string[]
+  /**
+   * True when the last accepted read for this account no longer advertised the model.
+   * The entry keeps resolving, so surfaces can explain the change instead of dropping it.
+   */
+  withdrawn?: true
 }
 
 /** Host dependencies of the catalog service. */
 export interface OpenAICodexModelCatalogOptions {
   /** Owns the stored accounts and the request-scoped credential capture. */
-  credentials: Pick<OpenAICodexCredentialStore, 'captureActiveAccount'>
+  credentials: Pick<OpenAICodexCredentialStore, 'accounts' | 'captureAccount' | 'captureActiveAccount'>
   /** Plugin-owned cache file path under the Harness home. */
   cachePath: string
   /** Official client version sent as the `client_version` gate. */
@@ -216,6 +224,7 @@ function parseOpenAICodexLiveModel(value: unknown, fields: OpenAICodexLiveModelF
     ...description === undefined ? {} : { description },
     ...defaultReasoningLevel === undefined ? {} : { defaultReasoningLevel },
     ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
+    ...value['withdrawn'] === true ? { withdrawn: true as const } : {},
   }
 }
 
@@ -251,6 +260,27 @@ function parseStoredOpenAICodexModels(value: unknown): OpenAICodexLiveModel[] {
   return parseOpenAICodexModelArray(value, STORED_MODEL_FIELDS)
 }
 
+/**
+ * Union one account's freshly advertised models with the ones it already had. A model the
+ * account no longer advertises keeps its last known record and is flagged, so its id still
+ * resolves and the surfaces can report the change rather than losing it silently.
+ * @param advertised - models from the latest accepted read, in server order.
+ * @param previous - models accepted for the same account before that read.
+ * @returns the advertised models followed by the withdrawn ones.
+ */
+export function mergeOpenAICodexLiveModels(
+  advertised: readonly OpenAICodexLiveModel[],
+  previous: readonly OpenAICodexLiveModel[],
+): readonly OpenAICodexLiveModel[] {
+  const advertisedSlugs = new Set(advertised.map(model => model.slug))
+  return [
+    ...advertised,
+    ...previous
+      .filter(model => !advertisedSlugs.has(model.slug))
+      .map(model => ({ ...model, withdrawn: true as const })),
+  ]
+}
+
 /** Release a discarded response without masking the status that caused it. */
 async function cancelDiscardedResponseBody(response: Response): Promise<void> {
   try {
@@ -274,14 +304,21 @@ export function openAICodexCliModelCachePath(): string {
  * never touches the network or disk; {@link initialize} loads the plugin cache,
  * and {@link refresh} performs at most one live read per TTL.
  */
+/** One stored account's resolved catalog layer and when it was last confirmed. */
+interface OpenAICodexAccountCatalogLayer {
+  snapshot: OpenAICodexCatalogSnapshot
+  /** When this layer was last confirmed live (a 200 body or a 304); 0 means never. */
+  checkedAt: number
+}
+
 export class OpenAICodexModelCatalog {
-  private snapshot: OpenAICodexCatalogSnapshot
+  private readonly layers = new Map<string, OpenAICodexAccountCatalogLayer>()
+  private activeAccountKey: string | undefined
   private revisionCounter = 0
-  /** When the last live layer was accepted (a 200 body or a 304); 0 means never. */
-  private checkedAt = 0
   private failureLogged = false
   private inflight: Promise<void> | undefined
   private disposed = false
+  private readonly lifetime = new AbortController()
   private clientVersion: string
 
   /**
@@ -289,14 +326,13 @@ export class OpenAICodexModelCatalog {
    */
   constructor(private readonly options: OpenAICodexModelCatalogOptions) {
     this.clientVersion = options.clientVersion
-    this.snapshot = { source: 'bundled', models: [] }
   }
 
-  /** Follow a settings change; a different gate invalidates the current TTL. */
+  /** Follow a settings change; a different gate invalidates every account's TTL. */
   setClientVersion(value: string): void {
     if (value === this.clientVersion) return
     this.clientVersion = value
-    this.checkedAt = 0
+    for (const layer of this.layers.values()) layer.checkedAt = 0
   }
 
   /** Monotonic identity of the current layer; profile caches key on it. */
@@ -304,55 +340,94 @@ export class OpenAICodexModelCatalog {
     return this.revisionCounter
   }
 
-  /** The effective live-model layer; empty means the bundled catalog answers. */
+  /** The current selection's effective live-model layer; empty means the bundled catalog answers. */
   models(): readonly OpenAICodexLiveModel[] {
-    return this.snapshot.models
-  }
-
-  /** Where the current layer came from and when it was accepted. */
-  source(): OpenAICodexCatalogSource {
-    return this.snapshot.source
-  }
-
-  /** Epoch milliseconds of the last accepted payload, when one exists. */
-  updatedAt(): number | undefined {
-    return this.snapshot.updatedAt
-  }
-
-  /** Load the plugin cache file, then start one live read when it is stale. */
-  async initialize(): Promise<void> {
-    const cached = await this.readCacheFile()
-    if (cached !== undefined) {
-      this.accept(cached.snapshot)
-      this.checkedAt = cached.checkedAt
-    }
-    if (!this.isFresh()) await this.refresh()
-  }
-
-  /** Whether the last accepted layer is still inside the TTL. */
-  isFresh(): boolean {
-    // 'Never accepted' is its own state: the 0 sentinel is not a recent check.
-    return this.checkedAt > 0
-      && this.snapshot.models.length > 0
-      && this.now() - this.checkedAt < OPENAI_CODEX_MODEL_CATALOG_TTL_MS
-  }
-
-  /** Stop accepting further reads; the current snapshot stays readable. */
-  dispose(): void {
-    this.disposed = true
+    return this.layers.get(this.layerKey())?.snapshot.models ?? []
   }
 
   /**
-   * Read the live catalog unless a fresh layer exists, coalescing callers.
-   * Never rejects: every failure keeps the previous layer and is logged once
-   * per failure streak.
+   * One stored account's effective live-model layer. An account with no accepted read
+   * answers with nothing, so its route falls back to the bundled catalog instead of
+   * advertising another account's entitlement list.
+   * @param accountKey - browser-safe account key from the credential store.
+   * @returns that account's server-advertised models.
+   */
+  modelsFor(accountKey: string | undefined): readonly OpenAICodexLiveModel[] {
+    if (accountKey === undefined) return this.models()
+    return this.layers.get(accountKey)?.snapshot.models ?? []
+  }
+
+  /** @param accountKey - Stored account, or the current account when omitted. @returns The accepted catalog source. */
+  source(accountKey?: string): OpenAICodexCatalogSource {
+    return this.layers.get(accountKey ?? this.layerKey())?.snapshot.source ?? 'bundled'
+  }
+
+  /** @param accountKey - Stored account, or the current account when omitted. @returns Accepted-payload epoch milliseconds, or undefined for bundled-only metadata. */
+  updatedAt(accountKey?: string): number | undefined {
+    return this.layers.get(accountKey ?? this.layerKey())?.snapshot.updatedAt
+  }
+
+  /** Load the plugin cache file, then start one live read per stored account when stale. */
+  async initialize(): Promise<void> {
+    const cached = await this.readCacheFile()
+    if (cached !== undefined) {
+      for (const [accountKey, layer] of cached.byAccount) this.layers.set(accountKey, layer)
+    }
+    this.activeAccountKey = await this.readActiveAccountKey()
+    // Version 1 carried a single account's models; only the current selection can own it.
+    if (cached?.legacy !== undefined && this.activeAccountKey !== undefined
+      && !this.layers.has(this.activeAccountKey)) {
+      this.layers.set(this.activeAccountKey, cached.legacy)
+    }
+    await this.refresh()
+  }
+
+  /** Whether the current account's layer is still inside the TTL. */
+  isFresh(): boolean {
+    const layer = this.layers.get(this.layerKey())
+    // 'Never accepted' is its own state: the 0 sentinel is not a recent check.
+    return layer !== undefined
+      && layer.checkedAt > 0
+      && layer.snapshot.models.length > 0
+      && this.now() - layer.checkedAt < OPENAI_CODEX_MODEL_CATALOG_TTL_MS
+  }
+
+  /** Stop accepting further reads; the current layers stay readable. */
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.lifetime.abort()
+    await this.inflight
+  }
+
+  /** The layer key answering for the current selection; empty until an account is known. */
+  private layerKey(): string {
+    return this.activeAccountKey ?? ''
+  }
+
+  /** Resolve the stored account the primary route currently authenticates as. */
+  private async readActiveAccountKey(): Promise<string | undefined> {
+    try {
+      const accounts = await this.options.credentials.accounts()
+      return accounts.find(account => account.active)?.accountKey
+    } catch (error: unknown) {
+      // An unreadable credential document leaves every layer as it was.
+      void error
+      return undefined
+    }
+  }
+
+  /**
+   * Read every stored account's live catalog unless fresh layers exist, coalescing callers.
+   * Never rejects: a failed account read keeps that account's previous layer and is logged
+   * once per failure streak.
    * @param force - bypass the TTL, as the manual refresh affordance does.
    */
-  async refresh(force = false): Promise<void> {
+  async refresh(force = false, cancellation?: AbortSignal): Promise<void> {
     if (this.disposed) return
     if (this.inflight !== undefined) return this.inflight
-    if (!force && this.isFresh()) return
-    this.inflight = this.runRefresh().finally(() => { this.inflight = undefined })
+    const signal = cancellation === undefined ? this.lifetime.signal : AbortSignal.any([cancellation, this.lifetime.signal])
+    if (signal.aborted) return
+    this.inflight = this.runRefresh(force, signal).finally(() => { this.inflight = undefined })
     return this.inflight
   }
 
@@ -360,8 +435,9 @@ export class OpenAICodexModelCatalog {
     return this.options.now?.() ?? Date.now()
   }
 
-  private accept(next: OpenAICodexCatalogSnapshot): void {
-    this.snapshot = next
+  /** Publish one account's layer at the point its read settled. */
+  private setLayer(accountKey: string, snapshot: OpenAICodexCatalogSnapshot, checkedAt: number): void {
+    this.layers.set(accountKey, { snapshot, checkedAt })
     this.revisionCounter += 1
   }
 
@@ -371,37 +447,23 @@ export class OpenAICodexModelCatalog {
     this.options.logError?.('dsh-codex-connect: live model catalog unavailable; keeping the last known catalog', error)
   }
 
-  private async runRefresh(): Promise<void> {
+  private async runRefresh(force: boolean, signal: AbortSignal): Promise<void> {
     const operation = async (): Promise<void> => {
-      const signal = AbortSignal.timeout(CATALOG_REQUEST_TIMEOUT_MS)
-      const auth = await readOpenAICodexRequestAuth(this.options.credentials, signal)
-      const response = await (this.options.fetchImpl ?? fetch)(this.requestUrl(), {
-        method: 'GET',
-        redirect: 'error',
-        headers: this.requestHeaders(auth.access, auth.accountId),
-        signal,
-      })
-      if (response.status === 304) {
-        await cancelDiscardedResponseBody(response)
-        // A 304 confirms the layer in hand, so it starts the TTL.
-        this.checkedAt = this.now()
-        this.failureLogged = false
-        return
+      const accounts = await this.options.credentials.accounts()
+      this.activeAccountKey = accounts.find(account => account.active)?.accountKey
+      // Drop layers of accounts the credential document no longer stores, so the cache
+      // file cannot accumulate entries for accounts a user removed.
+      const present = new Set(accounts.map(account => account.accountKey))
+      for (const accountKey of [...this.layers.keys()]) {
+        if (accountKey.length > 0 && !present.has(accountKey)) this.layers.delete(accountKey)
       }
-      if (!response.ok) {
-        await cancelDiscardedResponseBody(response)
-        throw new Error(`OpenAI Codex model catalog request failed with HTTP ${String(response.status)}`)
+      // Each stored account owns its entitlement list, so each read stands alone.
+      await Promise.all(accounts.map(account => this.refreshAccount(account, force, signal)))
+      const remaining = new Set((await this.options.credentials.accounts()).map(account => account.accountKey))
+      for (const key of this.layers.keys()) {
+        if (key.length > 0 && !remaining.has(key)) { this.layers.delete(key); this.revisionCounter += 1 }
       }
-      const models = parseOpenAICodexModelsPayload(await response.json())
-      const etag = response.headers.get('etag')
-      this.accept({
-        source: 'live',
-        updatedAt: this.now(),
-        models,
-        ...etag === null || etag.length === 0 ? {} : { etag },
-      })
-      this.checkedAt = this.now()
-      this.failureLogged = false
+      if (signal.aborted) return
       await this.writeCacheFile()
     }
     try {
@@ -409,21 +471,78 @@ export class OpenAICodexModelCatalog {
     } catch (error: unknown) {
       this.logFailure(error)
     }
-    if (this.snapshot.models.length === 0) await this.fallbackToCliCache()
+    if (!signal.aborted && this.models().length === 0) await this.fallbackToCliCache()
+  }
+
+  /** Read one account's catalog as that exact account; a failure keeps its previous layer. */
+  private async refreshAccount(account: OpenAICodexAccountSummary, force: boolean, cancellation: AbortSignal): Promise<void> {
+    const accountKey = account.accountKey
+    const current = this.layers.get(accountKey)
+    if (!force && current !== undefined && current.checkedAt > 0
+      && this.now() - current.checkedAt < OPENAI_CODEX_MODEL_CATALOG_TTL_MS) return
+    // A conditional read only makes sense against the layer it would replace.
+    const etag = current === undefined || current.checkedAt === 0 ? undefined : current.snapshot.etag
+    try {
+      const operation = async (): Promise<void> => {
+        const signal = AbortSignal.any([cancellation, AbortSignal.timeout(CATALOG_REQUEST_TIMEOUT_MS)])
+        const auth = await readOpenAICodexAccountRequestAuth(this.options.credentials, accountKey, signal)
+        const response = await (this.options.fetchImpl ?? fetch)(this.requestUrl(), {
+          method: 'GET',
+          redirect: 'error',
+          headers: this.requestHeaders(auth.access, auth.accountId, etag),
+          signal,
+        })
+        if (response.status === 304) {
+          await cancelDiscardedResponseBody(response)
+          // A 304 confirms the layer in hand, so it starts that account's TTL.
+          signal.throwIfAborted()
+          const layer = this.layers.get(accountKey)
+          if (layer !== undefined) layer.checkedAt = this.now()
+          this.failureLogged = false
+          return
+        }
+        if (!response.ok) {
+          await cancelDiscardedResponseBody(response)
+          throw new Error(`OpenAI Codex model catalog request failed with HTTP ${String(response.status)}`)
+        }
+        const advertised = parseOpenAICodexModelsPayload(await response.json())
+        signal.throwIfAborted()
+        const nextEtag = response.headers.get('etag')
+        this.setLayer(accountKey, {
+          source: 'live',
+          updatedAt: this.now(),
+          models: mergeOpenAICodexLiveModels(advertised, current?.snapshot.models ?? []),
+          ...nextEtag === null || nextEtag.length === 0 ? {} : { etag: nextEtag },
+        }, this.now())
+        this.failureLogged = false
+      }
+      await (this.options.proxyManager?.run(this.options.resolveProxyUrl?.(), operation) ?? operation())
+    } catch (error: unknown) {
+      // One account's failure must not blank another account's picker.
+      this.logFailure(error)
+    }
   }
 
   /** Second fallback: the official client's own cache, read but never written. */
   private async fallbackToCliCache(): Promise<void> {
+    const accountKey = this.layerKey()
+    const checkedAt = this.layers.get(accountKey)?.checkedAt ?? 0
     const path = this.options.cliCachePath ?? openAICodexCliModelCachePath()
     try {
       const document = JSON.parse(await readFile(path, 'utf8')) as unknown
       const models = parseOpenAICodexModelsPayload(document)
       const fetchedAt = isRecord(document) ? optionalTimestamp(document['fetched_at']) : undefined
-      this.accept({ source: 'cli-cache', models, ...fetchedAt === undefined ? {} : { updatedAt: fetchedAt } })
+      // The official client caches one account's catalog, so it only answers for the
+      // current selection and never counts as a confirmed live read.
+      this.setLayer(accountKey, {
+        source: 'cli-cache',
+        models,
+        ...fetchedAt === undefined ? {} : { updatedAt: fetchedAt },
+      }, checkedAt)
     } catch (error: unknown) {
       // No on-disk catalog answered; the bundled pi-ai records remain the picker.
       this.logFailure(error)
-      this.accept({ source: 'bundled', models: [] })
+      this.setLayer(accountKey, { source: 'bundled', models: [] }, checkedAt)
     }
   }
 
@@ -431,8 +550,7 @@ export class OpenAICodexModelCatalog {
     return `${OPENAI_CODEX_MODELS_URL}?client_version=${encodeURIComponent(this.clientVersion)}`
   }
 
-  private requestHeaders(access: string, accountId: string): Record<string, string> {
-    const etag = this.snapshot.etag
+  private requestHeaders(access: string, accountId: string, etag: string | undefined): Record<string, string> {
     return {
       authorization: `Bearer ${access}`,
       'chatgpt-account-id': accountId,
@@ -443,22 +561,30 @@ export class OpenAICodexModelCatalog {
     }
   }
 
-  private async readCacheFile(): Promise<{ snapshot: OpenAICodexCatalogSnapshot; checkedAt: number } | undefined> {
+  private async readCacheFile(): Promise<{
+    byAccount: ReadonlyMap<string, OpenAICodexAccountCatalogLayer>
+    legacy?: OpenAICodexAccountCatalogLayer
+  } | undefined> {
     try {
       const document = JSON.parse(await readFile(this.options.cachePath, 'utf8')) as unknown
-      if (!isRecord(document) || document['version'] !== CATALOG_CACHE_VERSION) return undefined
-      const models = parseStoredOpenAICodexModels(document)
-      const fetchedAt = optionalTimestamp(document['fetched_at'])
-      const etag = optionalString(document, 'etag')
-      return {
-        snapshot: {
-          source: 'cache',
-          models,
-          ...fetchedAt === undefined ? {} : { updatedAt: fetchedAt },
-          ...etag === undefined ? {} : { etag },
-        },
-        checkedAt: fetchedAt ?? 0,
+      if (!isRecord(document)) return undefined
+      if (document['version'] === CATALOG_CACHE_VERSION) {
+        const stored = document['accounts']
+        if (!isRecord(stored)) return undefined
+        const byAccount = new Map<string, OpenAICodexAccountCatalogLayer>()
+        for (const [accountKey, value] of Object.entries(stored)) {
+          if (!isRecord(value)) continue
+          const snapshot = this.cachedSnapshot(value)
+          if (snapshot === undefined) continue
+          byAccount.set(accountKey, { snapshot, checkedAt: optionalTimestamp(value['fetched_at']) ?? 0 })
+        }
+        return { byAccount }
       }
+      if (document['version'] !== LEGACY_CATALOG_CACHE_VERSION) return undefined
+      const snapshot = this.cachedSnapshot(document)
+      return snapshot === undefined
+        ? { byAccount: new Map() }
+        : { byAccount: new Map(), legacy: { snapshot, checkedAt: optionalTimestamp(document['fetched_at']) ?? 0 } }
     } catch (error: unknown) {
       // Absent or unreadable cache is the normal first-run state, not a failure streak.
       void error
@@ -466,13 +592,38 @@ export class OpenAICodexModelCatalog {
     }
   }
 
+  /** Decode one stored layer; a malformed layer reads as absent. */
+  private cachedSnapshot(value: Record<string, unknown>): OpenAICodexCatalogSnapshot | undefined {
+    try {
+      const models = parseStoredOpenAICodexModels(value)
+      const fetchedAt = optionalTimestamp(value['fetched_at'])
+      const etag = optionalString(value, 'etag')
+      return {
+        source: 'cache',
+        models,
+        ...fetchedAt === undefined ? {} : { updatedAt: fetchedAt },
+        ...etag === undefined ? {} : { etag },
+      }
+    } catch (error: unknown) {
+      // One malformed stored layer is dropped; the next live read refills it.
+      void error
+      return undefined
+    }
+  }
+
   private async writeCacheFile(): Promise<void> {
+    // No account was read yet; keep whatever is already on disk.
+    if (this.layers.size === 0) return
     const document = {
       version: CATALOG_CACHE_VERSION,
-      fetched_at: this.snapshot.updatedAt ?? this.now(),
-      client_version: this.clientVersion,
-      ...this.snapshot.etag === undefined ? {} : { etag: this.snapshot.etag },
-      models: this.snapshot.models,
+      accounts: Object.fromEntries([...this.layers]
+        .filter(([accountKey]) => accountKey.length > 0)
+        .map(([accountKey, layer]) => [accountKey, {
+          fetched_at: layer.snapshot.updatedAt ?? this.now(),
+          client_version: this.clientVersion,
+          ...layer.snapshot.etag === undefined ? {} : { etag: layer.snapshot.etag },
+          models: layer.snapshot.models,
+        }])),
     }
     try {
       await mkdir(dirname(this.options.cachePath), { recursive: true })

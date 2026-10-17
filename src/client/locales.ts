@@ -1,5 +1,10 @@
+import { usageEn, usageZh } from './usage-locales.ts'
+import { managementEn, managementZh } from './management-locales.ts'
+
 /** English copy for the OpenAI Codex Plugin configuration card. */
 export const en = {
+  ...usageEn,
+  ...managementEn,
   title: 'Codex Connect',
   modelsProviderName: 'Openai-Codex',
   modelsProviderSupport: 'Powered by the Codex Connect plugin.',
@@ -77,6 +82,11 @@ export const en = {
   resetCardUnnamed: 'Reset card',
   resetCardExpiry: 'Expires {time}',
   resetCardNoExpiry: 'No expiry',
+  usageUpdatedAt: 'Updated {time}',
+  usagePanelTitle: 'Quota & usage',
+  close: 'Close',
+  /** Locale handed to `Intl`, so dates follow the interface language, not the browser's. */
+  dateLocale: 'en',
   fastModeEnabledTitle: 'Current: 1.5× speed, with faster quota consumption. Click to switch to Standard speed.',
   fastModeDisabledTitle: 'Current: Standard speed. Click to enable 1.5× speed.',
   fastModeLoadingTitle: 'Fast Mode state is loading for this conversation.',
@@ -335,6 +345,8 @@ export type OpenAICodexSettingsKey = keyof typeof en
 
 /** Chinese copy for the OpenAI Codex Plugin configuration card. */
 export const zh: { [Key in OpenAICodexSettingsKey]: string } = {
+  ...usageZh,
+  ...managementZh,
   title: 'Codex Connect',
   modelsProviderName: 'Openai-Codex',
   modelsProviderSupport: '由 Codex Connect 插件提供支持。',
@@ -412,6 +424,11 @@ export const zh: { [Key in OpenAICodexSettingsKey]: string } = {
   resetCardUnnamed: '重置卡',
   resetCardExpiry: '{time} 到期',
   resetCardNoExpiry: '无到期时间',
+  usageUpdatedAt: '更新于 {time}',
+  usagePanelTitle: '额度与用量',
+  close: '关闭',
+  /** Locale handed to `Intl`, so dates follow the interface language, not the browser's. */
+  dateLocale: 'zh-CN',
   fastModeEnabledTitle: '当前：1.5 倍速度，额度消耗更快。点击切换到标准速度',
   fastModeDisabledTitle: '当前：标准速度。点击开启 1.5 倍速度',
   fastModeLoadingTitle: '正在加载此对话的 Fast Mode 状态。',

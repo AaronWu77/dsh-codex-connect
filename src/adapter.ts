@@ -1,6 +1,10 @@
+import type { GenerateOptions, StreamChunk, PreparedAdapterCall } from '@deepseek-ai/dsh-llm'
+import { appendImageSelectionHandles } from './image-handle-bridge.ts'
 /** OpenAI Codex adapter assembled from public dsh-llm-pi-ai extension points. */
 
 import { createHash } from 'node:crypto'
+import { bridgePiProvider } from './pi-host-bridge.ts'
+import * as piAi from '@earendil-works/pi-ai'
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
@@ -31,8 +35,9 @@ export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
 
 /** Optional adapter collaborators beyond the positional profile inputs. */
 export interface OpenAICodexAdapterExtras {
-  /** Live catalog layer and context-window mode feeding the effective picker. */
-  catalogLayer?: () => OpenAICodexCatalogLayer
+  imageEditingEnabled?: () => boolean
+  /** Live catalog layer for one route's account plus the context-window mode. */
+  catalogLayer?: (accountKey: string | undefined) => OpenAICodexCatalogLayer
   /** Resolve the payload field-name logger for each request; undefined disables logging. */
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined
 }
@@ -282,7 +287,7 @@ function openAICodexContentText(content: unknown): string {
 /**
  * Derive the prompt-cache key for one request. The Harness session id is the
  * stable per-session identity, so it is used whenever the request supplies one.
- * Without it, a hash of the system prompt and the first user message keeps
+ * Without it, a hash of the effective system prompt and the first user message keeps
  * requests from the same conversation together. A different key only causes a
  * prompt-cache miss; it never changes the model's answer.
  * @param context - exact pi-ai request context.
@@ -294,7 +299,11 @@ export function deriveOpenAICodexPromptCacheKey(
   sessionId: string | undefined,
 ): string | undefined {
   if (sessionId !== undefined && sessionId.trim().length > 0) return clampOpenAICodexPromptCacheKey(sessionId.trim())
-  const system = typeof context.systemPrompt === 'string' ? context.systemPrompt : ''
+  // Older supported pi-ai versions carry a prompt field rather than system messages.
+  const systemMessage = 'getCurrentSystemMessage' in piAi ? piAi.getCurrentSystemMessage(context.messages) : undefined
+  const system = systemMessage === undefined
+    ? context.systemPrompt ?? ''
+    : piAi.getSystemMessageText(systemMessage)
   const firstUser = (context.messages ?? [])
     .filter(message => message.role === 'user')
     .map(message => openAICodexContentText(message.content))
@@ -330,7 +339,7 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
   const streamSimple = provider.streamSimple
   return {
     ...provider,
-    streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
+    streamSimple(model, context, options?: SimpleStreamOptions) {
       const sessionId = options?.sessionId
       const codexRoute = provider.id === model.provider && isOpenAICodexRouteId(provider.id)
       const fastEnabled = codexRoute && policy.fastMode?.isEnabled(sessionId) === true
@@ -384,7 +393,7 @@ function requestProvider(
   const streamSimple = configured.streamSimple
   return {
     ...configured,
-    streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
+    streamSimple(model, context, options?: SimpleStreamOptions) {
       const proxyUrl = resolveProxyUrl?.()
       const operation = () => streamSimple.call(configured, model, context, options)
       return proxyManager?.runStream(proxyUrl, operation) ?? operation()
@@ -404,6 +413,20 @@ function requestProvider(
   }
 }
 
+/**
+ * Explain why one model cannot be requested on a route whose account no longer offers it.
+ * The message names the account and the safe next steps; it carries no credential or
+ * provider response data.
+ * @param routeLabel - selector label of the route's account, for example `OpenAI Codex (AaronWu)`.
+ * @param model - model id the account's latest list no longer advertises.
+ * @returns the actionable failure the adapter reports instead of sending the request.
+ */
+export function openAICodexWithdrawnModelMessage(routeLabel: string, model: string): string {
+  return `OpenAI Codex model "${model}" is not currently offered to ${routeLabel}.`
+    + ' This account no longer advertises the model; its access or model catalog may have changed.'
+    + ' Refresh models under Settings, Plugins, Codex Connect, or choose another model or account.'
+}
+
 /** Build the pi-ai profile with the model-error index required by DSH 0.1.5-rc.1. */
 export function createOpenAICodexProfile(
   provider: Provider,
@@ -415,12 +438,19 @@ export function createOpenAICodexProfile(
   route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
   layer?: OpenAICodexCatalogLayer | undefined,
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
-): OpenAICodexRouteProfile & { piProvider: Provider } {
+): OpenAICodexRouteProfile & { piProvider: ReturnType<typeof bridgePiProvider> } {
   const layeredProvider = layer === undefined
     ? provider
     : applyOpenAICodexLiveCatalog(provider, layer.live, layer.mode).provider
   const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides, layer?.live)
   const routedProvider = withOpenAICodexRouteId(effectiveProvider, route.routeId)
+  // A withdrawn model stays listed but never reaches the provider: the adapter rejects it
+  // with the reason before any request is prepared or streamed.
+  const modelErrors = new Map<string, string>()
+  for (const model of layer?.live ?? []) {
+    if (model.withdrawn !== true) continue
+    modelErrors.set(model.slug, openAICodexWithdrawnModelMessage(route.displayName, model.slug))
+  }
   const profile = {
     provider: route.routeId,
     displayName: route.displayName,
@@ -431,8 +461,8 @@ export function createOpenAICodexProfile(
     requestImageMaxBytes: OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-connect retryPolicy'),
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
-    modelErrors: new Map<string, string>(),
-    piProvider: requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields),
+    modelErrors,
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields)),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -566,43 +596,75 @@ export function createOpenAICodexAdapter(
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
-    const layer = extras?.catalogLayer?.()
+    // Each route reads the catalog of the account it authenticates as.
+    const layers = bindings.map(route => extras?.catalogLayer?.(route.accountKey))
     const key = {
       window: windowOverrides === undefined ? null : { ...windowOverrides },
       tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
       routes: bindings.map(route => [route.routeId, route.displayName, route.accountKey ?? null]),
-      catalog: layer === undefined ? null : { mode: layer.mode, live: layer.live },
+      catalog: bindings.map((route, index) => {
+        const layer = layers[index]
+        return layer === undefined ? null : { route: route.routeId, mode: layer.mode, live: layer.live }
+      }),
     }
     if (profiles === undefined || !deepEqualJson(previousKey, key)) {
       previousKey = key
       // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
-      profiles = new Map(bindings.map(route => [
+      profiles = new Map(bindings.map((route, index) => [
         route.routeId,
-        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layer, extras?.resolveOnPayloadFields),
+        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields),
       ] as const))
     }
     return profiles
   }
   class OpenAICodexAdapter extends PiAiAdapter {
+    private streamWithImageHandles(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>, options: GenerateOptions): AsyncIterable<StreamChunk> {
+      const projected = extras?.imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(options) : options
+      return stream(projected)
+    }
+    override async prepareCall(providerId: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
+      const prepared = await super.prepareCall(providerId, model, signal)
+      return { ...prepared, stream: options => this.streamWithImageHandles(prepared.stream, options) }
+    }
+    override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      return this.streamWithImageHandles(next => super.stream(next), options)
+    }
+
     override async listModels(providerId: string) {
       const catalog = await super.listModels(providerId)
       const configured = visibleModelIds?.()
-      if (configured === undefined) return catalog
-      const visible = new Set(configured)
-      return catalog.filter(model => visible.has(model.id))
+      const visible = configured === undefined ? undefined : new Set(configured)
+      const errors = currentProfiles().get(providerId)?.modelErrors
+      return catalog.filter(model => visible === undefined || visible.has(model.id)).map(model => {
+        const failure = errors?.get(model.id)
+        return failure === undefined ? model : { ...model, description: failure }
+      })
     }
   }
   return new OpenAICodexAdapter({
     profiles: currentProfiles,
     resolveApiKey: async (_provider, profile) => {
       const accountKey = (profile as OpenAICodexRouteProfile).openaiCodexAccountKey
-      const operation = async () => (accountKey === undefined
-        ? await readOpenAICodexRequestAuth(credentials)
-        : await readOpenAICodexAccountRequestAuth(credentials, accountKey)).access
+      const operation = async () => {
+        const auth = accountKey === undefined ? await readOpenAICodexRequestAuth(credentials) : await readOpenAICodexAccountRequestAuth(credentials, accountKey)
+        return auth.access
+      }
       return proxyManager?.run(resolveProxyUrl?.(), operation) ?? operation()
     },
     // Host-side auth accepts only the explicit bearer token resolved above.
     auth: { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() },
     resolveAttachments,
   })
+}
+
+/** Deterministic image handles derived exclusively from logged attachment metadata. */
+export function withOpenAICodexImageSelectionHandles(options: GenerateOptions): GenerateOptions {
+  let changed = false
+  const messages = options.messages.map(message => {
+    const content = appendImageSelectionHandles(message.content)
+    if (content === undefined) return message
+    changed = true
+    return { ...message, content }
+  })
+  return changed ? { ...options, messages } : options
 }

@@ -1,5 +1,7 @@
 # Installation Runbook for CLI Agents
 
+This checkout is a local compatibility candidate for DSH `0.2.1-alpha.2` and local Codex Connect `0.1.0-alpha.4.35`, not a registry installation recommendation. PI `0.87.1` still executes requests; the exact PI `1.0.2` alias supplies only host-compatible event streams. Isolated typechecks, builds and focused tests pass; no production installation, fresh OAuth or real provider request was validated. The published guidance below retains its existing verification record.
+
 Alpha 4.33 is verified with DSH `0.1.2-rc.1` and pi-ai `0.84.4` within `^0.84.2`, and with DSH `0.1.5-alpha.1` and pi-ai `0.85.1`.
 
 Install `dsh-codex-connect` into one requested DeepSeek Harness profile without changing its current default model, search route, global configuration, or OAuth state.
