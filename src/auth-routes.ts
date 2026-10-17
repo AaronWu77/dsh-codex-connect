@@ -474,14 +474,6 @@ export async function trustedRequestDecision(
   }
 }
 
-/** Whether a request is currently trusted; the sidecar is read on every call. */
-export async function trustedRequest(
-  req: IncomingMessage,
-  trustedOrigins?: OpenAICodexTrustedOriginsStore,
-): Promise<boolean> {
-  return (await trustedRequestDecision(req, trustedOrigins)).trusted
-}
-
 function json(res: ServerResponse, status: number, value: unknown): void {
   if (res.destroyed) return
   res.writeHead(status, {

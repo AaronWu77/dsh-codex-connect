@@ -16,7 +16,6 @@ const CLIENT_EXTERNALS = [
   '@deepseek-ai/dsh-api-session-controller/client',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-layout/client',
-  '@deepseek-ai/dsh-client-ui-attachment',
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-ui-settings/client',
 ] as const

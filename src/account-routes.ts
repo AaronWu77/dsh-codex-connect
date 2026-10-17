@@ -5,7 +5,7 @@
 
 import type { OpenAICodexAccountSummary } from './store.ts'
 import { OPENAI_CODEX_PROVIDER } from './store.ts'
-import { OPENAI_CODEX_ACCOUNT_LABEL_LENGTH, openAICodexAccountKeySuffix } from './account-contract.ts'
+import { openAICodexAccountKeySuffix } from './account-contract.ts'
 
 /** One registered LLM route and the stored account it authenticates as. */
 export interface OpenAICodexAccountRoute {
@@ -19,9 +19,6 @@ export interface OpenAICodexAccountRoute {
 
 /** Label shown for the route serving the store's active account. */
 export const OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'
-
-/** Account-key characters kept in a secondary route label. */
-export const OPENAI_CODEX_ROUTE_LABEL_SUFFIX_LENGTH = OPENAI_CODEX_ACCOUNT_LABEL_LENGTH
 
 export { isOpenAICodexRouteId } from './account-route-id.ts'
 
