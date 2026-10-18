@@ -5,7 +5,7 @@ import { DEFAULT_OPENAI_CODEX_SETTINGS } from '../src/settings-contract.ts'
 
 const loading: ConfigFormSnapshot<typeof DEFAULT_OPENAI_CODEX_SETTINGS> = {
   status: 'loading', value: undefined, base: undefined, user: undefined,
-  revision: undefined, writable: false, mode: 'host',
+  revision: undefined, writable: false,
 }
 
 function fixture() {
@@ -38,7 +38,7 @@ function fixture() {
       for (const listener of mirrorListeners) listener()
     },
     rejectRead() {
-      mirrorSnapshot = { status: 'unavailable', view: undefined, error: 'unavailable' }
+      mirrorSnapshot = { status: 'idle', view: undefined, error: 'unavailable' }
       for (const listener of mirrorListeners) listener()
     },
     acceptNative() {

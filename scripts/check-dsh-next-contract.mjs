@@ -225,9 +225,11 @@ const candidateDoctor = {
     schemaVersion: 1,
     status: 'unverified',
     node: { status: 'compatible' },
-    packages: Object.fromEntries(['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@earendil-works/pi-ai'].map(name => [name, {
-      supported: name === '@earendil-works/pi-ai' ? declaredCompatibility.piAi.version : declaredCompatibility.dshPluginApi.versions.join(' || '),
-      installed: name === '@earendil-works/pi-ai' ? '0.85.1' : '0.1.6-alpha.1',
+    packages: Object.fromEntries(['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@earendil-works/pi-ai', '@earendil-works/pi-ai-host'].map(name => [name, {
+      supported: name === '@earendil-works/pi-ai' ? declaredCompatibility.piAi.version
+        : name === '@earendil-works/pi-ai-host' ? declaredCompatibility.piAiHost.version : declaredCompatibility.dshPluginApi.versions.join(' || '),
+      installed: name === '@earendil-works/pi-ai' ? '0.85.1'
+        : name === '@earendil-works/pi-ai-host' ? declaredCompatibility.piAiHost.version : '0.1.6-alpha.1',
       status: 'unverified',
     }])),
   },
@@ -246,7 +248,8 @@ assertContract('declared installation checks still reject unverified versions', 
 const declaredDoctor = structuredClone(candidateDoctor)
 declaredDoctor.compatibility.status = 'compatible'
 for (const [name, entry] of Object.entries(declaredDoctor.compatibility.packages)) {
-  entry.installed = name === '@earendil-works/pi-ai' ? '0.84.4' : '0.1.2-rc.1'
+  entry.installed = name === '@earendil-works/pi-ai' ? declaredCompatibility.piAi.version
+    : name === '@earendil-works/pi-ai-host' ? declaredCompatibility.piAiHost.version : declaredCompatibility.dshPluginApi.version
   entry.status = 'compatible'
 }
 assertContract('declared compatible diagnostics still pass', doctorOutcome(declaredDoctor, {}, 0) === 'continue-runtime')
@@ -256,6 +259,8 @@ assertContract('malformed candidate JSON remains a compatibility failure', docto
 for (const [name, mutate] of [
   ['Node engine mismatch', report => { report.compatibility.node.status = 'incompatible' }],
   ['missing dependency', report => { delete report.compatibility.packages['@deepseek-ai/dsh-llm'].installed }],
+  ['missing Host PI alias', report => { delete report.compatibility.packages['@earendil-works/pi-ai-host'] }],
+  ['old Host PI alias', report => { report.compatibility.packages['@earendil-works/pi-ai-host'].installed = '1.0.2' }],
   ['unknown dependency', report => { report.compatibility.packages['@deepseek-ai/dsh-llm'].status = 'unknown' }],
   ['incompatible dependency', report => { report.compatibility.packages['@deepseek-ai/dsh-llm'].status = 'incompatible' }],
   ['wrong installed candidate', report => { report.compatibility.packages['@deepseek-ai/dsh-llm'].installed = '0.1.3-alpha.2' }],

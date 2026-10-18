@@ -24,6 +24,7 @@ class ForwardedStream extends HostStream {
 
   override async *[Symbol.asyncIterator]() {
     for await (const event of { [Symbol.asyncIterator]: () => super[Symbol.asyncIterator]() }) yield event
+    await this.forwarding
     if (this.failure !== undefined) throw this.failure.error
   }
 

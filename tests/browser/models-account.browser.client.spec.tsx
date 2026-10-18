@@ -50,7 +50,7 @@ describe('Models account navigation', () => {
   it('shares saved configuration with the plugin entry, discards modal drafts and contains keyboard focus', async () => {
     let snapshot: ConfigFormSnapshot<OpenAICodexSettingsConfig> = {
       status: 'ready', value: { ...DEFAULT_OPENAI_CODEX_SETTINGS }, base: { ...DEFAULT_OPENAI_CODEX_SETTINGS },
-      user: undefined, revision: 0, writable: true, mode: 'host',
+      user: undefined, revision: 0, writable: true,
     }
     const listeners = new Set<() => void>()
     const mutate = vi.fn<ConfigForm<OpenAICodexSettingsConfig>['mutate']>(async (ops, revision) => {

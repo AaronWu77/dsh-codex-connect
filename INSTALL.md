@@ -1,6 +1,6 @@
 # Installation Runbook for CLI Agents
 
-This checkout is a local compatibility candidate for DSH `0.2.1-alpha.2` and local Codex Connect `0.1.0-alpha.4.35`, not a registry installation recommendation. PI `0.87.1` still executes requests; the exact PI `1.0.2` alias supplies only host-compatible event streams. Isolated typechecks, builds and focused tests pass; no production installation, fresh OAuth or real provider request was validated. The published guidance below retains its existing verification record.
+This checkout is a local candidate for DSH `0.2.1-rc.2` (Host `687f282`) and local Codex Connect `0.1.0-alpha.4.35`, not a registry installation recommendation. Request/OAuth PI remains exactly `0.87.1`; the Host stream alias is exactly PI `1.1.0`. DSH `0.2.1-alpha.2` with its PI `1.0.2` bridge is no longer a declared pairing for this candidate. [Local validation evidence](docs/rc2-candidate-validation.md) is not production installation, browser, fresh OAuth or real provider verification. Historical published guidance below does not qualify this modified checkout.
 
 Alpha 4.33 is verified with DSH `0.1.2-rc.1` and pi-ai `0.84.4` within `^0.84.2`, and with DSH `0.1.5-alpha.1` and pi-ai `0.85.1`.
 

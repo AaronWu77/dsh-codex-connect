@@ -558,6 +558,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       },
     ),
   )
+
   ctx.inject(['webServer', 'connection'], webCtx => {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl,
       configValue(config.oauthTimeoutMs) ?? OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS)

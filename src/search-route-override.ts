@@ -2,13 +2,11 @@
 
 import type WebRuntime from '@deepseek-ai/dsh-web'
 
-const SEARCH_PROVIDER_FIELD = 'searchProviderId'
-
 function readSearchProvider(web: WebRuntime): string | undefined {
-  if (!Object.prototype.hasOwnProperty.call(web, SEARCH_PROVIDER_FIELD)) {
-    throw new Error('The installed DeepSeek Harness does not expose the supported search route field')
+  if (typeof web.getSearchProvider !== 'function' || typeof web.setSearchProvider !== 'function') {
+    throw new Error('The installed DeepSeek Harness does not expose the supported search route API')
   }
-  const value = Reflect.get(web, SEARCH_PROVIDER_FIELD) as unknown
+  const value = web.getSearchProvider()
   if (value !== undefined && typeof value !== 'string') {
     throw new Error('The installed DeepSeek Harness returned an invalid search route')
   }
@@ -16,7 +14,11 @@ function readSearchProvider(web: WebRuntime): string | undefined {
 }
 
 function writeSearchProvider(web: WebRuntime, provider: string | undefined): void {
-  if (!Reflect.set(web, SEARCH_PROVIDER_FIELD, provider) || readSearchProvider(web) !== provider) {
+  if (typeof web.setSearchProvider !== 'function') {
+    throw new Error('The installed DeepSeek Harness does not expose the supported search route API')
+  }
+  web.setSearchProvider(provider)
+  if (readSearchProvider(web) !== provider) {
     throw new Error('The installed DeepSeek Harness refused the search route change')
   }
 }

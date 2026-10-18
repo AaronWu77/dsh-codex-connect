@@ -4,9 +4,9 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "dshPluginApi": {
-    "version": "0.2.1-alpha.2",
+    "version": "0.2.1-rc.2",
     "versions": [
-      "0.2.1-alpha.2"
+      "0.2.1-rc.2"
     ],
     "packages": [
       "@deepseek-ai/dsh-agent",
@@ -27,5 +27,9 @@
   "piAi": {
     "package": "@earendil-works/pi-ai",
     "version": "0.87.1"
+  },
+  "piAiHost": {
+    "package": "@earendil-works/pi-ai-host",
+    "version": "1.1.0"
   }
 }

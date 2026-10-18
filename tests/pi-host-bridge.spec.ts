@@ -110,6 +110,28 @@ describe('local PI to host stream bridge', () => {
     await expect(stream.result()).rejects.toBe(failure)
   })
 
+  it('rejects every consumer when a result read fails after a terminal event', async () => {
+    const f = fixture('stop')
+    const failure = new Error('late result failure')
+    let rejectResult!: (error: unknown) => void
+    const result = new Promise<AssistantMessage>((_resolve, reject) => { rejectResult = reject })
+    const local: Provider = { ...f.local, streamSimple() {
+      return new class extends LocalStream {
+        override async *[Symbol.asyncIterator]() {
+          yield { type: 'done' as const, reason: 'stop' as const, message: f.terminal }
+        }
+        override result() { return result }
+      }()
+    } }
+    const stream = bridgePiProvider(local).streamSimple(model, hostNormalizeContext({ messages: [] }))
+    const iterator = stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ type: 'done' })
+    const consumers = [iterator.next(), stream[Symbol.asyncIterator]().next(), stream.result(), stream.result()]
+    const settlements = Promise.all(consumers.map(consumer => expect(consumer).rejects.toBe(failure)))
+    rejectResult(failure)
+    await settlements
+  })
+
   it('preserves synchronous provider errors instead of hiding them in a stream', () => {
     const error = new Error('auth missing')
     const f = fixture('stop')
@@ -148,7 +170,7 @@ describe('local PI to host stream bridge', () => {
     expect(bridgePiProvider(f.local).fetchDeferred).toBeUndefined()
   })
 
-  it('delivers local output through the real alpha.2 PiAiAdapter', async () => {
+  it('delivers local output through the real rc.2 PiAiAdapter', async () => {
     const f = fixture('stop')
     const profile = createOpenAICodexProfile(f.local)
     const adapter = new PiAiAdapter({ profiles: () => new Map([[profile.provider, profile]]),

@@ -11,10 +11,10 @@ import { runBoundedCommand } from './bounded-command.mjs'
 import { readDshRegistryManifest, resolveExactDshOverrides } from './exact-dsh-fixture.mjs'
 
 const JSON_SCHEMA_VERSION = 1
-const DEFAULT_DSH_VERSION = '0.1.2-rc.1'
 const UNDECLARED_CANARY_MODE = '1'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const COMPATIBILITY = JSON.parse(await readFile(join(REPO_ROOT, 'compatibility.json'), 'utf8'))
+const DEFAULT_DSH_VERSION = COMPATIBILITY.dshPluginApi.version
 const DECLARED_DSH_VERSIONS = COMPATIBILITY.dshPluginApi.versions
 const DECLARED_DSH_RANGE = DECLARED_DSH_VERSIONS.join(' || ')
 const RUNTIME_CHECK = resolve(REPO_ROOT, 'scripts/check-installed-runtime.mjs')
@@ -115,7 +115,7 @@ function assertDoctorJson(value, dshHome, repoRoot, { allowUndeclaredCanaryVersi
     throw new CompatibilityCheckError('doctor JSON exposed credential path or expiry data')
   }
   const compatibility = report['compatibility']
-  const expectedPackages = ['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@earendil-works/pi-ai']
+  const expectedPackages = ['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@earendil-works/pi-ai', '@earendil-works/pi-ai-host']
   const acceptedStatuses = allowUndeclaredCanaryVersion ? ['compatible', 'unverified'] : ['compatible']
   if (compatibility?.['schemaVersion'] !== JSON_SCHEMA_VERSION || !acceptedStatuses.includes(compatibility?.['status'])) {
     throw new CompatibilityCheckError('doctor JSON did not report schemaVersion 1 and compatible runtime dependencies')
@@ -125,12 +125,16 @@ function assertDoctorJson(value, dshHome, repoRoot, { allowUndeclaredCanaryVersi
   }
   for (const name of expectedPackages) {
     const entry = compatibility?.['packages']?.[name]
-    const supported = name === '@earendil-works/pi-ai' ? COMPATIBILITY.piAi.version : DECLARED_DSH_RANGE
+    const supported = name === '@earendil-works/pi-ai' ? COMPATIBILITY.piAi.version
+      : name === '@earendil-works/pi-ai-host' ? COMPATIBILITY.piAiHost.version : DECLARED_DSH_RANGE
     if (entry?.['supported'] !== supported || typeof entry?.['installed'] !== 'string'
       || entry['installed'].length === 0 || !acceptedStatuses.includes(entry?.['status'])) {
       throw new CompatibilityCheckError(`doctor JSON did not report compatible ${name}`)
     }
-    if (name !== '@earendil-works/pi-ai' && entry['installed'] !== dshVersion) {
+    if (name === '@earendil-works/pi-ai-host' && entry['installed'] !== COMPATIBILITY.piAiHost.version) {
+      throw new CompatibilityCheckError('doctor reported an unexpected Host PI alias version')
+    }
+    if (name.startsWith('@deepseek-ai/dsh-') && entry['installed'] !== dshVersion) {
       throw new CompatibilityCheckError(`doctor reported ${String(entry['installed'])} for ${name}; requested DSH ${dshVersion}`)
     }
   }

@@ -10,7 +10,7 @@ const COMPATIBILITY_FILE = join(REPO_ROOT, 'compatibility.json')
 const PACKAGE_FILE = join(REPO_ROOT, 'package.json')
 const JSON_SCHEMA_VERSION = 1
 const REQUIRED_NODE_RANGE = '^22.19.0 || >=24.0.0'
-const REQUIRED_DSH_VERSION = '0.2.1-alpha.2'
+const REQUIRED_DSH_VERSION = '0.2.1-rc.2'
 const REQUIRED_DSH_VERSIONS = [REQUIRED_DSH_VERSION]
 const REQUIRED_DSH_RANGE = REQUIRED_DSH_VERSIONS.join(' || ')
 const REQUIRED_PI_AI_RANGE = '0.87.1'
@@ -93,10 +93,11 @@ async function main() {
   ])
   if (packageJson.dependencies?.[PI_AI_PACKAGE] !== REQUIRED_PI_AI_RANGE) fail(`request dependency ${PI_AI_PACKAGE} must match ${REQUIRED_PI_AI_RANGE}`)
   const hostPiAlias = '@earendil-works/pi-ai-host'
-  if (packageJson.dependencies?.[hostPiAlias] !== 'npm:@earendil-works/pi-ai@1.0.2') fail('host PI stream alias must be pinned to 1.0.2')
-  if (await installedPackageVersion(hostPiAlias, PI_AI_PACKAGE) !== '1.0.2') fail('installed host PI stream alias must resolve to 1.0.2')
+  if (packageJson.dependencies?.[hostPiAlias] !== 'npm:@earendil-works/pi-ai@1.1.0') fail('host PI stream alias must be pinned to 1.1.0')
+  if (await installedPackageVersion(hostPiAlias, PI_AI_PACKAGE) !== '1.1.0') fail('installed host PI stream alias must resolve to 1.1.0')
   const hostStream = await import('@earendil-works/pi-ai-host/utils/event-stream')
   if (typeof hostStream.createAssistantMessageEventStream !== 'function') fail('host PI event-stream factory is unavailable')
+  if (compatibility.piAiHost?.package !== hostPiAlias || compatibility.piAiHost?.version !== '1.1.0') fail('compatibility.json host PI alias mismatch')
   if (compatibility.schemaVersion !== JSON_SCHEMA_VERSION) fail('compatibility.json schemaVersion must be 1')
   if (compatibility.engines?.node !== REQUIRED_NODE_RANGE) fail('compatibility.json Node engine mismatch')
   if (compatibility.dshPluginApi?.version !== REQUIRED_DSH_VERSION) fail('compatibility.json DSH plugin API version mismatch')
@@ -144,6 +145,7 @@ async function main() {
     ['@deepseek-ai/dsh-llm', packageEntry(REQUIRED_DSH_RANGE, installedDeclared['@deepseek-ai/dsh-llm'])],
     ['@deepseek-ai/dsh-llm-pi-ai', packageEntry(REQUIRED_DSH_RANGE, installedDeclared['@deepseek-ai/dsh-llm-pi-ai'])],
     [PI_AI_PACKAGE, { supported: REQUIRED_PI_AI_RANGE, installed: installedPiAi, status: piAiStatus(installedPiAi) }],
+    [hostPiAlias, { supported: '1.1.0', installed: await installedPackageVersion(hostPiAlias, PI_AI_PACKAGE), status: 'compatible' }],
   ])
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,

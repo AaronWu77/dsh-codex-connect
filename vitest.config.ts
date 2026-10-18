@@ -6,6 +6,7 @@ const packageVersion = (JSON.parse(
 ) as { version: string }).version
 
 export default defineConfig({
+  resolve: { dedupe: ['react', 'react-dom'] },
   define: {
     __CODEX_CONNECT_VERSION__: JSON.stringify(packageVersion),
   },
@@ -13,6 +14,7 @@ export default defineConfig({
     include: ['tests/**/*.spec.{ts,tsx}'],
     exclude: ['tests/browser/**'],
     testTimeout: 30_000,
-    server: { deps: { inline: [/@deepseek-ai[\/]dsh-client-ui-primitives/] } },
+    // Linked Host packages have real paths outside node_modules; inline both path forms.
+    server: { deps: { inline: [/[/\\](?:dsh-client-)?ui-primitives[/\\]/] } },
   },
 })

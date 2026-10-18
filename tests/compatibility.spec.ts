@@ -14,6 +14,7 @@ const compatiblePackages = {
   '@deepseek-ai/dsh-llm': SUPPORTED_DSH_PLUGIN_API_VERSION,
   '@deepseek-ai/dsh-llm-pi-ai': SUPPORTED_DSH_PLUGIN_API_VERSION,
   '@earendil-works/pi-ai': '0.87.1',
+  '@earendil-works/pi-ai-host': '1.1.0',
 } as const
 
 describe('compatibility contract', () => {
@@ -26,6 +27,7 @@ describe('compatibility contract', () => {
         '@deepseek-ai/dsh-llm': { supported: SUPPORTED_DSH_PLUGIN_API_RANGE, installed: SUPPORTED_DSH_PLUGIN_API_VERSION, status: 'compatible' },
         '@deepseek-ai/dsh-llm-pi-ai': { supported: SUPPORTED_DSH_PLUGIN_API_RANGE, installed: SUPPORTED_DSH_PLUGIN_API_VERSION, status: 'compatible' },
         '@earendil-works/pi-ai': { supported: SUPPORTED_PI_AI_RANGE, installed: '0.87.1', status: 'compatible' },
+        '@earendil-works/pi-ai-host': { supported: '1.1.0', installed: '1.1.0', status: 'compatible' },
       },
     })
   })
@@ -34,12 +36,14 @@ describe('compatibility contract', () => {
     expect(JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'))).toEqual(COMPATIBILITY_CONTRACT)
   })
 
-  it('accepts only the complete alpha.2 and pi-ai 0.87.1 pair', () => {
+  it('accepts only the complete rc.2, request PI 0.87.1 and Host alias 1.1.0 pairing', () => {
     expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: compatiblePackages }).status).toBe('compatible')
     for (const packages of [
       { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.2.0-rc.2' },
       { ...compatiblePackages, '@deepseek-ai/dsh-llm-pi-ai': '0.2.0-rc.2' },
       { ...compatiblePackages, '@earendil-works/pi-ai': '0.87.2' },
+      { ...compatiblePackages, '@earendil-works/pi-ai-host': '1.0.2' },
+      { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.2.1-alpha.2', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-alpha.2' },
       { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.2.1-alpha.3', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-alpha.3' },
     ]) expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: packages }).status).toBe('unverified')
   })

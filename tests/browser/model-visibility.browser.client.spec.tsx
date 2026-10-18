@@ -32,7 +32,6 @@ function settingsScopeFixture(initial: Partial<OpenAICodexSettingsConfig> = {}, 
     user: undefined,
     revision: 0,
     writable,
-    mode: 'host',
   }
   const listeners = new Set<() => void>()
   const mutate = vi.fn<ConfigForm<OpenAICodexSettingsConfig>['mutate']>(async (ops, revision) => {

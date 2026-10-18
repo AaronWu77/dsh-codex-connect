@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url'
 
 export const COMPATIBILITY_SCHEMA_VERSION = 1 as const
 export const SUPPORTED_NODE_RANGE = '^22.19.0 || >=24.0.0'
-export const SUPPORTED_DSH_PLUGIN_API_VERSION = '0.2.1-alpha.2'
+export const SUPPORTED_DSH_PLUGIN_API_VERSION = '0.2.1-rc.2'
 export const SUPPORTED_DSH_PLUGIN_API_VERSIONS = [SUPPORTED_DSH_PLUGIN_API_VERSION] as const
 export const SUPPORTED_DSH_PLUGIN_API_RANGE = SUPPORTED_DSH_PLUGIN_API_VERSIONS.join(' || ')
 export const SUPPORTED_PI_AI_RANGE = '0.87.1'
 export const PI_AI_PACKAGE = '@earendil-works/pi-ai'
+export const HOST_PI_AI_PACKAGE = '@earendil-works/pi-ai-host'
+export const SUPPORTED_HOST_PI_AI_VERSION = '1.1.0'
 
 export const DSH_PLUGIN_API_PACKAGES = [
   '@deepseek-ai/dsh-agent',
@@ -30,6 +32,7 @@ export const COMPATIBILITY_PACKAGES = [
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-llm-pi-ai',
   PI_AI_PACKAGE,
+  HOST_PI_AI_PACKAGE,
 ] as const
 
 export type CompatibilityPackageName = (typeof COMPATIBILITY_PACKAGES)[number]
@@ -80,6 +83,7 @@ export const COMPATIBILITY_CONTRACT = {
     packages: DSH_PLUGIN_API_PACKAGES,
   },
   piAi: { package: PI_AI_PACKAGE, version: SUPPORTED_PI_AI_RANGE },
+  piAiHost: { package: HOST_PI_AI_PACKAGE, version: SUPPORTED_HOST_PI_AI_VERSION },
 } as const
 
 interface PackageJson {
@@ -100,7 +104,7 @@ function piAiVersionStatus(value: string): CompatibilityStatus {
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
-  return major === 0 && ((minor === 84 && patch >= 2) || ((minor === 85 || minor === 87) && patch === 1)) ? 'compatible' : 'unverified'
+  return major === 0 && minor === 87 && patch === 1 ? 'compatible' : 'unverified'
 }
 
 function parseNodeVersion(value: string): [number, number, number] | undefined {
@@ -159,6 +163,7 @@ export function evaluateCompatibility(input: CompatibilityEvaluationInput = {}):
     '@deepseek-ai/dsh-llm': packageEntry(SUPPORTED_DSH_PLUGIN_API_RANGE, suppliedPackages['@deepseek-ai/dsh-llm'], value => isSupportedDshPluginApiVersion(value) ? 'compatible' : 'unverified'),
     '@deepseek-ai/dsh-llm-pi-ai': packageEntry(SUPPORTED_DSH_PLUGIN_API_RANGE, suppliedPackages['@deepseek-ai/dsh-llm-pi-ai'], value => isSupportedDshPluginApiVersion(value) ? 'compatible' : 'unverified'),
     [PI_AI_PACKAGE]: packageEntry(SUPPORTED_PI_AI_RANGE, suppliedPackages[PI_AI_PACKAGE], piAiVersionStatus),
+    [HOST_PI_AI_PACKAGE]: packageEntry(SUPPORTED_HOST_PI_AI_VERSION, suppliedPackages[HOST_PI_AI_PACKAGE], value => value === SUPPORTED_HOST_PI_AI_VERSION ? 'compatible' : 'unverified'),
   } as Record<CompatibilityPackageName, CompatibilityEntry>
   const node = nodeEntry(installedNode)
   const status = aggregateStatus([node, ...Object.values(packages)])
@@ -196,7 +201,7 @@ export async function readInstalledPackageVersion(name: string): Promise<string 
     const candidate = join(directory, 'package.json')
     try {
       const parsed = JSON.parse(await readFile(candidate, 'utf8')) as PackageJson
-      if (parsed.name === name && typeof parsed.version === 'string') return parsed.version
+      if (parsed.name === (name === HOST_PI_AI_PACKAGE ? PI_AI_PACKAGE : name) && typeof parsed.version === 'string') return parsed.version
     } catch {
       // A package can have an unreadable or unrelated parent manifest. Keep the
       // search bounded and report unknown rather than exposing filesystem detail.

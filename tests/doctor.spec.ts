@@ -61,6 +61,7 @@ describe('Codex Connect doctor', () => {
           '@deepseek-ai/dsh-llm': '0.1.1-rc.2',
           '@deepseek-ai/dsh-llm-pi-ai': '0.1.0-rc.6',
           '@earendil-works/pi-ai': '0.82.1',
+          '@earendil-works/pi-ai-host': '1.1.0',
         },
       },
     })
@@ -77,6 +78,7 @@ describe('Codex Connect doctor', () => {
           '@deepseek-ai/dsh-llm': '0.1.1-rc.2',
           '@deepseek-ai/dsh-llm-pi-ai': '0.1.0-rc.6',
           '@earendil-works/pi-ai': '0.82.1',
+          '@earendil-works/pi-ai-host': '1.1.0',
         },
       },
     })

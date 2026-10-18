@@ -17,11 +17,11 @@ describe('supported DSH search route override', () => {
     await ctx.plugin(WebRuntime, { searchProvider: 'deepseek-official' })
 
     const restore = selectOpenAICodexSearchRoute(ctx.web, 'openai-codex')
-    expect(Reflect.get(ctx.web, 'searchProviderId')).toBe('openai-codex')
+    expect(ctx.web.getSearchProvider()).toBe('openai-codex')
 
     restore()
     restore()
-    expect(Reflect.get(ctx.web, 'searchProviderId')).toBe('deepseek-official')
+    expect(ctx.web.getSearchProvider()).toBe('deepseek-official')
   })
 
   it('does not overwrite a later route selected by another owner', async () => {
@@ -30,14 +30,14 @@ describe('supported DSH search route override', () => {
     await ctx.plugin(WebRuntime, { searchProvider: 'deepseek-official' })
 
     const restore = selectOpenAICodexSearchRoute(ctx.web, 'openai-codex')
-    Reflect.set(ctx.web, 'searchProviderId', 'new-owner')
+    ctx.web.setSearchProvider('new-owner')
     restore()
 
-    expect(Reflect.get(ctx.web, 'searchProviderId')).toBe('new-owner')
+    expect(ctx.web.getSearchProvider()).toBe('new-owner')
   })
 
   it('rejects an unsupported runtime before changing it', () => {
     expect(() => selectOpenAICodexSearchRoute({} as WebRuntime, 'openai-codex'))
-      .toThrow('does not expose the supported search route field')
+      .toThrow('does not expose the supported search route API')
   })
 })

@@ -22,7 +22,7 @@ function translator(messages: Record<keyof typeof en, string>) {
 function configScope(): { scope: ConfigForm<OpenAICodexSettingsConfig>; mutate: ReturnType<typeof vi.fn> } {
   let snapshot: ConfigFormSnapshot<OpenAICodexSettingsConfig> = {
     status: 'ready', value: { ...DEFAULT_OPENAI_CODEX_SETTINGS },
-    base: DEFAULT_OPENAI_CODEX_SETTINGS, user: undefined, revision: 1, writable: true, mode: 'host',
+    base: DEFAULT_OPENAI_CODEX_SETTINGS, user: undefined, revision: 1, writable: true,
   }
   const listeners = new Set<() => void>()
   const mutate = vi.fn<ConfigForm<OpenAICodexSettingsConfig>['mutate']>(async (ops, revision) => {

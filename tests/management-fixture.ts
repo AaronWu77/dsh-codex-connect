@@ -20,7 +20,7 @@ export function managementFixture(messages: Record<keyof typeof en, string> = en
   let authorizing = false
   let snapshot: ConfigFormSnapshot<OpenAICodexSettingsConfig> = {
     status: 'ready', value: { ...DEFAULT_OPENAI_CODEX_SETTINGS }, base: { ...DEFAULT_OPENAI_CODEX_SETTINGS },
-    user: undefined, revision: 0, writable, mode: 'host',
+    user: undefined, revision: 0, writable,
   }
   let rejectSave = false
   const listeners = new Set<() => void>()
@@ -74,6 +74,7 @@ export function managementFixture(messages: Record<keyof typeof en, string> = en
     configScope: scope, account, quota,
     useSessions: vi.fn((selector: (value: typeof sessions) => unknown) => selector(sessions)) as never, useSessionStatus: vi.fn() as never,
     useSessionRetainInfo: vi.fn() as never, useWorkspaces: vi.fn() as never, usePanelInfo: vi.fn() as never,
+    useRemoteAccess: vi.fn() as never, useSessionAccess: vi.fn() as never,
   }
   return { props, account, scope, mutate, fetcher, first, second, rejectSaves: () => { rejectSave = true } }
 }

@@ -12,7 +12,7 @@ import { en } from '../src/client/locales.ts'
 import type { OpenAICodexPluginCardProps, OpenAICodexPluginCardInjected } from '../src/client/OpenAICodexPluginCard.tsx'
 import { resetPlatformBalance } from '../src/client/balance.ts'
 
-const artifact = join(process.cwd(), '.tmp/management/build/client.js')
+const artifact = join(process.cwd(), 'lib/client.js')
 interface Handoff { id: string; factory: (require: (name: string) => unknown) => unknown }
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined

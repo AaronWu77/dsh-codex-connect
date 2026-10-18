@@ -103,13 +103,19 @@ describe('OpenAI Codex rc.2 adapter profile', () => {
   })
 
   it('resolves every advertised model and prepares its request without accessing credentials', async () => {
-    const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined)
+    const credentials = { captureActiveAccount: vi.fn(() => { throw new Error('discovery must not read OAuth') }) } as Partial<OpenAICodexCredentialStore> as OpenAICodexCredentialStore
+    const adapter = createOpenAICodexAdapter(credentials, () => undefined)
     const listed = await adapter.listModels(OPENAI_CODEX_PROVIDER)
     expect(listed).toContainEqual(expect.objectContaining({ id: 'gpt-5.6-luna' }))
     for (const model of listed) {
       await expect(adapter.resolveModel(OPENAI_CODEX_PROVIDER, model.id)).resolves.toMatchObject({ id: model.id })
       await expect(adapter.prepareCall(OPENAI_CODEX_PROVIDER, model.id)).resolves.toMatchObject({ model: { id: model.id } })
     }
+    expect(credentials.captureActiveAccount).not.toHaveBeenCalled()
+    await expect(adapter.listModels('not-owned')).rejects.toMatchObject({ code: 'NO_ADAPTER' })
+    const prepared = await adapter.prepareCall(OPENAI_CODEX_PROVIDER, listed[0]!.id)
+    await expect((async () => { for await (const _chunk of prepared.stream({ provider: OPENAI_CODEX_PROVIDER, model: listed[0]!.id, messages: [] })) {} })()).rejects.toMatchObject({ code: 'AUTH_FAILED' })
+    expect(credentials.captureActiveAccount).toHaveBeenCalledTimes(1)
   })
 })
 

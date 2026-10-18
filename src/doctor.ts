@@ -87,7 +87,7 @@ export async function diagnoseOpenAICodex(
 
   const providerConflict = options.providerIds?.includes(OPENAI_CODEX_PROVIDER) ?? false
   const compatibility = await detectCompatibility(options.compatibilityOptions)
-  const hints: string[] = []
+  const hints: string[] = ['Version matches describe the local dependency pairing only, not live OAuth, inference, browser, or profile verification. This candidate targets DSH 0.2.1-rc.2 with request PI 0.87.1 and Host PI alias 1.1.0; alpha.2 is not a supported pairing.']
   if (state === 'missing') hints.push('Sign in only when you are ready; installation does not start OAuth.')
   if (state === 'permissions-too-broad') hints.push(`Restrict the OAuth file to its owner before use (current mode ${mode}).`)
   if (state === 'not-a-regular-file') hints.push('Replace the OAuth path with an owner-only regular file created by Codex Connect login.')

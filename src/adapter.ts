@@ -8,7 +8,7 @@ import * as piAi from '@earendil-works/pi-ai'
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
-import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -427,7 +427,7 @@ export function openAICodexWithdrawnModelMessage(routeLabel: string, model: stri
     + ' Refresh models under Settings, Plugins, Codex Connect, or choose another model or account.'
 }
 
-/** Build the pi-ai profile with the model-error index required by DSH 0.1.5-rc.1. */
+/** Build the DSH rc.2 profile while keeping request execution on PI 0.87.1. */
 export function createOpenAICodexProfile(
   provider: Provider,
   fastMode?: FastModeRegistry,
@@ -590,9 +590,9 @@ export function createOpenAICodexAdapter(
   extras?: OpenAICodexAdapterExtras,
 ): PiAiAdapter {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
-  let profiles: Map<string, ResolvedPiAiProviderProfile> | undefined
+  let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
   let previousKey: unknown
-  const currentProfiles = (): Map<string, ResolvedPiAiProviderProfile> => {
+  const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
@@ -631,10 +631,16 @@ export function createOpenAICodexAdapter(
     }
 
     override async listModels(providerId: string) {
-      const catalog = await super.listModels(providerId)
+      // Host rc.2 discovery resolves API keys; this plugin must list cached metadata
+      // without capturing an account, refreshing OAuth, or sending provider traffic.
+      const profile = currentProfiles().get(providerId)
+      if (profile === undefined) throw new LlmError(`pi-ai adapter does not own provider "${providerId}"`, 'NO_ADAPTER')
+      const catalog = profile.piProvider.getModels().map(model => ({
+        provider: providerId, id: model.id, name: model.name, inputModalities: [...model.input],
+      }))
       const configured = visibleModelIds?.()
       const visible = configured === undefined ? undefined : new Set(configured)
-      const errors = currentProfiles().get(providerId)?.modelErrors
+      const errors = profile.modelErrors
       return catalog.filter(model => visible === undefined || visible.has(model.id)).map(model => {
         const failure = errors?.get(model.id)
         return failure === undefined ? model : { ...model, description: failure }

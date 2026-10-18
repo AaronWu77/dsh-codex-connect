@@ -10,7 +10,7 @@
 
 Codex Connect 为标准 Harness agent loop 添加 `openai-codex` 模型提供方。工具、权限、审批、附件、会话持久化、压缩与恢复继续由 Harness 管理。安装插件不会改变默认模型或搜索路由，也不会把 ChatGPT 订阅变成 OpenAI Platform API Key。
 
-本 checkout 是 DSH `0.2.1-alpha.2` 的本地兼容候选，不是已发布的版本组合。Codex 请求由插件自身精确依赖的 PI `0.87.1` 执行，不随宿主 PI 版本变化；精确指向 PI `1.0.2` 的 `pi-ai-host` alias 只提供宿主兼容的事件流。严格 Host 类型检查、聚焦 bridge/adapter/transport 测试及 Host/Client 构建已通过；尚未在此候选上验证真实 OAuth 或 provider 请求。下方已发布安装指南保留历史配对。
+本 checkout 是 DSH `0.2.1-rc.2`（Host commit `687f282`）的本地候选，不是已发布的版本组合。Codex 请求与 OAuth 保留精确的 PI `0.87.1`；精确指向 PI `1.1.0` 的 `pi-ai-host` alias 仅提供宿主兼容事件流。本候选不再声明支持 DSH `0.2.1-alpha.2` 及其 PI `1.0.2` 桥。本地类型检查、聚焦测试、构建与版本诊断不能证明真实 OAuth、推理、浏览器行为或活动 profile 可用；详见[候选证据与缺口](rc2-candidate-validation.md)。下方已发布安装指南及验证历史保持不变。
 
 ## 快速开始
 

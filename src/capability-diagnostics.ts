@@ -125,7 +125,7 @@ export class CodexCapabilityDiagnostics {
       && (!isSupportedDshPluginApiVersion(versions[name]!) || versions[name] !== dshVersion))
       || compatibility.status === 'incompatible' || compatibility.status === 'unverified'
     const runtime = mismatch
-      ? result('rejected', 'declared-version-mismatch', 'Use DSH 0.2.1-alpha.2 consistently with pi-ai 0.87.1; all DSH packages must match. Other combinations require verification.')
+      ? result('rejected', 'declared-version-mismatch', 'Use DSH 0.2.1-rc.2 consistently with request pi-ai 0.87.1 and Host alias 1.1.0; all DSH packages must match. Alpha.2 and other combinations require separate verification.')
       : missing || compatibility.status === 'unknown'
         ? result('unknown', 'version-metadata-unavailable', 'Run this command from the plugin installation in the intended profile.')
         : result('supported', 'declared-host-versions-match', 'Host package versions satisfy the declared requirements; this is not a live profile or browser compatibility test.')
