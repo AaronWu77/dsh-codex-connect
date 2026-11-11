@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import type { ToolBatchResult, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -81,7 +83,8 @@ async function setup(options: { enabled: boolean; provider?: string; tools?: str
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SystemPrompt)
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const session = ctx.sessions.create(SessionId('owner'))
   const attachment = image('sha256:bridge', 'bridge.png')
   const echoTool: ToolDefinition = defineTool({
@@ -97,10 +100,20 @@ async function setup(options: { enabled: boolean; provider?: string; tools?: str
     enabled: () => options.enabled,
     ...(options.tools === undefined ? {} : { tools: () => options.tools }),
   })
-  const execute = () => ctx.tools.execute({ signal: new AbortController().signal, callId: 'bridge-1' as never,
-    name: 'image_echo', arguments: {},
-    agent: { id: session.id, options: { provider: options.unknownRoute === true ? undefined : options.provider ?? 'kimi-coding' }, session } as never })
+  const execute = async () => {
+    const batch = await ctx.tools.execute({ signal: new AbortController().signal,
+      calls: [{ type: 'tool-call', id: 'bridge-1' as ToolCallId, name: 'image_echo', arguments: '{}' }],
+      agent: { id: session.id, options: { provider: options.unknownRoute === true ? undefined : options.provider ?? 'kimi-coding' }, session } as never })
+    return settled(batch, 'bridge-1')
+  }
   return { ctx, session, execute, attachment }
+}
+
+/** Unwrap one settled batch call, failing loudly when the executor dropped it. */
+function settled(batch: ToolBatchResult, id: string): ToolExecutionResult {
+  const hit = batch.results.find(entry => String(entry.callId) === id)
+  if (hit === undefined) throw new Error('tool batch did not settle ' + id)
+  return hit.result
 }
 
 describe('persistent image handle bridge', () => {

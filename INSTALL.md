@@ -1,6 +1,6 @@
 # Installation Runbook for CLI Agents
 
-This checkout is a local candidate for DSH `0.2.1-rc.2` (Host `687f282`) and local Codex Connect `0.1.0-alpha.4.35`, not a registry installation recommendation. Request/OAuth PI remains exactly `0.87.1`; the Host stream alias is exactly PI `1.1.0`. DSH `0.2.1-alpha.2` with its PI `1.0.2` bridge is no longer a declared pairing for this candidate. [Local validation evidence](docs/rc2-candidate-validation.md) is not production installation, browser, fresh OAuth or real provider verification. Historical published guidance below does not qualify this modified checkout.
+This checkout is a private upgrade candidate for locally adapted DSH `0.2.1-rc.2` and local Codex Connect `0.1.0-alpha.4.35`, not a registry installation recommendation. Request PI and the Host stream alias target exact PI `1.4.0`; the patched OAuth implementation remains pinned to source PI `0.84.4`. Other DSH/PI pairings are not declared. The [earlier rc.2 validation evidence](docs/rc2-candidate-validation.md) covers request PI `0.87.1` and Host alias `1.1.0`, not this upgrade or a production installation. Real OAuth, inference, browser behavior and active-profile verification remain separate. Historical published guidance below does not qualify this modified checkout.
 
 Alpha 4.33 is verified with DSH `0.1.2-rc.1` and pi-ai `0.84.4` within `^0.84.2`, and with DSH `0.1.5-alpha.1` and pi-ai `0.85.1`.
 
@@ -79,7 +79,7 @@ The Alpha 4.33 rows reflect same-artifact isolated installation and runtime chec
    dsh plugin --profile web exec dsh-codex-connect doctor
    ```
 
-7. If the user explicitly requests login, open **Settings → Plugins → Plugin configuration → Codex Connect**, or check `status` and then use `login` or `login --device-code`. OAuth approval belongs to the user.
+7. If the user explicitly requests login, open **Settings → Codex Connect**, or check `status` and then use `login` or `login --device-code`. OAuth approval belongs to the user.
 
    Alpha 4.25 offers the same account actions in **Settings → Models → Openai-Codex**, plus a shared **More settings** dialog for model visibility, proxy, search, image, context-budget, and Auto-review controls. The original Plugin settings entry remains available; neither entry automatically starts login or changes model/search defaults.
 
@@ -98,7 +98,7 @@ The value is a full `http://` or `https://` origin including its port, not a bar
 
 ## Optional configuration
 
-Use **Settings → Plugins → Plugin configuration → Codex Connect** for live, staged Save/Discard edits organized under Account & quota, Models, Network, and Capabilities. Switching modules preserves the draft. The same settings control `enableSearch`, `enableImageTool`, `enableImageGeneration`, and `enableAutoReview`; all four default to `false`. Enabling Auto-review permits bounded approval context, tool arguments, working directory, and the planned action to be sent to `chatgpt.com`; failures return to human approval. Enabling image generation uses the image generation capability included with the current GPT subscription and saves results as DSH attachments. Enabling search registers the provider and selects it while the capability remains enabled; disabling restores the previous provider before unregistering Codex Search. Setting `agent-default-model` to `openai-codex` remains a separate explicit change.
+Use **Settings → Codex Connect** for live, staged Save/Discard edits organized under Usage overview, Accounts, Models, Capabilities and Network. Switching modules preserves the draft. The same settings control `enableSearch`, `enableImageTool`, `enableImageGeneration`, and `enableAutoReview`; all four default to `false`. Enabling Auto-review permits bounded approval context, tool arguments, working directory, and the planned action to be sent to `chatgpt.com`; failures return to human approval. Enabling image generation uses the image generation capability included with the current GPT subscription and saves results as DSH attachments. Enabling search registers the provider and selects it while the capability remains enabled; disabling restores the previous provider before unregistering Codex Search. Setting `agent-default-model` to `openai-codex` remains a separate explicit change.
 
 Apply only requested choices and preserve unrelated keys:
 

@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { OpenAICodexSettingsConfig } from '../settings-contract.ts'
 import { OPENAI_CODEX_SETTINGS_NAMESPACE } from '../settings-contract.ts'
 import { OpenAICodexPluginCard } from './OpenAICodexPluginCard.tsx'
+import { CodexSettingsIcon } from './CodexSettingsIcon.tsx'
 import type { OpenAICodexPluginCardInjected } from './OpenAICodexPluginCard.tsx'
 import { OpenAICodexFastModeToggle } from './OpenAICodexFastModeToggle.tsx'
 import type { OpenAICodexFastModeToggleInjected } from './OpenAICodexFastModeToggle.tsx'
@@ -34,7 +35,7 @@ import { CodexUsageCapsule, CodexUsagePanel, CodexUsagePanelStore } from './Code
 import type { CodexUsageInjected } from './CodexUsagePanel.tsx'
 import { usageStyles, usageDialogStyles } from './usage-styles.ts'
 import { managementStyles } from './management-styles.ts'
-import { startUsageWarmup } from './usage-warmup.ts'
+import { LocalUsageStore } from './usage-warmup.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   /**
@@ -74,26 +75,39 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-codex-connect: usage styles')
   const quota = createCodexQuotaService(account)
   ctx.provide('codexQuota', quota)
-  ctx.effect(() => startUsageWarmup(() => ctx.sessions.refresh(), message => {
-    ctx.logger.warn('dsh-codex-connect: ' + message)
-  }), 'dsh-codex-connect: historical usage observation')
+  const localUsage = new LocalUsageStore()
+  ctx.effect(() => () => localUsage.dispose(), 'dsh-codex-connect: local usage observation')
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-codex-connect: settings copy')
   const t = ctx.locale.bind(namespace) as OpenAICodexPluginCardInjected['t']
+  const describe = ctx.configForms.describe()
+  // A client-plugin reload can race the settings describe read. Retry from the
+  // reloaded plugin rather than requiring a full page refresh.
+  void describe.ensure()
   const configScope = new OpenAICodexConfigForm(
     ctx.configForms.get<OpenAICodexSettingsConfig>(OPENAI_CODEX_SETTINGS_NAMESPACE),
-    ctx.configForms.describe(),
+    describe,
   )
-  ctx.effect(() => ctx.configForms.whileServed([OPENAI_CODEX_SETTINGS_NAMESPACE], () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'codex-connect',
-    order: 40,
-    locale: namespace,
-    label: () => t('title'),
-    inject: (): OpenAICodexPluginCardInjected => ({
-      t, configScope, account, quota,
-      onOpenUsage: () => { panel.show() },
-    }),
-  }, OpenAICodexPluginCard)), 'dsh-codex-connect: settings page while served')
+  // A first-class Settings page: the configuration is a peer of General, Models
+  // and Agent presets instead of a tab nested under the built-in plugins list.
+  ctx.effect(() => ctx.configForms.whileServed([OPENAI_CODEX_SETTINGS_NAMESPACE], () => {
+    const disposeSection = ctx.slots.register({
+      name: 'settings.section',
+      id: 'codex-connect',
+      order: 12,
+      locale: namespace,
+      label: () => t('title'),
+      inject: (): OpenAICodexPluginCardInjected => ({
+        t, configScope, account, quota, localUsage,
+        onOpenUsage: () => { panel.show() },
+      }),
+    }, OpenAICodexPluginCard)
+    const disposeIcon = ctx.slots.register({
+      name: 'settings.section.icon',
+      id: 'codex-connect',
+      label: () => t('title'),
+    }, CodexSettingsIcon)
+    return () => { disposeIcon(); disposeSection() }
+  }), 'dsh-codex-connect: settings page while served')
 
   ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
     name: 'settings.models.footer',
@@ -102,7 +116,7 @@ export function apply(ctx: ClientContext): void {
     inject: () => ({ t, account, configScope }),
   }, OpenAICodexModelsCard))
 
-  const usageInjected = (): CodexUsageInjected => ({ t, account, quota, panel })
+  const usageInjected = (): CodexUsageInjected => ({ t, account, quota, panel, localUsage })
 
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
@@ -135,6 +149,7 @@ export function apply(ctx: ClientContext): void {
       locale: namespace,
       inject: (sessionId): OpenAICodexFastModeToggleInjected => ({
         directory: scope.modelDirectories.directoryFor(sessionId).store,
+        account,
       }),
     }, OpenAICodexFastModeToggle))
   })

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import type { ToolBatchResult, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import type { ImageAttachmentLimits, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { imageGenerateTool, IMAGE_GENERATE_TOOL_NAME } from '../src/image-tool.ts'
 import type { OpenAICodexImageAssetStore, SaveOpenAICodexOriginalImage } from '../src/image-assets.ts'
@@ -26,14 +29,17 @@ function agent(id: string): never {
 async function setup(options: {
   generateImages?: (input: { prompt: string }, request: { signal?: AbortSignal }) => Promise<unknown>
   limits?: Partial<ImageAttachmentLimits>
+  validateImage?: (input: SaveImageAttachment) => Promise<void>
   saveImages?: (inputs: readonly SaveImageAttachment[]) => Promise<readonly unknown[]>
   saveOriginals?: (sessionId: string, inputs: readonly SaveOpenAICodexOriginalImage[]) => Promise<readonly unknown[]>
 } = {}) {
   const ctx = new Context()
   context = ctx
   await ctx.plugin(SystemPrompt)
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const saved: SaveImageAttachment[][] = []
+  const savedOriginals: SaveOpenAICodexOriginalImage[][] = []
   ctx.provide('attachments', {
     imageLimits: {
       maxImageBytes: 5 * 1024 * 1024,
@@ -43,6 +49,7 @@ async function setup(options: {
       mediaTypes: ['image/png', 'image/jpeg', 'image/webp'],
       ...options.limits,
     },
+    validateImage: options.validateImage ?? (async () => undefined),
     async saveImages(inputs: readonly SaveImageAttachment[]) {
       saved.push([...inputs])
       if (options.saveImages !== undefined) return options.saveImages(inputs)
@@ -66,6 +73,7 @@ async function setup(options: {
   const removeImages = vi.fn(async () => undefined)
   const assets = {
     async saveImages(sessionId: string, inputs: readonly SaveOpenAICodexOriginalImage[]) {
+      savedOriginals.push([...inputs])
       if (options.saveOriginals !== undefined) return options.saveOriginals(sessionId, inputs)
       return inputs.map((input, index) => ({
         assetId: `img_${String(index + 1).padStart(32, '0')}`,
@@ -81,29 +89,32 @@ async function setup(options: {
   } as unknown as OpenAICodexImageAssetStore
   ctx.provide('openaiCodexTransport', { apiVersion: 1, generateImages })
   ctx.tools.register(imageGenerateTool(ctx, assets))
-  return { ctx, generateImages, saved, removeImages }
+  return { ctx, generateImages, saved, savedOriginals, removeImages }
 }
 
 async function execute(ctx: Context, args: unknown, signalOverride: AbortSignal = signal) {
-  return ctx.tools.execute({
+  const batch = await ctx.tools.execute({
     signal: signalOverride,
-    callId: 'image-1' as never,
-    name: IMAGE_GENERATE_TOOL_NAME,
-    arguments: args,
+    calls: [{ type: 'tool-call', id: 'image-1' as ToolCallId, name: IMAGE_GENERATE_TOOL_NAME, arguments: JSON.stringify(args) }],
     agent: agent('session-1'),
   })
+  return settled(batch, 'image-1')
+}
+
+/** Unwrap one settled batch call, failing loudly when the executor dropped it. */
+function settled(batch: ToolBatchResult, id: string): ToolExecutionResult {
+  const hit = batch.results.find(entry => String(entry.callId) === id)
+  if (hit === undefined) throw new Error('tool batch did not settle ' + id)
+  return hit.result
 }
 
 describe('Codex image generation tool', () => {
   it('is exclusive and accepts only a bounded prompt', async () => {
     const { ctx, generateImages } = await setup()
-    expect(ctx.tools.executionMode({
-      signal,
-      callId: 'mode-check' as never,
-      name: IMAGE_GENERATE_TOOL_NAME,
-      arguments: { prompt: 'draw' },
-      agent: agent('session-1'),
-    })).toEqual({ kind: 'exclusive' })
+    // Scheduling metadata lives on the definition; only an exact true joins a parallel group.
+    const definition = ctx.tools.get(IMAGE_GENERATE_TOOL_NAME)
+    if (definition === undefined) throw new Error('image generation tool is not registered')
+    expect(definition.isConcurrencySafe?.({ prompt: 'draw' })).toBe(false)
     for (const args of [{ prompt: '' }, { prompt: '   ' }, { prompt: 'x'.repeat(32_001) }, { prompt: 'draw', size: '1024x1024' }]) {
       expect((await execute(ctx, args)).isError).toBe(true)
     }
@@ -198,9 +209,35 @@ describe('Codex image generation tool', () => {
     }] })
   })
 
-  it('removes exact originals when preview persistence fails', async () => {
-    const { ctx, removeImages } = await setup({ saveImages: async () => { throw new Error('preview failed') } })
-    expect((await execute(ctx, { prompt: 'rollback this' })).isError).toBe(true)
-    expect(removeImages).toHaveBeenCalledOnce()
+  it('retains validated originals when preview persistence fails without a second request', async () => {
+    const { ctx, generateImages, removeImages } = await setup({ saveImages: async () => { throw new Error('private storage error') } })
+    const result = await execute(ctx, { prompt: 'keep this original' })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ images: [{ original: { assetId: expect.stringMatching(/^img_/) }, previewStatus: 'unavailable' }] })
+    expect(result.meta).toMatchObject({ schemaVersion: 3 })
+    expect(result.content.filter(block => block.type === 'image')).toHaveLength(0)
+    const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
+    expect(text).toContain('original saved')
+    expect(text).toContain('codex-connect-image-result-v3:')
+    expect(text).not.toContain('private storage error')
+    expect(generateImages).toHaveBeenCalledOnce()
+    expect(removeImages).not.toHaveBeenCalled()
+  })
+
+  it('rejects host validation before persisting recoverable originals', async () => {
+    const { ctx, savedOriginals, saved } = await setup({ validateImage: async () => { throw new Error('decoder rejected private bytes') } })
+    const result = await execute(ctx, { prompt: 'validate first' })
+    expect(result.isError).toBe(true)
+    expect(savedOriginals).toHaveLength(0)
+    expect(saved).toHaveLength(0)
+    expect(JSON.stringify(result)).not.toContain('private bytes')
+  })
+
+  it('preserves originals on incomplete or malformed preview metadata', async () => {
+    const { ctx, removeImages } = await setup({ saveImages: async () => [] })
+    const result = await execute(ctx, { prompt: 'no preview references' })
+    expect(result.isError).toBe(false)
+    expect(result.meta).toMatchObject({ schemaVersion: 3, images: [{ previewStatus: 'unavailable' }] })
+    expect(removeImages).not.toHaveBeenCalled()
   })
 })

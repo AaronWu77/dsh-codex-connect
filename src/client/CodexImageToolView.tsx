@@ -308,7 +308,7 @@ function useImageLoader(sessionId: string, sessions: ISessions) {
     const request = (async () => {
       const binding = sessions.binding(sessionId as Parameters<ISessions['binding']>[0])
       if (binding === undefined) throw new Error('Image session is unavailable')
-      const result = await binding.session.readAttachment(attachment.attachmentId)
+      const result = await binding.session.readAttachment(attachment)
       if (!result.ok || result.value.attachment.attachmentId !== attachment.attachmentId) throw new Error('Image attachment could not be read')
       if (disposed.current || activeSession.current !== sessionId) throw new Error('Image view is no longer active')
       const bytes = result.value.data.slice().buffer as ArrayBuffer
@@ -431,7 +431,7 @@ function ImageResultCard({ decoded, sessionId, load, sessionActions, galleryLabe
   const [editing, setEditing] = useState(false)
   return <ResponsiveCard
     label={t(decoded.edit === undefined ? 'completed' : 'imageEdited')}
-    visual={<><div style={header}><strong>{t(decoded.edit === undefined ? 'completed' : 'imageEdited')}</strong></div><CodexImageGallery images={decoded.images.map(image => ({ attachment: image.preview }))} load={load} align="start" labels={galleryLabels} /></>}
+    visual={<><div style={header}><strong>{t(decoded.edit === undefined ? 'completed' : 'imageEdited')}</strong></div>{decoded.images.some(image => image.preview === undefined) && <div role="status" style={detail}>{t('imagePreviewUnavailable')}</div>}{decoded.images.some(image => image.preview !== undefined) && <CodexImageGallery images={decoded.images.flatMap(image => image.preview === undefined ? [] : [{ attachment: image.preview }])} load={load} align="start" labels={galleryLabels} />}</>}
     side={<>
       <PromptPanel prompt={decoded.prompt} t={t} />
       <div style={actionRow}>
@@ -448,10 +448,11 @@ function ImageResultCard({ decoded, sessionId, load, sessionActions, galleryLabe
       {decoded.edit === undefined ? null : <span style={detail}>{t('editFrom', {
         source: imageInputLabel(decoded.edit.target), count: decoded.edit.references.length,
       })}</span>}
-      {editing && actionsEnabled ? <CodexImageEditForm key={JSON.stringify([sessionId, decoded.images.map(image => [image.original?.assetId ?? null, image.preview.attachmentId])])}
+      {editing && actionsEnabled ? <CodexImageEditForm key={JSON.stringify([sessionId, decoded.images.map(image => [image.original?.assetId ?? null, image.preview?.attachmentId ?? null])])}
         decoded={decoded} sessionId={sessionId} pending={sessionActions.pending !== null} followUp={sessionActions.followUp} onClose={() => { setEditing(false) }} t={t} /> : null}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{decoded.images.flatMap((image, index) => {
-        const suffix = image.preview.name ?? String(index + 1)
+        const preview = image.preview
+        const suffix = preview?.name ?? image.original?.name ?? String(index + 1)
         const exactOriginal = image.original
         const original = exactOriginal === undefined ? [] : [<DownloadButton
           key={`${sessionId}:${JSON.stringify(exactOriginal)}:${index}:original`}
@@ -459,11 +460,12 @@ function ImageResultCard({ decoded, sessionId, load, sessionActions, galleryLabe
           t={t}
           label={decoded.images.length === 1 ? t('downloadOriginal') : t('downloadOriginalNamed', { name: exactOriginal.name })}
         />]
+        if (preview === undefined) return original
         return [...original, <DownloadButton
-          key={`${sessionId}:${image.preview.attachmentId as string}:${index}:preview`}
+          key={`${sessionId}:${preview.attachmentId as string}:${index}:preview`}
           onDownload={async signal => {
-            const url = await load(image.preview)
-            if (!signal.aborted) triggerDownload(url, image.preview.name ?? t('image'))
+            const url = await load(preview)
+            if (!signal.aborted) triggerDownload(url, preview.name ?? t('image'))
           }}
           t={t}
           label={image.original === undefined
@@ -474,6 +476,10 @@ function ImageResultCard({ decoded, sessionId, load, sessionActions, galleryLabe
       <details>
         <summary style={{ cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', fontSize: 13 }}>{t('imageDetails')}</summary>
         <div style={{ ...detail, display: 'grid', gap: 4, marginTop: 6 }}>{decoded.images.flatMap((image, index) => {
+          if (image.previewStatus === 'unavailable') {
+            const original = image.original
+            return [<span key={`${original.assetId}:${index}:original`}>{t('originalImageDetail', { name: original.name, format: formatMediaType(original.mediaType), width: original.width, height: original.height, size: formatBytes(original.bytes) })}</span>]
+          }
           const preview = image.preview
           const original = image.original
           const name = preview.name ?? String(index + 1)

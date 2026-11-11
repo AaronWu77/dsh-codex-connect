@@ -6,13 +6,13 @@
 
 ## 账户、模型与额度
 
-OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认证和发起请求。“模型”卡片和“插件配置”页面共享同一份账户状态；选择账户不是会话级绑定。**管理账户**可以添加、选择或移除账户。浏览器响应只会包含插件生成的账户 key 和脱敏标签，不会暴露 OAuth token 或原始 OpenAI account id。
+OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认证和发起请求。“模型”卡片和 Codex Connect 设置页共享同一份账户状态；选择账户不是会话级绑定。**管理账户**可以添加、选择或移除账户。浏览器响应只会包含插件生成的账户 key 和脱敏标签，不会暴露 OAuth token 或原始 OpenAI account id。
 
 在 Harness 的常规模型选择器中选择一个 `openai-codex` 模型。所有界面语言均保留模型的规范名称。**更多设置 → 模型** 控制发现列表中显示哪些模型；隐藏模型不会禁用按精确 ID 路由。
 
 每个已保存账户在模型选择器中都有独立路由，因此当前账户不是某个账户时，该账户的模型仍然可以直接选择。当前账户保留 `openai-codex` 路由；其他每个账户分别以 `openai-codex-2`、`openai-codex-3` 等出现。每个账户路由均以 `OpenAI Codex (<显示名称>)` 标注；名称重复时附加不透明账户 key 的后缀，名称为空时回退为 `OpenAI Codex (acct <后缀>)`。每条路由在整个请求期间（包括 token 刷新）都只以自己绑定的账户认证。切换到另一个账户时，`openai-codex` 移交该账户，原当前账户获得一个编号路由；其余账户的编号保持不变。这是模型选择，不是故障切换：Codex Connect 仍不会自动轮换账户，也不会改用其他账户重试被拒绝的请求。
 
-模型选择器在已安装的 `@earendil-works/pi-ai` 记录上叠加实时 Codex 模型目录。pi-ai 缺少 `gpt-6-astra` 时由插件补充；只有实时目录或官方 CLI 缓存列出了 `gpt-6-sol`、`gpt-6-luna`，插件才会加入这两个 slug。新变体的工具与推理档位映射沿用对应的 GPT-5.6 变体，名称与上下文上限取自官方目录。使用 `models` 白名单时须加入对应 ID。目录条目不证明推理权限；账户授权、额度与网络行为仍由 OpenAI 决定。 服务器目录中的 `gpt-6.1-sol` 采用已安装 Sol 的工具设置，并禁用 Off 和 Minimal；可通过 `modelCatalogClientVersion` 将刷新版本设为官方客户端使用的 `0.159.0`。
+模型选择器在已安装的 `@earendil-works/pi-ai` 记录上叠加实时 Codex 模型目录，并保留原生模型元数据。已安装目录缺少模型时，插件补充 `gpt-6-astra`；只有实时目录或官方 CLI 缓存列出了 `gpt-6-sol`、`gpt-6-luna`，插件才会补充这两个 slug。无论原生还是合成的 `gpt-6.1-sol` 记录，都禁用 Off 和 Minimal。已安装目录缺少 GPT-6.1 记录时，服务器目录中的 Sol 采用已安装 Sol 的工具设置，Terra 借用已安装 Astra 的前沿模型记录。其他缺失的 GPT-6 变体沿用对应 GPT-5.6 变体的工具与推理档位映射；合成记录的名称与上下文上限取自官方目录。可通过 `modelCatalogClientVersion` 将刷新版本设为官方客户端使用的 `0.159.0`。使用 `models` 白名单时须加入对应 ID。目录条目不证明推理权限；账户授权、额度与网络行为仍由 OpenAI 决定。
 
 - 添加账户期间，当前账户仍可继续使用。
 - 取消新的授权或等待超时，不会删除任何已有账户，并会关闭已接受的回调连接，包括未完成的 HTTP 请求。取消后，浏览器会一起读取账户标签与额度，再更新显示。待处理授权默认 10 分钟后过期；`oauthTimeoutMs` 接受 1,000–1,800,000 毫秒，并在插件加载时应用。
@@ -38,6 +38,8 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
   <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/composer-capabilities.jpg" alt="DeepSeek Harness Composer 中的 Fast Mode 与额度控件" width="820">
 </p>
 
+Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取消调用的仅原图恢复，见[本地集成参考](local-feature-update.zh.md)。本地审核权限见[自动审查](auto-review.zh.md)。这些设置仍须保存才生效。
+
 ## 可选能力
 
 新安装只注册模型提供方，其他能力全部保持关闭：
@@ -52,7 +54,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
     enableAutoReview: false
 ```
 
-请在 **设置 → 插件 → 插件配置 → Codex Connect** 或 **设置 → 模型 → Openai-Codex → 更多设置** 中编辑这些选项。修改会暂存到点击 **保存更改** 为止。保存会一次提交所有已编辑字段，并保留其他页面对未编辑字段的修改。发生编辑冲突或保存失败时会保留草稿；放弃草稿可重新加载最新设置。大多数设置只影响本插件；启用 Codex 搜索还会把它选为整个 profile 当前使用的搜索路由。
+请在 **设置 → Codex Connect** 或 **设置 → 模型 → Openai-Codex → 更多设置** 中编辑这些选项。修改会暂存到点击 **保存更改** 为止。保存会一次提交所有已编辑字段，并保留其他页面对未编辑字段的修改。发生编辑冲突或保存失败时会保留草稿；放弃草稿可重新加载最新设置。大多数设置只影响本插件；启用 Codex 搜索还会把它选为整个 profile 当前使用的搜索路由。
 
 ### 代理
 
@@ -66,7 +68,7 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 - 搜索从认证开始到读完响应共用 30 秒总期限。超过 1 MiB 的响应会被拒绝，失败时会取消尚未读完的响应体。调用方也可以提前取消搜索。
 - `enableImageTool: true` 为具备视觉能力的模型注册 `view_image`。远程读取只接受不带凭据的公网 HTTP(S)，并重新检查 DNS 与重定向。
 - `enableImageGeneration: true` 注册显式 GPT Image 图片生成与编辑。编辑必须有当前会话有权使用的目标，不会静默变成生成请求。可用性、尺寸和额度仍由账户及服务端控制。
-- `imageModelHint` 是“插件配置”或 profile config 中的可选设置，按 profile 保存。留空使用 `gpt-image-2`；自定义值接受 1–128 个 ASCII 字母、数字、点、下划线或连字符，且必须以字母或数字开头。保存后会修改后续图片请求的 `model` 字段，仍使用同一固定端点；清空可恢复默认值。生成接受提示词；编辑还必须显式指定来源。这是未经验证的路由提示：服务端可能忽略或拒绝，也不保证返回指定模型。
+- `imageModelHint` 是“Codex Connect”设置项或 profile config 中的可选设置，按 profile 保存。留空使用 `gpt-image-2`；自定义值接受 1–128 个 ASCII 字母、数字、点、下划线或连字符，且必须以字母或数字开头。保存后会修改后续图片请求的 `model` 字段，仍使用同一固定端点；清空可恢复默认值。生成接受提示词；编辑还必须显式指定来源。这是未经验证的路由提示：服务端可能忽略或拒绝，也不保证返回指定模型。
 
 生成的原文件保存在 `$DSH_HOME/dsh-codex-connect/images/v1`；对话会收到另一份 DSH 附件预览。结果卡片会报告尺寸和文件大小，并可下载任一版本。原文件仅允许所有者访问，下载前会校验完整性，并且只对创建会话及继承了该结果的 fork 开放。关闭能力或卸载插件不会自动删除这些文件。
 
@@ -139,11 +141,11 @@ GPT Codex 对话的 Composer 会显示 Fast Mode 与额度：
 3. 官方 CLI 缓存 `$CODEX_HOME/models_cache.json`（默认 `~/.codex/models_cache.json`），只读取、不写入。
 4. 已安装 pi-ai 包内置的目录。
 
-任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。对服务端列出的 `gpt-6-sol`、`gpt-6-luna`，插件使用对应 GPT-5.6 变体的工具与推理设置，而不是借用 Astra；即使本地上限表还没有新 slug，显式上下文覆盖值也会以实时 `max_context_window` 校验。
+任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中；服务端独有的 GPT-6.1 代在 pi-ai 跟上之前按已安装的同类角色记录映射。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。对服务端列出的 `gpt-6-sol`、`gpt-6-luna`，插件使用对应 GPT-5.6 变体的工具与推理设置，而不是借用 Astra；即使本地上限表还没有新 slug，显式上下文覆盖值也会以实时 `max_context_window` 校验。
 
 ### 提示缓存
 
-每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用当前有效的系统提示词（包括 pi-ai 0.87.1 中消息记录的系统段落更新）与首条非空用户消息生成稳定键。仍支持旧版提示词字段；只有系统文本的请求也会生成键，而系统文本与用户文本均为空时不发送键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
+每次 Codex 请求都会携带 `prompt_cache_key`，以便 OpenAI 在多个回合间复用已缓存的上下文前缀。该键就是 Harness 会话 ID；请求设置 `cacheRetention: "none"` 会同时抑制该键和缓存。无法获取会话 ID 时，插件改用当前有效的系统提示词（包括 pi-ai 1.4.0 中消息记录的系统段落更新）与首条非空用户消息生成稳定键。仍支持旧版提示词字段；只有系统文本的请求也会生成键，而系统文本与用户文本均为空时不发送键。键不同只会导致提示缓存未命中，不会改变回答。请求体仍保留 `store: false` 和 `include: ["reasoning.encrypted_content"]`。设置 `debugLogPayloadFields: true` 可将每次 Codex 请求的字段名写入插件日志以便验证；它只记录字段名，不记录请求或响应内容，默认关闭。
 
 ## 诊断与恢复
 

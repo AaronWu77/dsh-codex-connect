@@ -4,6 +4,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, Message, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ApprovalRequestEvent } from '@deepseek-ai/dsh-user-approval/types'
+import type { CommandId } from '@deepseek-ai/dsh-commands'
+// Type-only: brings the PTC dispatch session events into SessionEventMap.
+import type {} from '@deepseek-ai/dsh-tool-executor-ptc/types'
+import type { AutoReviewPreflightSnapshot } from './auto-review-preflight.ts'
+import { sameAutoReviewSnapshot } from './auto-review-preflight.ts'
 
 /** Consecutive denials that stop automatic review for the active turn. */
 export const AUTO_REVIEW_MAX_CONSECUTIVE_DENIALS = 3
@@ -27,6 +32,8 @@ export interface AutoReviewAction {
   readonly turn: number
   readonly arguments: unknown
   readonly cwd?: string
+  readonly workspaceRoot?: string
+  readonly provider?: string
   readonly reason?: string
   readonly fingerprint: string
 }
@@ -38,6 +45,9 @@ export interface AutoReviewContext {
   readonly transcriptEntriesOmitted: number
   readonly toolEntriesOmitted: number
   readonly entriesTruncated: number
+  /** Complete retained user text is evidence, never an authorization grant. */
+  readonly hasTrustedUserEvidence?: boolean
+  readonly sensitiveValuesRedacted?: number
 }
 
 /** One recent structured denial available to `/approve`. */
@@ -46,6 +56,66 @@ export interface AutoReviewDenial {
   readonly fingerprint: string
   readonly toolName: string
   readonly rationale: string
+  readonly action: AutoReviewAction
+  readonly snapshot?: AutoReviewPreflightSnapshot
+  readonly exactRetryAllowed: boolean
+}
+
+const REDACTED = '[REDACTED]'
+const SENSITIVE_FIELD = /^(?:auth|authentication|authorization|proxyauthorization|cookie|setcookie|access|refresh)$|(?:password|passwd|passphrase|secret|secretkey|token|apikey|privatekey|credentials?)$/iu
+
+/**
+ * Best-effort redaction for text that might be included in a remote review; not a complete secret detector.
+ * @param text - untrusted text, never instructions for this redactor.
+ * @returns redacted text and the number of detected sensitive values.
+ */
+export function redactAutoReviewText(text: string): { readonly text: string; readonly redactions: number } {
+  let redactions = 0
+  const replace = (_value: string): string => { redactions++; return REDACTED }
+  const redacted = text
+    // Header values can contain several cookies with opaque names and values.
+    .replace(/((?<![A-Za-z0-9_\-])(?:set[\-_]?)?cookie[ \t]*:[ \t]*)[^\r\n]*/giu,
+      (_value, prefix: string) => { redactions++; return `${prefix}${REDACTED}` })
+    .replace(/-----BEGIN (?:[A-Z ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----[\s\S]*?-----END (?:[A-Z ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----/gu, replace)
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.\-]+/giu, replace)
+    .replace(/\b(?:sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|AKIA[A-Z0-9]{16})\b/gu, replace)
+    .replace(/\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b/gu, replace)
+    .replace(/((?<![A-Za-z0-9_\-])"?(?:[A-Za-z0-9_\-]*(?:password|passwd|passphrase|secret|token|api[_\-]?key)|auth|authentication|authorization|(?:set[\-_]?)?cookie|access|refresh)"?\s*[=:]\s*)(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;&}]+)/giu,
+      (_value, prefix: string) => { redactions++; return `${prefix}${REDACTED}` })
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/giu,
+      (_value, prefix: string) => { redactions++; return `${prefix}${REDACTED}@` })
+  return { text: redacted, redactions }
+}
+
+/**
+ * Redact nested fields with bounded traversal without changing the original exact action.
+ * @param value - JSON evidence prepared for disclosure to the remote reviewer.
+ * @returns a redacted copy and the number of sensitive or omitted values.
+ */
+export function redactAutoReviewValue(value: unknown): { readonly value: unknown; readonly redactions: number } {
+  let redactions = 0
+  let entries = 0
+  const seen = new WeakSet<object>()
+  const visit = (entry: unknown, depth: number): unknown => {
+    if (++entries > 10_000 || depth > 32) { redactions++; return REDACTED }
+    if (typeof entry === 'string') {
+      const result = redactAutoReviewText(entry)
+      redactions += result.redactions
+      return result.text
+    }
+    if (entry !== null && typeof entry === 'object') {
+      if (seen.has(entry)) { redactions++; return REDACTED }
+      seen.add(entry)
+      if (Array.isArray(entry)) return entry.map(child => visit(child, depth + 1))
+      return Object.fromEntries(Object.entries(entry).map(([key, child]) => {
+        if (SENSITIVE_FIELD.test(key.replace(/[^a-z]/giu, ''))) { redactions++; return [key, REDACTED] }
+        return [key, visit(child, depth + 1)]
+      }))
+    }
+    return entry
+  }
+  const result = visit(value, 0)
+  return { value: result, redactions }
 }
 
 interface RenderedEntry {
@@ -53,6 +123,7 @@ interface RenderedEntry {
   readonly trustedUser: boolean
   readonly text: string
   readonly truncated: boolean
+  readonly redactions: number
 }
 
 interface ReviewTurnState {
@@ -62,6 +133,9 @@ interface ReviewTurnState {
   timedOutFingerprints: Set<string>
   recentDenials: AutoReviewDenial[]
   armedFingerprint?: string
+  armedSnapshot?: AutoReviewPreflightSnapshot
+  armedCommandId?: CommandId
+  armedDenialId?: string
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -78,27 +152,61 @@ function canonicalJson(value: unknown): string {
   return encoded
 }
 
-/** Resolve one exact, unambiguous tool call; all other requests stay human-owned. */
-export function resolveAutoReviewAction(request: ApprovalRequestEvent): AutoReviewAction | undefined {
+/**
+ * Resolve one exact native call or nested PTC start; all other requests stay human-owned.
+ * Nested calls retain their sub-call id and take the turn from the preceding, unique run_code root.
+ * @param request - borrowed Host request whose call id must identify one logged call or start.
+ * @param directory - effective cwd and original workspace; omission uses header metadata only,
+ *   which does not establish current execution scope or grant authorization.
+ * @returns bounded action and canonical JSON fingerprint, or undefined for unresolved input.
+ */
+export function resolveAutoReviewAction(request: ApprovalRequestEvent, directory?: { readonly cwd: string; readonly workspaceRoot: string }): AutoReviewAction | undefined {
   if (request.callId === undefined) return undefined
-  const calls = request.agent.session.snapshotEvents().filter(event => event.type === 'tool/call' && event.data.callId === request.callId)
-  if (calls.length !== 1) return undefined
-  const call = calls[0]!
-  if (call.type !== 'tool/call' || call.data.name !== request.toolName) return undefined
+  const events = request.agent.session.snapshotEvents()
+  const calls = events.filter(event => event.type === 'tool/call' && event.data.callId === request.callId)
+  const starts = events.filter(event => event.type === 'tool/ptc-dispatch-start' && event.data.subCallId === request.callId)
+  if (calls.length + starts.length !== 1) return undefined
+  const call = calls[0]
+  const start = starts[0]
+  let turn: number
+  let encodedArguments: string
+  if (call?.type === 'tool/call') {
+    if (call.data.name !== request.toolName || events.some(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === request.callId)) return undefined
+    turn = call.data.turn
+    encodedArguments = call.data.arguments
+  } else if (start?.type === 'tool/ptc-dispatch-start') {
+    const roots = events.filter(event => event.type === 'tool/call' && event.data.callId === start.data.rootCallId)
+    const root = roots[0]
+    if (roots.length !== 1 || root?.type !== 'tool/call' || root.data.name !== 'run_code' || root.seq >= start.seq) return undefined
+    if (start.data.name !== request.toolName || !record(start.data.arguments)) return undefined
+    turn = root.data.turn
+    try {
+      const encoded = JSON.stringify(start.data.arguments)
+      if (encoded === undefined) return undefined
+      encodedArguments = encoded
+    } catch { return undefined }
+  } else return undefined
+  if (Buffer.byteLength(encodedArguments, 'utf8') > TOOL_BUDGET) return undefined
   let args: unknown
-  try { args = JSON.parse(call.data.arguments) } catch { return undefined }
-  const cwd = request.agent.session.header.cwd
+  try { args = JSON.parse(encodedArguments) } catch { return undefined }
+  const cwd = directory?.cwd ?? request.agent.session.header.cwd
+  const workspaceRoot = directory?.workspaceRoot ?? request.agent.session.header.cwd
+  const provider = request.agent.session.requestHeader?.()?.config?.provider
   const envelope = {
+    ...provider === undefined ? {} : { provider },
     toolName: request.toolName,
     arguments: args,
     ...cwd === undefined ? {} : { cwd },
+    ...workspaceRoot === undefined ? {} : { workspaceRoot },
   }
   return Object.freeze({
+    ...provider === undefined ? {} : { provider },
     toolName: request.toolName,
     callId: request.callId,
-    turn: call.data.turn,
+    turn,
     arguments: args,
     ...cwd === undefined ? {} : { cwd },
+    ...workspaceRoot === undefined ? {} : { workspaceRoot },
     ...request.reason === undefined ? {} : { reason: request.reason },
     fingerprint: createHash('sha256').update(canonicalJson(envelope)).digest('hex'),
   })
@@ -157,8 +265,10 @@ function renderedEntries(messages: readonly Message[], tool: boolean): RenderedE
         .filter((value): value is string => value !== undefined && value.length > 0)
         .join('\n')
     if (content.length === 0) return []
-    const bounded = truncateUtf8(`[${tool ? 'tool' : narrativeLabel(message)}]\n${content}`, budget)
-    return [{ index, trustedUser: !tool && message.source.kind === 'user', ...bounded }]
+    const redacted = redactAutoReviewText(content)
+    const bounded = truncateUtf8(`[${tool ? 'tool' : narrativeLabel(message)}]\n${redacted.text}`, budget)
+    return [{ index, trustedUser: !tool && message.role === 'user' && message.source.kind === 'user'
+      && message.content.every(block => block.type === 'text'), redactions: redacted.redactions, ...bounded }]
   })
 }
 
@@ -201,7 +311,8 @@ export function buildAutoReviewContext(agent: Agent): AutoReviewContext {
   const narrative = renderedEntries(messages, false)
   const selectedNarrative = selectNarrative(narrative)
   const historicalTools = takeWithin(renderedEntries(messages, true).reverse(), TOOL_BUDGET).reverse()
-  const directory = truncateUtf8(`[available-tools]\n${JSON.stringify(agent.session.requestHeader()?.tools ?? [])}`, TOOL_BUDGET)
+  const redactedDirectory = redactAutoReviewValue(agent.session.requestHeader()?.tools ?? [])
+  const directory = truncateUtf8(`[available-tools]\n${JSON.stringify(redactedDirectory.value)}`, TOOL_BUDGET)
   const remaining = Math.max(0, TOOL_BUDGET - utf8Size(directory.text))
   const selectedTools = takeWithin(historicalTools.reverse(), remaining).reverse()
   const transcriptEntriesOmitted = narrative.length - selectedNarrative.length
@@ -218,12 +329,16 @@ export function buildAutoReviewContext(agent: Agent): AutoReviewContext {
     transcriptEntriesOmitted,
     toolEntriesOmitted,
     entriesTruncated,
+    hasTrustedUserEvidence: !transcript.truncated && selectedNarrative.some(entry => entry.trustedUser)
+      && selectedNarrative.filter(entry => entry.trustedUser).length === narrative.filter(entry => entry.trustedUser).length
+      && selectedNarrative.filter(entry => entry.trustedUser).every(entry => !entry.truncated && entry.redactions === 0),
+    sensitiveValuesRedacted: [...selectedNarrative, ...selectedTools].reduce((count, entry) => count + entry.redactions, redactedDirectory.redactions),
   })
 }
 
 /** In-memory turn state matching Codex denial, timeout, and exact retry semantics. */
 export class AutoReviewState {
-  private readonly sessions = new WeakMap<Agent, ReviewTurnState>()
+  private sessions = new WeakMap<Agent, ReviewTurnState>()
 
   constructor(private readonly createId: () => string = randomUUID) {}
 
@@ -237,19 +352,24 @@ export class AutoReviewState {
       timedOutFingerprints: new Set(),
       recentDenials: current?.recentDenials ?? [],
       ...current?.armedFingerprint === undefined ? {} : { armedFingerprint: current.armedFingerprint },
+      ...current?.armedSnapshot === undefined ? {} : { armedSnapshot: current.armedSnapshot },
+      ...current?.armedCommandId === undefined ? {} : { armedCommandId: current.armedCommandId },
+      ...current?.armedDenialId === undefined ? {} : { armedDenialId: current.armedDenialId },
     }
     this.sessions.set(agent, created)
     return created
   }
 
   /** Record an allow/deny assessment and retain a bounded denial descriptor. */
-  recordDecision(agent: Agent, action: AutoReviewAction, denied: boolean, rationale: string): AutoReviewDenial | undefined {
+  recordDecision(agent: Agent, action: AutoReviewAction, denied: boolean, rationale: string, snapshot?: AutoReviewPreflightSnapshot, exactRetryAllowed = true): AutoReviewDenial | undefined {
     const state = this.state(agent, action.turn)
     state.consecutiveDenials = denied ? state.consecutiveDenials + 1 : 0
     state.decisions.push(denied)
     if (state.decisions.length > AUTO_REVIEW_DECISION_WINDOW) state.decisions.shift()
     if (!denied) return undefined
-    const denial = Object.freeze({ id: this.createId(), fingerprint: action.fingerprint, toolName: action.toolName, rationale })
+    const denial = Object.freeze({ id: this.createId(), fingerprint: action.fingerprint, toolName: action.toolName, rationale, action, exactRetryAllowed,
+      ...snapshot === undefined ? {} : { snapshot },
+    })
     state.recentDenials.push(denial)
     if (state.recentDenials.length > AUTO_REVIEW_RECENT_DENIAL_LIMIT) state.recentDenials.shift()
     return denial
@@ -277,20 +397,60 @@ export class AutoReviewState {
   }
 
   /** Arm one exact denial for the next approval request. */
-  arm(agent: Agent, denialId: string): AutoReviewDenial | undefined {
+  arm(agent: Agent, denialId: string, commandId?: CommandId): AutoReviewDenial | undefined {
     const state = this.sessions.get(agent)
     const denial = state?.recentDenials.find(candidate => candidate.id === denialId)
-    if (state === undefined || denial === undefined) return undefined
+    if (state === undefined || denial === undefined || !denial.exactRetryAllowed) return undefined
+    this.disarm(agent)
     state.armedFingerprint = denial.fingerprint
+    state.armedDenialId = denial.id
+    if (denial.snapshot !== undefined) state.armedSnapshot = denial.snapshot
+    if (commandId !== undefined) state.armedCommandId = commandId
     return denial
   }
 
   /** Consume the one-shot override at the next approval boundary. */
-  consume(agent: Agent, action: AutoReviewAction): 'matched' | 'mismatched' | 'none' {
+  consume(agent: Agent, action: AutoReviewAction, snapshot?: AutoReviewPreflightSnapshot): 'matched' | 'mismatched' | 'none' {
     const state = this.state(agent, action.turn)
     if (state.armedFingerprint === undefined) return 'none'
     const matched = state.armedFingerprint === action.fingerprint
-    delete state.armedFingerprint
+      && (snapshot === undefined || state.armedSnapshot !== undefined && sameAutoReviewSnapshot(state.armedSnapshot, snapshot)
+        && state.armedCommandId !== undefined && state.armedDenialId !== undefined
+        && hasAutoReviewCommandReceipt(agent, state.armedCommandId, state.armedDenialId, true))
+    this.disarm(agent)
     return matched ? 'matched' : 'mismatched'
   }
+
+  /** Consume any pending retry when the next request cannot be resolved. */
+  disarm(agent: Agent): void {
+    const state = this.sessions.get(agent)
+    if (state === undefined) return
+    delete state.armedFingerprint
+    delete state.armedSnapshot
+    delete state.armedCommandId
+    delete state.armedDenialId
+  }
+
+  /** Forget all decisions and grants when the owning reviewer is disposed. */
+  clear(): void {
+    this.sessions = new WeakMap()
+  }
+}
+
+/**
+ * Check the durable human command chain, not model text or a plugin-generated user message.
+ * @param agent - exact owner of the command log and one-shot retry.
+ * @param commandId - command runtime's recorded invocation identity.
+ * @param denialId - full id the human command must explicitly name.
+ * @param completed - false inside the live handler; true before granting its later exact retry.
+ * @returns whether exactly one matching user command is pending or successfully completed.
+ */
+export function hasAutoReviewCommandReceipt(agent: Agent, commandId: CommandId, denialId: string, completed: boolean): boolean {
+  const events = agent.session.snapshotEvents()
+  const runs = events.filter(event => event.type === 'command/run' && event.data.commandId === commandId)
+  const run = runs[0]
+  if (runs.length !== 1 || run?.type !== 'command/run' || run.data.name !== 'approve'
+    || run.data.source.kind !== 'user' || run.data.args?.trim() !== denialId) return false
+  const done = events.filter(event => event.type === 'command/done' && event.data.commandId === commandId)
+  return completed ? done.length === 1 && done[0]?.type === 'command/done' && done[0].data.kind === 'success' : done.length === 0
 }

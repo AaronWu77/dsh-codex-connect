@@ -22,11 +22,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/franksong2702/dsh-codex-connect.git"
+    "url": "git+https://github.com/AaronWu77/dsh-codex-connect.git"
   },
-  "homepage": "https://github.com/franksong2702/dsh-codex-connect#readme",
+  "homepage": "https://github.com/AaronWu77/dsh-codex-connect",
   "bugs": {
-    "url": "https://github.com/franksong2702/dsh-codex-connect/issues"
+    "url": "https://github.com/AaronWu77/dsh-codex-connect/issues"
   },
   "type": "module",
   "engines": {
@@ -58,6 +58,7 @@
     "prepublishOnly": "pnpm --config.minimum-release-age=0 run check"
   },
   "exports": {
+    "./locale/*.json": "./locale/*.json",
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
@@ -68,6 +69,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "locale/*.json",
     "lib",
     "compatibility.json",
     "cordis.patch.yml",
@@ -79,12 +81,52 @@
     "NOTICE"
   ],
   "dependencies": {
-    "@earendil-works/pi-ai-host": "npm:@earendil-works/pi-ai@1.1.0",
+    "@earendil-works/pi-ai-host": "npm:@earendil-works/pi-ai@1.4.0",
     "undici": "^8.10.0",
-    "@earendil-works/pi-ai": "0.87.1"
+    "zod": "4.4.3",
+    "@earendil-works/pi-ai": "1.4.0"
   },
   "license": "Apache-2.0",
   "dsh": {
+    "documentation": {
+      "en": "https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/README.md",
+      "zh": "https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/docs/README.zh.md"
+    },
+    "upstreams": [
+      {
+        "name": "Codex Connect",
+        "repository": "https://github.com/franksong2702/dsh-codex-connect",
+        "relation": "adapted",
+        "license": "Apache-2.0",
+        "changes": {
+          "en": "Local DSH compatibility and account and usage management integration.",
+          "zh": "本地 DSH 兼容与账号、用量管理集成。"
+        }
+      },
+      {
+        "name": "dsh-codex",
+        "repository": "https://github.com/Yan-Zero/dsh-codex",
+        "relation": "adapted",
+        "license": "Apache-2.0",
+        "changes": {
+          "en": "Inherited through Codex Connect; original author attribution is preserved in NOTICE.",
+          "zh": "通过 Codex Connect 继承，原作者归属保留在 NOTICE 中。"
+        },
+        "record": "https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE"
+      },
+      {
+        "name": "pi-ai OAuth",
+        "repository": "https://github.com/earendil-works/pi",
+        "relation": "adapted",
+        "ref": "@earendil-works/pi-ai 0.84.4",
+        "license": "MIT",
+        "changes": {
+          "en": "OAuth login and refresh code with modified JWT decoding, callback cleanup, and refresh rejection handling, as recorded in NOTICE.",
+          "zh": "OAuth 登录与刷新代码，修改了 JWT 解码、回调清理和刷新拒绝处理，详见 NOTICE。"
+        },
+        "record": "https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE"
+      }
+    ],
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -106,29 +148,37 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-tool": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-commands": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-fs": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-settings": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-util-values": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-web": "0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.4 || 3.18.5-alpha.1 || 3.18.5",
-    "react": "^18.2.0"
+    "@deepseek-ai/cordis": "4.0.5 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-tool": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs-local": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-web": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4 || 3.18.5-alpha.1 || 3.18.5 || 0.2.2-rc.1",
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-fs-local": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-working-directory": {
       "optional": true
     }
   },
@@ -161,6 +211,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-tool": "0.2.1-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.2-rc.1",
     "@deepseek-ai/dsh-file-reference": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs-local": "0.2.1-rc.2",
@@ -183,6 +234,8 @@
     "@deepseek-ai/dsh-storage-domain": "0.2.1-rc.2",
     "@deepseek-ai/dsh-subagent": "0.2.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-executor-ptc": "0.2.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
     "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.2",
     "@deepseek-ai/dsh-user-approval": "0.2.1-rc.2",
@@ -190,9 +243,10 @@
     "@deepseek-ai/dsh-util-values": "0.2.1-rc.2",
     "@deepseek-ai/dsh-util-workspace-path": "0.2.1-rc.2",
     "@deepseek-ai/dsh-web": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
     "@deepseek-ai/dsh-workspace": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.5",
-    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-ai": "1.4.0",
     "@shikijs/langs": "^4.4.3",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

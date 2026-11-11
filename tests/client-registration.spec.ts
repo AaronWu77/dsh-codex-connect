@@ -14,10 +14,12 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client.match(/new OpenAICodexAccountStore\(\)/g)).toHaveLength(1)
     expect(client).not.toContain("ctx.slots.inject('settings.models.provider-card'")
   })
-  it('registers as a Plugins settings tab while the Host serves the namespace', async () => {
+  it('registers a first-class settings section with its own navigation icon while served', async () => {
     const client = await readFile(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
     expect(client).toContain('ctx.configForms.whileServed([OPENAI_CODEX_SETTINGS_NAMESPACE]')
-    expect(client).toContain("name: 'settings.plugins.tab'")
+    expect(client).toContain("name: 'settings.section'")
+    expect(client).toContain("name: 'settings.section.icon'")
+    expect(client).not.toContain("name: 'settings.plugins.tab'")
     expect(client).toContain("id: 'codex-connect'")
     expect(client).toContain("label: () => t('title')")
     expect(client).not.toContain("id: 'openai-codex'")
@@ -28,7 +30,6 @@ describe('OpenAI Codex browser contribution', () => {
     expect(client).toContain('OPENAI_CODEX_SETTINGS_NAMESPACE')
     expect(client).not.toContain("namespace: 'web'")
     expect(client).not.toContain("ctx.slots.inject('settings.plugin.item'")
-    expect(client).not.toContain("ctx.slots.inject('settings.section'")
   })
 
   it('registers Fast Mode in the additive right-side Composer list slot', async () => {
@@ -69,8 +70,8 @@ describe('OpenAI Codex browser contribution', () => {
       readFile(new URL('../src/adapter.ts', import.meta.url), 'utf8'),
       readFile(new URL('../src/account-routes.ts', import.meta.url), 'utf8'),
     ])
-    expect(clientCard).toContain('className="cc-manage"')
-    expect(clientCard).toContain("['overview', 'account', 'models', 'network', 'capabilities']")
+    expect(clientCard).toContain('className="cc-page cc-manage"')
+    expect(clientCard).toContain("['overview', 'account', 'models', 'capabilities', 'network']")
     expect(clientCard).not.toContain('aria-expanded={open}')
     expect(locales.match(/title: 'Codex Connect'/gu)).toHaveLength(2)
     expect(accountRoutes).toContain("OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'")

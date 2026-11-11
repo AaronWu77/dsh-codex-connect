@@ -68,13 +68,15 @@ export function managementFixture(messages: Record<keyof typeof en, string> = en
   const quotaSnapshot = { windows: [], accounts: accounts.map(item => ({ accountKey: item.accountKey, label: item.displayName, active: item.active, windows: [{ bucketId: 'main', windowSeconds: 18000, remainingPercent: 75 }] })) }
   const quota = { snapshot: () => quotaSnapshot, subscribe: () => () => {} }
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(Date.now())
-  const sessions = { ids: ['main'], byId: { main: { projectionValues: { contextUsage: { timeZone: 'Asia/Shanghai', days: { [day]: { tokens: 12345, requests: 7 } } } } } } }
+  const usageSnapshot = { state: 'done' as const, data: { state: 'done' as const, total: 1, completed: 1, skipped: 0, timeZone: 'Asia/Shanghai', days: { [day]: { tokens: 12345, requests: 7, sessions: 1 } }, pollMs: 5000, stale: false } }
+  const localUsage = { snapshot: () => usageSnapshot, subscribe: () => () => {}, retry: vi.fn() }
   const props = {
     t: (key: keyof typeof en, params?: Record<string, unknown>) => Object.entries(params ?? {}).reduce((text, [name, value]) => text.replaceAll('{' + name + '}', String(value)), messages[key]),
-    configScope: scope, account, quota,
-    useSessions: vi.fn((selector: (value: typeof sessions) => unknown) => selector(sessions)) as never, useSessionStatus: vi.fn() as never,
+    configScope: scope, account, quota, localUsage,
+    useSessions: vi.fn() as never, useSessionStatus: vi.fn() as never,
     useSessionRetainInfo: vi.fn() as never, useWorkspaces: vi.fn() as never, usePanelInfo: vi.fn() as never,
     useRemoteAccess: vi.fn() as never, useSessionAccess: vi.fn() as never,
+    useContextMenu: vi.fn() as never, close: vi.fn(),
   }
   return { props, account, scope, mutate, fetcher, first, second, rejectSaves: () => { rejectSave = true } }
 }

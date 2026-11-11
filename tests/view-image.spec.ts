@@ -9,6 +9,8 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { ToolCallId, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import type { ToolBatchResult, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import * as OpenAICodex from '../src/index.ts'
 
@@ -36,7 +38,8 @@ async function setup(): Promise<Context> {
   const context = new Context()
   ctx = context
   await context.plugin(SystemPrompt)
-  await context.plugin(ToolRuntime, { mode: 'native' })
+  await context.plugin(ToolRuntime)
+  await context.plugin(NativeToolExecutor)
   await context.plugin(LocalFileSystem, { cwd: workspace })
   await context.plugin(LocalAttachmentStore, { dshHome })
   await context.plugin(LlmRuntime)
@@ -56,14 +59,21 @@ function agentOn(model: string): object {
   }
 }
 
+/** Unwrap one settled batch call, failing loudly when the executor dropped it. */
+function settled(batch: ToolBatchResult, id: string): ToolExecutionResult {
+  const hit = batch.results.find(entry => String(entry.callId) === id)
+  if (hit === undefined) throw new Error('tool batch did not settle ' + id)
+  return hit.result
+}
+
 async function view(context: Context, source: string, model = 'gpt-5.6-sol') {
-  return context.tools.execute({
+  const id = `view-image-${++callCounter}`
+  const batch = await context.tools.execute({
     signal,
-    callId: ToolCallId(`view-image-${++callCounter}`),
-    name: OpenAICodex.VIEW_IMAGE_TOOL_NAME,
-    arguments: { source },
+    calls: [{ type: 'tool-call', id: ToolCallId(id), name: OpenAICodex.VIEW_IMAGE_TOOL_NAME, arguments: JSON.stringify({ source }) }],
     agent: agentOn(model) as never,
   })
+  return settled(batch, id)
 }
 
 describe('view_image', () => {
@@ -110,10 +120,12 @@ describe('view_image', () => {
     const context = await setup()
     await writeFile(join(workspace, 'pixel.png'), PNG_1X1)
 
+    // The retired gpt-5.3-codex-spark id no longer resolves in any catalog layer; an
+    // unknown model must still fail before any request, with its own reason.
     const result = await view(context, 'pixel.png', 'gpt-5.3-codex-spark')
 
     expect(result.isError).toBe(true)
-    expect(result.content.find(block => block.type === 'text')?.text).toContain('does not declare image input')
+    expect(result.content.find(block => block.type === 'text')?.text).toMatch(/has no configured model|does not declare image input/u)
   })
 
   it('presents remote URLs as network fetches and local paths as file reads', async () => {

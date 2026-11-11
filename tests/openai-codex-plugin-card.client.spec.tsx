@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenAICodexPluginCard } from '../src/client/OpenAICodexPluginCard.tsx'
+import { CodexManagementOverview } from '../src/client/CodexManagementOverview.tsx'
+import type { LocalUsageSnapshot } from '../src/client/usage-ledger.ts'
 import { en, zh } from '../src/client/locales.ts'
 import { resetPlatformBalance } from '../src/client/balance.ts'
 import { managementFixture } from './management-fixture.ts'
@@ -16,12 +18,34 @@ function start(messages = en, writable = true) {
 }
 
 describe('Codex management center', () => {
+  it.each([en, zh])('waits for a matching calendar before labeling a retained value today', labels => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-15T16:00:00Z'))
+    const f = fixture = managementFixture(labels)
+    let snapshot: LocalUsageSnapshot = { state: 'partial', data: {
+      state: 'partial', total: 1, completed: 1, skipped: 0, timeZone: 'UTC', scanTimeZone: 'Asia/Shanghai',
+      days: { '2026-10-15': { tokens: 12345, requests: 1, sessions: 1 } }, pollMs: 500, stale: true,
+    } }
+    const source = { snapshot: () => snapshot, subscribe: () => () => {}, retry: vi.fn() }
+    const view = render(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
+    expect(screen.queryByText(labels['ov.quota.today'])).toBeNull()
+    expect(screen.queryByText('12.3k')).toBeNull()
+    snapshot = { state: 'done', data: {
+      state: 'done', total: 1, completed: 1, skipped: 0, timeZone: 'Asia/Shanghai',
+      days: { '2026-10-16': { tokens: 42, requests: 1, sessions: 1 } }, pollMs: 500, stale: false,
+    } }
+    view.rerender(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
+    expect(screen.getByText(labels['ov.quota.today'])).toBeDefined()
+    expect(screen.getByText('42')).toBeDefined()
+  })
+
   it.each([en, zh])('opens the shared usage overview without a second disclosure card', async labels => {
     start(labels)
     await screen.findByText('¥42.50')
     expect(screen.getByText('12.3k')).toBeDefined()
     expect(screen.getAllByRole('tab')).toHaveLength(5)
-    expect({ tabs: screen.getAllByRole('tab').map(tab => tab.textContent), overview: screen.getByRole('tabpanel', { name: labels.managementOverview }).textContent }).toMatchSnapshot()
+    expect(screen.queryByText(labels.managementBadge)).toBeNull()
+    expect(screen.queryByRole('heading', { name: labels.title, level: 2 })).toBeNull()
+    expect({ tabs: screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label')), overview: screen.getByRole('tabpanel', { name: labels.managementOverview }).textContent }).toMatchSnapshot()
     expect(screen.getByRole('tab', { name: labels.managementOverview }).getAttribute('aria-selected')).toBe('true')
     expect(screen.queryByRole('button', { name: new RegExp(labels.expand) })).toBeNull()
     expect(screen.queryByRole('button', { name: labels.save })).toBeNull()
@@ -110,8 +134,8 @@ describe('Codex management center', () => {
     start()
     const first = screen.getByRole('tab', { name: en.managementOverview })
     fireEvent.keyDown(first, { key: 'End' })
-    const last = screen.getByRole('tab', { name: en.capabilitiesModule })
+    const last = screen.getByRole('tab', { name: en.networkModule })
     expect(document.activeElement).toBe(last)
-    expect(within(screen.getByRole('tabpanel', { name: en.capabilitiesModule })).getByRole('checkbox', { name: en.newSessionFastMode })).toBeDefined()
+    expect(within(screen.getByRole('tabpanel', { name: en.networkModule })).getByRole('group', { name: en.currentConnection })).toBeDefined()
   })
 })

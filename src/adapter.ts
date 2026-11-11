@@ -4,7 +4,7 @@ import { appendImageSelectionHandles } from './image-handle-bridge.ts'
 
 import { createHash } from 'node:crypto'
 import { bridgePiProvider } from './pi-host-bridge.ts'
-import * as piAi from '@earendil-works/pi-ai'
+import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai'
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
@@ -18,6 +18,11 @@ import { readOpenAICodexAccountRequestAuth, readOpenAICodexRequestAuth } from '.
 import { OPENAI_CODEX_PROVIDER } from './store.ts'
 import { isOpenAICodexRouteId, OPENAI_CODEX_PRIMARY_DISPLAY_NAME } from './account-routes.ts'
 import type { FastModeRegistry } from './fast-mode.ts'
+import { ConversationSpeedRegistry } from './speed-mode-registry.ts'
+import { SpeedModeRequestScope } from './speed-mode-request-scope.ts'
+import { projectOpenAICodexSpeedPayload } from './speed-mode-contract.ts'
+import type { OpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import { openAICodexAccountKey } from './store.ts'
 import type {
   OpenAICodexContextWindowMode,
   OpenAICodexModelCatalogEntry,
@@ -36,6 +41,8 @@ export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
 /** Optional adapter collaborators beyond the positional profile inputs. */
 export interface OpenAICodexAdapterExtras {
   imageEditingEnabled?: () => boolean
+  /** Optional profile fallback; explicit request effort wins in the current Host consumer. */
+  resolveReasoningEffort?: () => OpenAICodexReasoningEffort | undefined
   /** Live catalog layer for one route's account plus the context-window mode. */
   catalogLayer?: (accountKey: string | undefined) => OpenAICodexCatalogLayer
   /** Resolve the payload field-name logger for each request; undefined disables logging. */
@@ -137,10 +144,21 @@ export function isOpenAICodexKnownModelFamily(slug: string, knownIds: readonly s
 }
 
 /**
+ * Bundled records for server generations the installed catalog predates. Each
+ * alias names the installed model filling the same product role; the live
+ * payload still supplies the id, name, windows, and output cap.
+ */
+const OPENAI_CODEX_MODEL_PREDECESSORS: Readonly<Record<string, readonly string[]>> = {
+  'gpt-6.1-sol': ['gpt-6-sol', 'gpt-5.6-sol'],
+  'gpt-6.1-terra': ['gpt-6-astra', 'gpt-5.6-terra'],
+}
+
+/**
  * Overlay the live catalog on the installed one. Known slugs keep their
  * bundled record with the selected mode's window and the server output cap;
- * GPT-6.1 Sol and family-known new slugs use a sibling record. Unknown
- * slugs are returned so the Host can report them without enabling them.
+ * GPT-6.1 models and family-known new slugs use a sibling record. Native and
+ * synthesized GPT-6.1 Sol records disable Off and Minimal. Unknown slugs are
+ * returned so the Host can report them without enabling them.
  * @param provider - installed provider catalog.
  * @param live - server-advertised models.
  * @param mode - selected context-window mode.
@@ -151,7 +169,9 @@ export function applyOpenAICodexLiveCatalog(
   live: readonly OpenAICodexLiveModel[],
   mode: OpenAICodexContextWindowMode,
 ): { provider: Provider; unavailableModels: readonly string[] } {
-  const baseline = provider.getModels()
+  const baseline = provider.getModels().map(model => model.id === 'gpt-6.1-sol'
+    ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null, minimal: null } }
+    : model)
   const bySlug = new Map(live.map(entry => [entry.slug, entry]))
   const knownIds = baseline.map(model => model.id)
   const models = baseline.map(model => {
@@ -166,17 +186,16 @@ export function applyOpenAICodexLiveCatalog(
   const unavailableModels: string[] = []
   for (const entry of live) {
     if (baseline.some(model => model.id === entry.slug)) continue
-    const solPredecessor = entry.slug === 'gpt-6.1-sol'
-      ? baseline.find(model => model.id === 'gpt-6-sol') ?? baseline.find(model => model.id === 'gpt-5.6-sol')
-      : undefined
+    const aliases = OPENAI_CODEX_MODEL_PREDECESSORS[entry.slug]
+    const predecessor = aliases?.map(id => baseline.find(model => model.id === id)).find(model => model !== undefined)
+      ?? (entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
+        ? baseline.find(model => model.id === `gpt-5.6-${entry.slug.slice('gpt-6-'.length)}`)
+        : undefined)
     const family = openAICodexModelFamily(entry.slug)
-    if (solPredecessor === undefined && (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds))) {
+    if (predecessor === undefined && (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds))) {
       unavailableModels.push(entry.slug)
       continue
     }
-    const predecessor = solPredecessor ?? (entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
-      ? baseline.find(model => model.id === `gpt-5.6-${entry.slug.slice('gpt-6-'.length)}`)
-      : undefined)
     const template = predecessor ?? baseline.find(model => model.id === family || model.id.startsWith(`${family}-`))
     if (template === undefined) {
       unavailableModels.push(entry.slug)
@@ -246,6 +265,10 @@ export const OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
 export const OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048
 /** rc.2 default raw encoded-byte cap for one deterministic inline image version. */
 export const OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
+/** Request-level retained-image count bound; the harness omits images past it instead of failing. */
+export const OPENAI_CODEX_MAX_REQUEST_IMAGES = 50
+/** Count-overflow offload step, never above the retained-image bound. */
+export const OPENAI_CODEX_IMAGE_OFFLOAD_COUNT_QUANTUM = 10
 
 /**
  * Use the finite SSE response path for Codex requests. The automatic
@@ -299,11 +322,11 @@ export function deriveOpenAICodexPromptCacheKey(
   sessionId: string | undefined,
 ): string | undefined {
   if (sessionId !== undefined && sessionId.trim().length > 0) return clampOpenAICodexPromptCacheKey(sessionId.trim())
-  // Older supported pi-ai versions carry a prompt field rather than system messages.
-  const systemMessage = 'getCurrentSystemMessage' in piAi ? piAi.getCurrentSystemMessage(context.messages) : undefined
+  // Public Context inputs may use systemPrompt instead of transcript system messages.
+  const systemMessage = getCurrentSystemMessage(context.messages)
   const system = systemMessage === undefined
     ? context.systemPrompt ?? ''
-    : piAi.getSystemMessageText(systemMessage)
+    : getSystemMessageText(systemMessage)
   const firstUser = (context.messages ?? [])
     .filter(message => message.role === 'user')
     .map(message => openAICodexContentText(message.content))
@@ -321,6 +344,8 @@ export function deriveOpenAICodexPromptCacheKey(
 export interface OpenAICodexPayloadPolicy {
   /** Fast Mode registry; absent never adds the priority tier. */
   fastMode?: FastModeRegistry | undefined
+  /** Adapter-owned request capture, attributed only by the normal auth resolver. */
+  requestScope?: SpeedModeRequestScope | undefined
   /** Derive the prompt-cache key; absent never adds one. */
   derivePromptCacheKey?: ((context: PiContext, sessionId: string | undefined) => string | undefined) | undefined
   /** Resolve the field-name logger for each request; undefined disables logging. */
@@ -342,12 +367,22 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
     streamSimple(model, context, options?: SimpleStreamOptions) {
       const sessionId = options?.sessionId
       const codexRoute = provider.id === model.provider && isOpenAICodexRouteId(provider.id)
-      const fastEnabled = codexRoute && policy.fastMode?.isEnabled(sessionId) === true
+      const scoped = codexRoute && policy.fastMode instanceof ConversationSpeedRegistry ? policy.fastMode : undefined
+      const request = policy.requestScope?.current()
+      const captured = scoped?.captureSpeed(sessionId)
+      const mode = scoped === undefined
+        ? codexRoute && policy.fastMode?.isEnabled(sessionId) === true ? 'fast' : 'standard'
+        : scoped.confirmCapturedSpeed(sessionId, request?.selection ?? captured!, {
+          workspace: scoped.workspaceFor(sessionId ?? ''), accountKey: request?.accountKey,
+          provider: model.provider, model: model.id,
+        })
+      const fastEnabled = mode === 'fast'
       const cacheKey = codexRoute && options?.cacheRetention !== 'none'
         ? policy.derivePromptCacheKey?.(context, sessionId)
         : undefined
       const logFields = codexRoute ? policy.onPayloadFields?.() : undefined
-      if (!fastEnabled && cacheKey === undefined && logFields === undefined) {
+      if (mode === 'standard' && (scoped === undefined || options?.onPayload === undefined)
+        && cacheKey === undefined && logFields === undefined) {
         return streamSimple.call(provider, model, context, options)
       }
       const previousOnPayload = options?.onPayload
@@ -356,11 +391,13 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
         async onPayload(payload, payloadModel) {
           const replaced = await previousOnPayload?.(payload, payloadModel)
           const nextPayload = replaced === undefined ? payload : replaced
-          if (!isPayloadRecord(nextPayload)) return nextPayload
+          const speedPayload = scoped !== undefined || fastEnabled
+            ? projectOpenAICodexSpeedPayload(nextPayload, model.provider, model.id, mode)
+            : nextPayload
+          if (!isPayloadRecord(speedPayload)) return speedPayload
           const additions: Record<string, unknown> = {}
-          if (fastEnabled) additions['service_tier'] = 'priority'
           if (cacheKey !== undefined) additions['prompt_cache_key'] = cacheKey
-          const result = { ...nextPayload, ...additions }
+          const result = { ...speedPayload, ...additions }
           logFields?.(Object.keys(result))
           return result
         },
@@ -384,9 +421,10 @@ function requestProvider(
   proxyManager?: OpenAICodexProxyManager,
   resolveProxyUrl?: () => string | undefined,
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
+  requestScope?: SpeedModeRequestScope,
 ): Provider {
   const configured = withOpenAICodexPayloadPolicy(provider, {
-    fastMode,
+    fastMode, requestScope,
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
   })
@@ -427,7 +465,7 @@ export function openAICodexWithdrawnModelMessage(routeLabel: string, model: stri
     + ' Refresh models under Settings, Plugins, Codex Connect, or choose another model or account.'
 }
 
-/** Build the DSH rc.2 profile while keeping request execution on PI 0.87.1. */
+/** Build the DSH rc.2 profile with request and host streams on PI 1.4.0. */
 export function createOpenAICodexProfile(
   provider: Provider,
   fastMode?: FastModeRegistry,
@@ -438,10 +476,10 @@ export function createOpenAICodexProfile(
   route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
   layer?: OpenAICodexCatalogLayer | undefined,
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
+  requestPolicy?: { requestScope?: SpeedModeRequestScope; reasoningEffort?: OpenAICodexReasoningEffort },
 ): OpenAICodexRouteProfile & { piProvider: ReturnType<typeof bridgePiProvider> } {
-  const layeredProvider = layer === undefined
-    ? provider
-    : applyOpenAICodexLiveCatalog(provider, layer.live, layer.mode).provider
+  const effectiveLayer: OpenAICodexCatalogLayer = layer ?? { live: [], mode: 'default' }
+  const layeredProvider = applyOpenAICodexLiveCatalog(provider, effectiveLayer.live, effectiveLayer.mode).provider
   const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides, layer?.live)
   const routedProvider = withOpenAICodexRouteId(effectiveProvider, route.routeId)
   // A withdrawn model stays listed but never reaches the provider: the adapter rejects it
@@ -457,12 +495,15 @@ export function createOpenAICodexProfile(
     transport: OPENAI_CODEX_TRANSPORT,
     streamIdleTimeoutMs: OPENAI_CODEX_STREAM_IDLE_TIMEOUT_MS,
     maxRequestImageBytes: OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES,
+    maxRequestImages: OPENAI_CODEX_MAX_REQUEST_IMAGES,
+    imageOffloadCountQuantum: OPENAI_CODEX_IMAGE_OFFLOAD_COUNT_QUANTUM,
     requestImagePixelBudget: OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET,
     requestImageMaxBytes: OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-connect retryPolicy'),
+    ...requestPolicy?.reasoningEffort === undefined ? {} : { reasoning: requestPolicy.reasoningEffort },
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
     modelErrors,
-    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields)),
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope)),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -590,15 +631,18 @@ export function createOpenAICodexAdapter(
   extras?: OpenAICodexAdapterExtras,
 ): PiAiAdapter {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
+  const requestScope = new SpeedModeRequestScope()
   let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
   let previousKey: unknown
   const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
+    const reasoningEffort = extras?.resolveReasoningEffort?.()
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
     // Each route reads the catalog of the account it authenticates as.
     const layers = bindings.map(route => extras?.catalogLayer?.(route.accountKey))
     const key = {
+      reasoningEffort: reasoningEffort ?? null,
       window: windowOverrides === undefined ? null : { ...windowOverrides },
       tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
       routes: bindings.map(route => [route.routeId, route.displayName, route.accountKey ?? null]),
@@ -612,7 +656,8 @@ export function createOpenAICodexAdapter(
       // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
       profiles = new Map(bindings.map((route, index) => [
         route.routeId,
-        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields),
+        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields,
+          { requestScope, ...reasoningEffort === undefined ? {} : { reasoningEffort } }),
       ] as const))
     }
     return profiles
@@ -620,7 +665,13 @@ export function createOpenAICodexAdapter(
   class OpenAICodexAdapter extends PiAiAdapter {
     private streamWithImageHandles(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>, options: GenerateOptions): AsyncIterable<StreamChunk> {
       const projected = extras?.imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(options) : options
-      return stream(projected)
+      return fastMode instanceof ConversationSpeedRegistry
+        ? requestScope.stream(stream, projected, () => {
+          const captured = fastMode.captureSpeed(options.sessionId)
+          // Auxiliary title/compaction requests do not opt into a paid conversation tier.
+          return options.purpose !== undefined && captured.mode === 'ultrafast' ? { mode: 'standard' } : captured
+        })
+        : stream(projected)
     }
     override async prepareCall(providerId: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
       const prepared = await super.prepareCall(providerId, model, signal)
@@ -653,6 +704,7 @@ export function createOpenAICodexAdapter(
       const accountKey = (profile as OpenAICodexRouteProfile).openaiCodexAccountKey
       const operation = async () => {
         const auth = accountKey === undefined ? await readOpenAICodexRequestAuth(credentials) : await readOpenAICodexAccountRequestAuth(credentials, accountKey)
+        requestScope.recordAccount(openAICodexAccountKey(auth.accountId))
         return auth.access
       }
       return proxyManager?.run(resolveProxyUrl?.(), operation) ?? operation()

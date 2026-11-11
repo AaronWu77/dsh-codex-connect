@@ -1,4 +1,6 @@
 /** Read declared host image events, never image-looking JSON embedded in user prose. */
+// Type-only: brings the PTC dispatch session events into SessionEventMap.
+import type {} from '@deepseek-ai/dsh-tool-executor-ptc/types'
 import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { decodeImageInputAttachment, imageInputObject, IMAGE_INVENTORY_MAX_COUNT } from './image-input-contract.ts'
@@ -26,7 +28,9 @@ export function imagePresentationFromEvent(event: unknown): ImagePresentationMet
 
 /** Original access in a fork remains confined to the actual inherited event prefix. */
 export function inheritedImageOriginal(session: Session | undefined, assetId: string): OpenAICodexOriginalImageRef | undefined {
-  if (session?.header.parentSession === undefined) return undefined
+  // Fork lineage is recorded as `isSeeded` plus an inherited prefix length; `parentSession`
+  // is optional provenance that SessionStore.fork() does not stamp, so it cannot gate access.
+  if (session === undefined || !session.header.isSeeded || session.inheritedEventCount <= 0) return undefined
   for (const event of session.snapshotEvents()) {
     if (event.seq >= session.inheritedEventCount) break
     const original = imagePresentationFromEvent(event)?.images.find(image => image.original?.assetId === assetId)?.original
@@ -96,7 +100,7 @@ export function sessionImageInventory(session: Session): SessionImageInventory {
       const id = String(preview.attachmentId)
       const occurrences = result.results.get(id) ?? new Map<string, ImagePresentationItem>()
       const key = JSON.stringify([preview, image.original?.assetId ?? null])
-      occurrences.set(key, { ...image, preview })
+      occurrences.set(key, { preview, ...(image.original === undefined ? {} : { original: image.original }) })
       result.results.set(id, occurrences)
     }
     // Mirror the host's known content boundaries, without recursing through arbitrary data.

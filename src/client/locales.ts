@@ -1,3 +1,4 @@
+import { featureEn, featureZh } from './feature-locales.ts'
 import { usageEn, usageZh } from './usage-locales.ts'
 import { managementEn, managementZh } from './management-locales.ts'
 
@@ -5,6 +6,7 @@ import { managementEn, managementZh } from './management-locales.ts'
 export const en = {
   ...usageEn,
   ...managementEn,
+  ...featureEn,
   title: 'Codex Connect',
   modelsProviderName: 'Openai-Codex',
   modelsProviderSupport: 'Powered by the Codex Connect plugin.',
@@ -51,7 +53,7 @@ export const en = {
   callbackNoPending: 'No authorization is pending. Continue authorization or start sign-in again.',
   callbackFailed: 'The callback could not be submitted. Try again or continue authorization.',
   callbackUnconfirmed: 'The submission timed out and may have been accepted. Continuing to check authorization status…',
-  modelsAccountHelp: 'Proxy, model visibility, search and image options remain in Settings → Plugins → Codex Connect, or open them here:',
+  modelsAccountHelp: 'Proxy, model visibility, search and image options remain in Settings → Codex Connect, or open them here:',
   expand: 'Expand settings',
   collapse: 'Collapse settings',
   loadingAccount: 'Loading account…',
@@ -248,6 +250,7 @@ export const en = {
   canceled: 'Image generation canceled',
   canceledDetail: 'Local waiting stopped. The request may still be processing.',
   unknownResult: 'The image result could not be displayed safely.',
+  imagePreviewUnavailable: 'Preview unavailable; the original was saved. Download it or continue editing without generating again just to restore the preview.',
   imageDetails: 'Image details',
   imageDetail: '{name}: {format} · {width} × {height} · {size}',
   originalImageDetail: 'Original {name}: {format} · {width} × {height} · {size}',
@@ -347,6 +350,7 @@ export type OpenAICodexSettingsKey = keyof typeof en
 export const zh: { [Key in OpenAICodexSettingsKey]: string } = {
   ...usageZh,
   ...managementZh,
+  ...featureZh,
   title: 'Codex Connect',
   modelsProviderName: 'Openai-Codex',
   modelsProviderSupport: '由 Codex Connect 插件提供支持。',
@@ -393,7 +397,7 @@ export const zh: { [Key in OpenAICodexSettingsKey]: string } = {
   callbackNoPending: '当前没有待完成的授权，请继续授权或重新登录。',
   callbackFailed: '无法提交回调，请重试或继续授权。',
   callbackUnconfirmed: '提交超时，但可能已被接受。正在继续检查授权状态…',
-  modelsAccountHelp: '代理、模型显示、搜索和图片选项仍可在“设置 → 插件 → Codex Connect”中管理，也可直接打开：',
+  modelsAccountHelp: '代理、模型显示、搜索和图片选项仍可在“设置 → Codex Connect”中管理，也可直接打开：',
   expand: '展开设置',
   collapse: '折叠设置',
   loadingAccount: '正在加载账户信息…',
@@ -590,6 +594,7 @@ export const zh: { [Key in OpenAICodexSettingsKey]: string } = {
   canceled: '图片生成已取消',
   canceledDetail: '本地等待已停止，请求可能仍在处理中。',
   unknownResult: '无法安全显示这次图片结果。',
+  imagePreviewUnavailable: '预览不可用，原图已保存。可下载原图或继续编辑，无需为恢复预览重新生成。',
   imageDetails: '图片详情',
   imageDetail: '{name}：{format} · {width} × {height} · {size}',
   originalImageDetail: '原图 {name}：{format} · {width} × {height} · {size}',

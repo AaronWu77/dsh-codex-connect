@@ -10,7 +10,7 @@ import {
   resolveOpenAICodexSettings,
 } from '../src/settings-contract.ts'
 import { Config } from '../src/index.ts'
-import type { OpenAICodexSettingsInput } from '../src/settings-contract.ts'
+import type { OpenAICodexSettingsConfig, OpenAICodexSettingsInput } from '../src/settings-contract.ts'
 
 function configSettings(config: ReturnType<typeof Config>): OpenAICodexSettingsInput {
   const values = Object.fromEntries(Object.entries(config).flatMap(([key, value]) => {
@@ -229,5 +229,42 @@ describe('OpenAI Codex model catalog settings contract', () => {
       expect(() => resolveOpenAICodexSettings({ modelCatalogClientVersion: invalid })).toThrow()
       expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, modelCatalogClientVersion: invalid })).toBeUndefined()
     }
+  })
+})
+
+describe('bounded review and requested-speed defaults', () => {
+  it('keeps legacy profiles manual without selecting a paid service hint or effort', () => {
+    const resolved = resolveOpenAICodexSettings(configSettings(Config({ enableAutoReview: true })))
+    expect(resolved).toMatchObject({ enableAutoReview: true, autoReviewLocalPolicy: 'manual' })
+    expect(resolved.newSessionSpeedMode).toBeUndefined()
+    expect(resolved.newSubagentSpeedMode).toBeUndefined()
+    expect(resolved.reasoningEffort).toBeUndefined()
+  })
+  it('preserves null masks through Host validation and resolves them only after merging', () => {
+    const validated = Config({ newSessionSpeedMode: null, newSubagentSpeedMode: null, reasoningEffort: null })
+    expect(validated.newSessionSpeedMode.get()).toBeNull()
+    expect(validated.newSubagentSpeedMode.get()).toBeNull()
+    expect(validated.reasoningEffort.get()).toBeNull()
+    const input = configSettings(validated)
+    const resolved = resolveOpenAICodexSettings(input)
+    expect(resolved.newSessionSpeedMode).toBeUndefined()
+    expect(resolved.newSubagentSpeedMode).toBeUndefined()
+    expect(resolved.reasoningEffort).toBeUndefined()
+    // decode() rebuilds only this contract's fields; resolve() also carries Host-only extras such as
+    // the local usage settings, so compare the contract fields it actually promises to reconstruct.
+    const decoded = decodeOpenAICodexSettings(input)
+    expect(decoded).toBeDefined()
+    expect(Object.keys(decoded!).sort()).toEqual(Object.keys(DEFAULT_OPENAI_CODEX_SETTINGS).sort())
+    for (const key of Object.keys(decoded!) as (keyof OpenAICodexSettingsConfig)[]) expect([key, decoded![key]]).toEqual([key, resolved[key]])
+  })
+  it('keeps independent speed and explicit local authorization choices', () => {
+    const input = configSettings(Config({ enableNewSessionFastMode: true, newSessionSpeedMode: 'standard', newSubagentSpeedMode: 'ultrafast', reasoningEffort: 'high', autoReviewLocalPolicy: 'workspace-read' }))
+    expect(decodeOpenAICodexSettings(input)).toMatchObject({ enableNewSessionFastMode: true, newSessionSpeedMode: 'standard', newSubagentSpeedMode: 'ultrafast', reasoningEffort: 'high', autoReviewLocalPolicy: 'workspace-read' })
+  })
+  it.each(['newSessionSpeedMode', 'newSubagentSpeedMode', 'reasoningEffort', 'autoReviewLocalPolicy'])('rejects invalid %s at every stored or wire input', field => {
+    const invalid = { [field]: 'arbitrary' }
+    expect(() => Config(invalid as never)).toThrow()
+    expect(() => resolveOpenAICodexSettings(invalid as never)).toThrow()
+    expect(decodeOpenAICodexSettings({ ...DEFAULT_OPENAI_CODEX_SETTINGS, ...invalid })).toBeUndefined()
   })
 })

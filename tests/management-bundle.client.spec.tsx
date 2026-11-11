@@ -56,7 +56,7 @@ describe.skipIf(!existsSync(artifact))('built management client on fixed host ru
       ctx.provide('sessions', { refresh: async () => {} })
       ctx.provide('configForms', {
         get: () => fixture.scope,
-        describe: () => ({ getSnapshot: () => ({ status: 'ready', view: undefined }), subscribe: () => () => {} }),
+        describe: () => ({ getSnapshot: () => ({ status: 'ready', view: undefined }), subscribe: () => () => {}, ensure: async () => {} }),
         whileServed: (_names: string[], callback: () => () => void) => callback(),
       })
       ctx.provide('slots', {
@@ -67,7 +67,8 @@ describe.skipIf(!existsSync(artifact))('built management client on fixed host ru
         },
       })
       await ctx.plugin({ name: 'management-built-admission', apply: child => { apply(child) } })
-      const settings = registrations.get('settings.plugins.tab')
+      const settings = registrations.get('settings.section')
+      expect(registrations.has('settings.section.icon')).toBe(true)
       expect(registrations.has('sidebar.footer.action')).toBe(true)
       expect(registrations.has('shell.overlay')).toBe(true)
       expect(settings).toBeDefined()

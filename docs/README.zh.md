@@ -1,4 +1,32 @@
+---
+kind: "package-bundle"
+description: "在 DeepSeek Harness 中使用 ChatGPT OAuth 账号与 Codex 模型。"
+---
+
 # Codex Connect
+
+<a id="plugin-information"></a>
+## 插件信息
+
+在 DeepSeek Harness 中使用 ChatGPT OAuth 账号与 Codex 模型。
+
+| 字段 | 内容 |
+|---|---|
+| 包名 | `dsh-codex-connect` |
+| 当前 checkout 版本 | `0.1.0-alpha.4.35` |
+| 维护仓库 | [AaronWu77/dsh-codex-connect](https://github.com/AaronWu77/dsh-codex-connect) |
+| 包许可证 | Apache-2.0 |
+
+包身份、许可证和上游声明以 [package.json](../package.json) 为准。checkout 版本不代表已发布版本或经过验证的兼容性；下文已有的验证范围与部署限制仍然适用。
+
+<a id="source-and-attribution"></a>
+## 来源与归属
+
+- [Codex Connect](https://github.com/franksong2702/dsh-codex-connect) — 基于上游改造; Apache-2.0; 未记录精确上游基准。 本地 DSH 兼容与账号、用量管理集成。
+- [dsh-codex](https://github.com/Yan-Zero/dsh-codex) — 基于上游改造; Apache-2.0; 未记录精确上游基准。 通过 Codex Connect 继承，原作者归属保留在 NOTICE 中。 [详细记录](https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE)。
+- [pi-ai OAuth](https://github.com/earendil-works/pi) — 基于上游改造; MIT; @earendil-works/pi-ai 0.84.4。 OAuth 登录与刷新代码，修改了 JWT 解码、回调清理和刷新拒绝处理，详见 NOTICE。 [详细记录](https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE)。
+
+维护中的 fork 与上游项目属于不同仓库。原作者、版权、许可证与通知声明继续保留；缺失的上游基准不根据本地版本推断。
 
 [![npm version](https://img.shields.io/npm/v/dsh-codex-connect/alpha?label=npm%20alpha&color=cb3837)](https://www.npmjs.com/package/dsh-codex-connect)
 
@@ -10,7 +38,9 @@
 
 Codex Connect 为标准 Harness agent loop 添加 `openai-codex` 模型提供方。工具、权限、审批、附件、会话持久化、压缩与恢复继续由 Harness 管理。安装插件不会改变默认模型或搜索路由，也不会把 ChatGPT 订阅变成 OpenAI Platform API Key。
 
-本 checkout 是 DSH `0.2.1-rc.2`（Host commit `687f282`）的本地候选，不是已发布的版本组合。Codex 请求与 OAuth 保留精确的 PI `0.87.1`；精确指向 PI `1.1.0` 的 `pi-ai-host` alias 仅提供宿主兼容事件流。本候选不再声明支持 DSH `0.2.1-alpha.2` 及其 PI `1.0.2` 桥。本地类型检查、聚焦测试、构建与版本诊断不能证明真实 OAuth、推理、浏览器行为或活动 profile 可用；详见[候选证据与缺口](rc2-candidate-validation.md)。下方已发布安装指南及验证历史保持不变。
+本 checkout 是本地适配 DSH `0.2.1-rc.2` 的私有升级候选，不是已发布的版本组合。Codex 请求 PI 与 `pi-ai-host` 事件流 alias 均以精确的 PI `1.4.0` 为目标；带本地补丁的 OAuth 实现仍固定使用 PI `0.84.4` 源码。其他 DSH/PI 组合不在声明范围内。[rc.2 候选证据](rc2-candidate-validation.md)记录的是此前请求 PI `0.87.1` 与 Host alias `1.1.0` 的基线，不能证明本次升级可用。版本相符与无需密钥的本地检查不能证明真实 OAuth、推理、浏览器行为或活动 profile 可用。下方已发布安装指南及验证历史保持不变。
+
+此私有 checkout 还包含选择性移植的本地审核、速度/推理默认值和仅原图恢复。应用前请阅读[本地集成与迁移限制](local-feature-update.zh.md)；修改候选并不代表运行中的 profile 已安装这些功能。
 
 ## 快速开始
 
@@ -58,8 +88,9 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 - **实时模型目录：**模型名称、上下文窗口、输出上限、推理档位和服务层级来自 `chatgpt.com`，缓存六小时。回退顺序为：实时读取、本插件位于 `$DSH_HOME` 的缓存、官方 CLI 缓存 `~/.codex/models_cache.json`（只读）、插件内置目录。任何一层失败都不会缩小或清空选择器。`contextWindowMode` 选择服务端默认值或其扩展上限，`modelCatalogClientVersion` 设置端点要求的版本校验值。详见[模型目录](reference.zh.md#模型目录)。 每个已保存账户独立维护目录及刷新有效期。模型从成功读取的目录中撤回后保留最后的元数据，并在读取凭据或发送推理请求之前本地拒绝；后续目录重新列出时恢复可用。
 - **Fast Mode：**为单个对话请求优先服务，默认关闭。主账户和带数字后缀的 Codex 账户路由使用 GPT 模型时均显示开关；切换账户后仍保持当前对话的设置。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
 - **额度：**显示服务端返回的 `5h`、`7d` 窗口及重置时间，已登录时通常每 60 秒刷新一次。不虚构缺失窗口；Spark 使用独立额度桶。其他插件可通过 `codexQuota` 客户端服务读取同一批数据：该服务报告每个已登录账户——活动账户来自设置页轮询，其他已保存账户由 DSH 主机读取——因此仪表盘可以并排显示两个账户。
-- **额度与用量卡片：**Codex Connect 管理侧栏额度卡片及详情对话框，保留紧凑布局、所有账户的额度窗口、重置时间和单元格下钻。账户余额明确为 **DeepSeek 平台余额**，含赠金与充值，不是 Codex credits。每日 Token 沿用 Context 保留的自身事件账本，包含归档与子会话用量、排除继承前缀；不会把额度百分比转换成 Token。Context 继续提供这项用量投影并负责上下文查看，不再承载额度界面。本次不增加订阅到期或套餐状态面板。
-- **管理中心：**设置 → 插件 → Codex Connect 直接展示用量概览、账号管理、模型、网络和能力，不再套一层折叠卡。概览复用只读用量弹窗；侧栏小卡保持原有功能。同一个设置表单在切换页签时保留未保存草稿，仅在“保存”或“放弃修改”后处理。账号授权、默认账号切换、移除及连接测试是单独的即时操作；移除账号需要确认。模型预览按已保存账号读取，不切换默认账号，也不发送推理请求。全局模型显示范围和 Token 预算不会选择当前对话的模型。
+- **额度与用量卡片：**Codex Connect 管理侧栏额度卡片及详情对话框，保留紧凑布局、所有账户的额度窗口、重置时间和单元格下钻。账户余额明确为 **DeepSeek 平台余额**，含赠金与充值，不是 Codex credits。每日 Token 由 Codex Connect 自己只读扫描本地会话，包含归档与子会话用量、排除继承前缀，不依赖 Context。这些数字覆盖本地会话的全部模型提供商，不是 Codex 账号账单；不会把额度百分比转换成 Token。扫描发生实际错误时显示简短提示，并可重新尝试。本次不增加订阅到期或套餐状态面板。
+- **本地用量扫描：**仅主机所有者可访问的本地扫描使用 `localUsageTimeZone`、`localUsageRetainedDays`、`localUsageMaxSessions`、`localUsageMaxEventsPerSession`、`localUsageMaxStoredBytesPerSession`、`localUsageYieldEveryEvents` 和 `localUsagePollMs`。日历与保留设置独立于 Context；如果之前自定义过 `usageTimeZone` 或 `usageRetainedDays`，可按需在此设置对应的 `localUsageTimeZone` 或 `localUsageRetainedDays`。未报告完整用量的请求只计入已知数值，因此总量可能不完整。当活动日保留边界或会话原有的空白列表可见性无法确认时，较早日期可能与原统计不同。如果提供方或主机把缺失的用量存成默认零值，事件不会保留这一区别，扫描也无法识别。扫描在后台进行，不显示进度或技术性提示，并保留之前的已知数值。每批最多处理 `localUsageMaxSessions` 个会话；订阅期间，只要持久化来源不变，扫描会自动继续处理剩余批次。失败或停滞的扫描会保留已知数字，并可重新尝试。首次读取失败会逐步延迟重试；授权失败则需要手动重试。默认的 `$DSH_HOME/cache/codex-connect/local-usage-v1.json`（未设置 `DSH_HOME` 时位于 `~/.dsh`）只保存按日汇总、质量标记、日历，以及基于可见会话头部、日历、保留设置和投影版本的指纹，不以明文保存会话 ID、路径或对话内容。该指纹是伪匿名标识，不用于身份认证。指纹匹配时，扫描继续期间会显示先前的完整图；指纹变化或不可用时不会复用，首次建立快照仍需完整扫描。将 `localUsageCacheEnabled` 设为 false 可关闭文件，或通过 `localUsageCacheMaxBytes` 调整默认 16 MiB 上限。缓存目录应仅由主机所有者控制；原子替换不保证 fsync 持久性或跨进程新旧顺序。缺少存储字节数元数据的冷会话会被跳过，扫描保持不完整。返回已完成结果前，所有者接口会列出已存会话的元数据以检查变化；历史量较大时，可增大 `localUsagePollMs` 以降低列举频率。这些工作量限制不约束完整会话列表、保留的逐会话统计或单条日志的峰值内存：主机持久化后端可能在检查事件数量前完整读取并解压日志。首次读取活动会话的投影时，可能同步重放其已有事件。会话查询服务可能保留其常规内存读取缓存；扫描不会直接写入会话日志或其他插件的投影值。活动投影会保留未完成工具调用 ID 的哈希及其是否为提问，但不保留工具名称、参数或结果内容；这些哈希可能被关联或猜出，内存占用随未完成调用数量增长。主机投影缓存服务可能独立检查点化已注册的活动投影。
+- **管理中心：**设置 → Codex Connect 是独立的一级设置项，直接展示用量概览、账号管理、模型、能力和网络，不再套一层折叠卡。概览复用只读用量弹窗；侧栏小卡保持原有功能。同一个设置表单在切换页签时保留未保存草稿，仅在“保存”或“放弃修改”后处理。账号授权、默认账号切换、移除及连接测试是单独的即时操作；移除账号需要确认。模型预览按已保存账号读取，不切换默认账号，也不发送推理请求。全局模型显示范围和 Token 预算不会选择当前对话的模型。
 - **插件更新：**检查 Codex Connect 新版本，不自动安装，也不建议更改 DSH。宿主兼容性信息通过主动运行的本地诊断查看。
 
 <p align="center">
@@ -68,7 +99,7 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 
 ## 可选能力
 
-以下选项在新安装时全部关闭。请在 **设置 → 插件 → 插件配置 → Codex Connect** 或 **设置 → 模型 → Openai-Codex → 更多设置** 中编辑，再点击 **保存更改**。发生冲突或保存失败时会保留草稿。
+以下选项在新安装时全部关闭。请在 **设置 → Codex Connect** 或 **设置 → 模型 → Openai-Codex → 更多设置** 中编辑，再点击 **保存更改**。发生冲突或保存失败时会保留草稿。
 
 | 能力 | 启用字段 | 重要行为 |
 |---|---|---|
@@ -134,7 +165,7 @@ pnpm run test:browser
 pnpm run check:dsh-install
 ```
 
-`check` 包含静态检查、单元测试、构建、兼容性和打包检查。`lint:metadata` 检查包元数据与发布规则；`lint:source` 检查宿主与浏览器 TypeScript 中未处理或误用的 Promise、无效 await、重复 case 和不可达代码。浏览器回归与隔离 DSH 安装是另外两个命令。这些检查不使用真实 OAuth 授权，也不能替代真实账户验收。
+`check` 包含静态检查、单元测试、构建、兼容性和打包检查。`lint:metadata` 检查包元数据与发布规则；`lint:source` 检查宿主与浏览器 TypeScript 中未处理或误用的 Promise、无效 await、重复 case 和不可达代码。浏览器回归与隔离 DSH 安装是另外两个命令。这些检查不使用真实 OAuth 授权，也不能替代真实账户验收。若不替换 `lib/client.js` 而测试隔离的客户端构建产物，请将 `DSH_CODEX_TEST_CLIENT` 设为其路径，再运行 `pnpm exec vitest run tests/usage-built-client.integration.spec.tsx`；未设置时该测试会跳过。
 
 浏览器测试会加载 SDK 的原生客户端 UI 模块；Harness 提供给这些模块的库在本仓库中列为开发依赖。运行前，请用 `pnpm exec playwright install chromium --only-shell` 安装锁文件中 Playwright 所需的 Chromium 构建。
 

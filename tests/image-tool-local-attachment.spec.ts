@@ -1,3 +1,4 @@
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,8 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import type { ToolBatchResult, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { OpenAICodexImageAssetStore } from '../src/image-assets.ts'
 import { detectEncodedImage } from '../src/image-format.ts'
 import { imageGenerateTool, IMAGE_GENERATE_TOOL_NAME } from '../src/image-tool.ts'
@@ -57,13 +60,21 @@ afterEach(async () => {
   root = undefined
 })
 
+/** Unwrap one settled batch call, failing loudly when the executor dropped it. */
+function settled(batch: ToolBatchResult, id: string): ToolExecutionResult {
+  const hit = batch.results.find(entry => String(entry.callId) === id)
+  if (hit === undefined) throw new Error('tool batch did not settle ' + id)
+  return hit.result
+}
+
 describe('Codex image generation with DSH attachment normalization', () => {
   it('keeps exact original bytes while returning the canonical normalized preview', async () => {
     root = await mkdtemp(join(tmpdir(), 'codex-image-integration-'))
     const ctx = new Context()
     context = ctx
     await ctx.plugin(SystemPrompt)
-    await ctx.plugin(ToolRuntime, { mode: 'native' })
+    await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(LocalAttachmentStore, { dshHome: root, normalizedImageMaxDimension: 2048 })
     const assets = new OpenAICodexImageAssetStore(root)
     ctx.provide('openaiCodexTransport', {
@@ -79,13 +90,12 @@ describe('Codex image generation with DSH attachment normalization', () => {
       },
     })
     ctx.tools.register(imageGenerateTool(ctx, assets))
-    const result = await ctx.tools.execute({
+    const batch = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: 'image-normalized' as never,
-      name: IMAGE_GENERATE_TOOL_NAME,
-      arguments: { prompt: 'keep the exact original' },
+      calls: [{ type: 'tool-call', id: 'image-normalized' as ToolCallId, name: IMAGE_GENERATE_TOOL_NAME, arguments: JSON.stringify({ prompt: 'keep the exact original' }) }],
       agent: { id: 'session-normalized', options: {}, session: {} } as never,
     })
+    const result = settled(batch, 'image-normalized')
 
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected image generation to succeed')
