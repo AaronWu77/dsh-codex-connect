@@ -9,8 +9,8 @@ describe('model-specific configuration ceilings', () => {
     ['gpt-5.6-sol', 272_000, 872_000],
     ['gpt-5.6-terra', 272_000, 872_000],
     ['gpt-5.6-luna', 272_000, 872_000],
-    ['gpt-5.5', 272_000, 272_000],
-    ['gpt-5.3-codex-spark', 128_000, 128_000],
+    // gpt-5.5 and gpt-5.3-codex-spark are no longer advertised by the installed
+    // pi-ai provider, so they stay covered by the removed-model ceiling tests below.
   ])('exposes %s defaults and enforces the ceiling in both browser and adapter validation', (id, contextWindow, maximum) => {
     const model = openAICodexModelCatalog().find(entry => entry.id === id)!
     expect(model).toMatchObject({ contextWindow, maxContextWindow: maximum })
