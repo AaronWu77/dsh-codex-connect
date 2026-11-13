@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { RecentRequestLog, RecentRequestOutcome, RecentRequestTransport } from './recent-requests.ts'
+import type { RecentRequestKind, RecentRequestLog, RecentRequestOutcome, RecentRequestTransport } from './recent-requests.ts'
 
 type ConfigTransport = 'auto' | 'sse'
 
@@ -22,6 +22,7 @@ interface RequestState {
   startedAt: number
   provider: string
   model: string
+  kind: RecentRequestKind
   entryId: string
   recorded: boolean
   routeLabel?: string | undefined
@@ -43,6 +44,18 @@ function outcomeOf(reason: Extract<StreamChunk, { type: 'finish' }>['reason']): 
   return 'ok'
 }
 
+/** @param options - the business request. @param resolveSessionKind - subagent lookup. @returns the request purpose shown by the panel. */
+function requestKindOf(
+  options: GenerateOptions,
+  resolveSessionKind: ((sessionId: GenerateOptions['sessionId']) => 'conversation' | 'subagent') | undefined,
+): RecentRequestKind {
+  const purpose: string | undefined = options.purpose
+  if (purpose === 'session-title') return 'title'
+  if (purpose === 'compaction') return 'compaction'
+  if (purpose === 'auto-review') return 'auto-review'
+  return resolveSessionKind?.(options.sessionId) === 'subagent' ? 'subagent' : 'conversation'
+}
+
 /** Own model requests without retaining provider WebSocket sessions between requests. */
 export class OpenAICodexRequestLifecycle {
   private readonly scope = new AsyncLocalStorage<RequestState>()
@@ -53,6 +66,7 @@ export class OpenAICodexRequestLifecycle {
   constructor(
     private readonly resolveProxyUrl?: () => string | undefined,
     private readonly recentRequests?: RecentRequestLog,
+    private readonly resolveSessionKind?: (sessionId: GenerateOptions['sessionId']) => 'conversation' | 'subagent',
   ) {}
 
   /** The request's captured proxy and cancellation, including authentication. */
@@ -131,6 +145,7 @@ export class OpenAICodexRequestLifecycle {
           startedAt: Date.now(),
           provider: options.provider,
           model: options.model,
+          kind: requestKindOf(options, owner.resolveSessionKind),
           entryId: randomUUID(),
           recorded: false,
           reasoning: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
@@ -234,6 +249,7 @@ export class OpenAICodexRequestLifecycle {
       startedAt: state.startedAt,
       provider: state.provider,
       model: state.model,
+      kind: state.kind,
       routeLabel: state.routeLabel ?? state.provider,
       ...state.reasoning === undefined ? {} : { reasoning: state.reasoning },
       transport: state.transport ?? (state.configuredTransport === 'sse' ? 'sse' : 'ws'),

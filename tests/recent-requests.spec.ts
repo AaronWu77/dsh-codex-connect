@@ -1,6 +1,7 @@
 /** Bounded recent-request log: newest first, cap, and late-fact updates. */
 import { describe, expect, it } from 'vitest'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { RecentRequestLog, RECENT_REQUEST_LIMIT } from '../src/recent-requests.ts'
 import type { RecentRequestEntry } from '../src/recent-requests.ts'
 import { OpenAICodexRequestLifecycle } from '../src/request-lifecycle.ts'
@@ -12,6 +13,7 @@ function entry(index: number): RecentRequestEntry {
     provider: 'openai-codex',
     model: 'gpt-6.1-sol',
     routeLabel: 'OpenAI Codex (AaronWu)',
+    kind: 'conversation',
     transport: 'ws',
     inputTokens: index,
     outputTokens: index * 2,
@@ -66,6 +68,7 @@ describe('recent request log', () => {
       provider: 'openai-codex',
       model: 'gpt-6.1-sol',
       routeLabel: 'OpenAI Codex (AaronWu)',
+      kind: 'conversation',
       reasoning: 'xhigh',
       transport: 'ws',
       inputTokens: 11,
@@ -75,6 +78,20 @@ describe('recent request log', () => {
       bodyBytes: 2_048,
       outcome: 'ok',
     })
+    await lifecycle.dispose()
+  })
+
+  it('labels compaction by purpose and other requests from a subagent Session', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log, () => 'subagent')
+    const run = async (purpose?: GenerateOptions['purpose']): Promise<void> => {
+      for await (const _chunk of lifecycle.stream(async function* () {
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [], ...purpose === undefined ? {} : { purpose } })) { /* drain */ }
+    }
+    await run('compaction')
+    await run()
+    expect(log.snapshot().map(item => item.kind)).toEqual(['subagent', 'compaction'])
     await lifecycle.dispose()
   })
 })

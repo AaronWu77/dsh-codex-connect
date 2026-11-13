@@ -20,15 +20,16 @@ describe('Quota widget and usage dialog in Chromium', () => {
       ? Response.json({ ok: true, value: { isAvailable: true, balances: [{ currency: 'CNY', total: 42.5, granted: 2.5, toppedUp: 40 }] } })
       : String(url) === '/api/dsh-codex-connect/recent-requests'
         ? Response.json({ requests: [
-          { id: 'recent-1', startedAt: Date.now(), provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', reasoning: 'xhigh', transport: 'ws', inputTokens: 3_650, outputTokens: 6_370, cacheReadTokens: 274_180, cacheWriteTokens: 0, bodyBytes: 1_048_576, outcome: 'ok' },
-          { id: 'recent-2', startedAt: Date.now() - 60_000, provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', reasoning: 'xhigh', transport: 'sse', inputTokens: 271_440, outputTokens: 2_900, cacheReadTokens: 0, cacheWriteTokens: 0, bodyBytes: 1_003_000, outcome: 'ok' },
+          { id: 'recent-1', startedAt: Date.now(), provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', kind: 'conversation', reasoning: 'xhigh', transport: 'ws', inputTokens: 3_650, outputTokens: 6_370, cacheReadTokens: 274_180, cacheWriteTokens: 0, bodyBytes: 1_048_576, outcome: 'ok' },
+          { id: 'recent-2', startedAt: Date.now() - 60_000, provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', kind: 'title', reasoning: 'xhigh', transport: 'sse', inputTokens: 271_440, outputTokens: 2_900, cacheReadTokens: 0, cacheWriteTokens: 0, bodyBytes: 1_003_000, outcome: 'ok' },
         ] })
         : Response.json({ status: 'signed-out', accounts: [] })))
     account = new OpenAICodexAccountStore()
     const panel = new CodexUsagePanelStore()
     const snapshot = { windows: [], accounts: [
-      { accountKey: 'one', label: 'First account', active: true, windows: [{ bucketId: 'main', remainingPercent: 43, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 82, windowSeconds: 604800 }] },
-      { accountKey: 'two', label: 'Second account', active: false, windows: [{ bucketId: 'main', remainingPercent: 91, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 95, windowSeconds: 604800 }] },
+      { accountKey: 'one', label: 'First account', active: true, windows: [{ bucketId: 'main', remainingPercent: 43, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 82, windowSeconds: 604800 }], resetCredits: { availableCount: 2, credits: [{ id: 'one-a', expiresAt: Math.floor(Date.now() / 1000) + 86_400 }] } },
+      { accountKey: 'two', label: 'Second account', active: false, windows: [{ bucketId: 'main', remainingPercent: 91, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 95, windowSeconds: 604800 }], resetCredits: { availableCount: 3, credits: [{ id: 'two-a', expiresAt: Math.floor(Date.now() / 1000) + 172_800 }] } },
+      { accountKey: 'three', label: 'Third account', active: false, windows: [{ bucketId: 'main', remainingPercent: 99, windowSeconds: 604800 }], resetCredits: { availableCount: 1, credits: [] } },
     ] }
     const quota = { snapshot: () => snapshot, subscribe: () => () => {} }
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(Date.now())
@@ -49,7 +50,7 @@ describe('Quota widget and usage dialog in Chromium', () => {
     await expect.element(page.getByText('Second account', { exact: true })).toBeVisible()
     for (const width of [1440, 390]) {
       await page.viewport(width, 900)
-      await page.getByRole('button', { name: labels['ov.entry'], exact: true }).click()
+      await page.getByText(labels['ov.entry'], { exact: true }).click()
       const dialog = page.getByRole('dialog', { name: labels.usagePanelTitle, exact: true })
       await expect.element(dialog).toBeVisible()
       const box = (await dialog.element()).getBoundingClientRect()
@@ -61,7 +62,7 @@ describe('Quota widget and usage dialog in Chromium', () => {
       await expect.element(dialog).not.toBeInTheDocument()
     }
     await page.viewport(960, 800)
-    await page.getByRole('button', { name: labels['ov.entry'], exact: true }).click()
+    await page.getByText(labels['ov.entry'], { exact: true }).click()
     await expect.element(page.getByRole('dialog')).toBeVisible()
     await page.screenshot({ path: '.tmp/usage-migration/dialog-' + _locale + '.png' })
     await page.getByRole('button', { name: labels.close, exact: true }).click()

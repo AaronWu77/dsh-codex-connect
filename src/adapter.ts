@@ -55,6 +55,8 @@ export interface OpenAICodexAdapterExtras {
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined
   /** Process-local request summaries for the sidebar panel; absent records nothing. */
   recentRequests?: RecentRequestLog
+  /** Resolve whether a request belongs to a subagent Session. */
+  resolveRequestKind?: (sessionId: GenerateOptions['sessionId']) => 'conversation' | 'subagent'
 }
 
 /** One LLM route this adapter registers and the store account it authenticates as. */
@@ -670,7 +672,7 @@ export function createOpenAICodexAdapter(
 ): PiAiAdapter & { dispose(): Promise<void> } {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
   const requestScope = new SpeedModeRequestScope()
-  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl, extras?.recentRequests)
+  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl, extras?.recentRequests, extras?.resolveRequestKind)
   let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
   let previousKey: unknown
   const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {

@@ -641,6 +641,10 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
         ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
         : undefined,
       recentRequests,
+      resolveRequestKind: sessionId => sessionId !== undefined
+        && ctx.get('sessions')?.get(sessionId)?.header.origin === 'subagent'
+        ? 'subagent'
+        : 'conversation',
     },
   )
   const registration = ctx.llm.registerAdapter([OPENAI_CODEX_PROVIDER], modelAdapter)

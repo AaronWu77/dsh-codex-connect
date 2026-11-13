@@ -23,6 +23,7 @@ function view(overrides: Partial<RecentRequestView> = {}): RecentRequestView {
     provider: 'openai-codex',
     model: 'gpt-6.1-sol',
     routeLabel: 'OpenAI Codex (AaronWu)',
+    kind: 'conversation',
     reasoning: 'xhigh',
     transport: 'ws',
     inputTokens: 3_650,
@@ -48,6 +49,12 @@ describe('recent request parsing', () => {
     const parsed = recentRequestsOf({ requests: [...rows, { id: 'bad' }, null, 'no'] })
     expect(parsed).toHaveLength(5)
     expect(parsed.map(row => row.id)).toEqual(['request-0', 'request-1', 'request-2', 'request-3', 'request-4'])
+    expect(parsed[0]?.kind).toBe('conversation')
+  })
+
+  it('recognizes request kinds and defaults unknown values to a conversation', () => {
+    expect(recentRequestsOf({ requests: [view({ kind: 'title' })] })[0]?.kind).toBe('title')
+    expect(recentRequestsOf({ requests: [{ ...view(), kind: 'unknown' }] })[0]?.kind).toBe('conversation')
   })
 
   it('rejects a missing list, bad transport, bad outcome and negative tokens', () => {
@@ -66,6 +73,7 @@ describe('recent request section', () => {
 
     await act(async () => { await store.refresh() })
     expect(screen.getByText('gpt-6.1-sol')).toBeDefined()
+    expect(screen.getByText(en['ov.recent.kind.conversation'])).toBeDefined()
     expect(screen.getByText(en['ov.recent.transport.ws'])).toBeDefined()
     expect(screen.getByText('OpenAI Codex (AaronWu)')).toBeDefined()
     expect(screen.getByText('3.65K')).toBeDefined()

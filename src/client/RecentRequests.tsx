@@ -1,7 +1,7 @@
 /** Recent Codex request summaries inside the sidebar usage dialog. */
 import { useId, useSyncExternalStore } from 'react'
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
-import type { RecentRequestView, RecentRequestsStore } from './recent-requests.ts'
+import type { RecentRequestKind, RecentRequestView, RecentRequestsStore } from './recent-requests.ts'
 
 interface RecentRequestsProps {
   t: OpenAICodexSettingsInjected['t']
@@ -26,6 +26,15 @@ function formatTime(value: number, locale: string): string {
   return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(value)
 }
 
+/** Locale keys for the request-purpose tag. */
+const KIND_KEYS: Record<RecentRequestKind, 'ov.recent.kind.conversation' | 'ov.recent.kind.title' | 'ov.recent.kind.compaction' | 'ov.recent.kind.subagent' | 'ov.recent.kind.autoReview'> = {
+  conversation: 'ov.recent.kind.conversation',
+  title: 'ov.recent.kind.title',
+  compaction: 'ov.recent.kind.compaction',
+  subagent: 'ov.recent.kind.subagent',
+  'auto-review': 'ov.recent.kind.autoReview',
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return <span className="cc-recent-metric">
     <span className="cc-recent-metric-label">{label}</span>
@@ -40,6 +49,7 @@ function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequ
         {t(request.transport === 'ws' ? 'ov.recent.transport.ws' : 'ov.recent.transport.sse')}
       </span>
       <span className="cc-recent-model" title={request.model}>{request.model}</span>
+      <span className="cc-recent-kind" data-kind={request.kind}>{t(KIND_KEYS[request.kind])}</span>
       {request.outcome === 'ok' ? null : <span className="cc-recent-outcome" data-outcome={request.outcome}>
         {t(request.outcome === 'error' ? 'ov.recent.outcome.error' : 'ov.recent.outcome.aborted')}
       </span>}

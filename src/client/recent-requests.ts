@@ -10,6 +10,9 @@ export type RecentRequestTransport = 'ws' | 'sse'
 /** Terminal result of one request. */
 export type RecentRequestOutcome = 'ok' | 'error' | 'aborted'
 
+/** Why the request was issued. */
+export type RecentRequestKind = 'conversation' | 'title' | 'compaction' | 'subagent' | 'auto-review'
+
 /** One display-safe recent request. */
 export interface RecentRequestView {
   id: string
@@ -17,6 +20,7 @@ export interface RecentRequestView {
   provider: string
   model: string
   routeLabel: string
+  kind: RecentRequestKind
   reasoning?: string
   transport: RecentRequestTransport
   inputTokens: number
@@ -43,6 +47,13 @@ function count(value: unknown): number | undefined {
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/** @param value - route JSON. @returns the recognized kind, defaulting to a conversation. */
+function kindOf(value: unknown): RecentRequestKind {
+  return value === 'title' || value === 'compaction' || value === 'subagent' || value === 'auto-review'
+    ? value
+    : 'conversation'
 }
 
 function requestOf(value: unknown): RecentRequestView | undefined {
@@ -72,6 +83,7 @@ function requestOf(value: unknown): RecentRequestView | undefined {
     provider,
     model,
     routeLabel,
+    kind: kindOf(entry['kind']),
     ...typeof reasoning === 'string' && reasoning.length > 0 ? { reasoning } : {},
     transport,
     inputTokens,

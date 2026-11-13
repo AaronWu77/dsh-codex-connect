@@ -6,6 +6,9 @@ export type RecentRequestTransport = 'ws' | 'sse'
 /** Terminal result of one request. */
 export type RecentRequestOutcome = 'ok' | 'error' | 'aborted'
 
+/** Why the Harness issued one Codex model request. */
+export type RecentRequestKind = 'conversation' | 'title' | 'compaction' | 'subagent' | 'auto-review'
+
 /** One bounded, secret-free request summary. */
 export interface RecentRequestEntry {
   id: string
@@ -13,6 +16,7 @@ export interface RecentRequestEntry {
   provider: string
   model: string
   routeLabel: string
+  kind: RecentRequestKind
   reasoning?: string
   transport: RecentRequestTransport
   inputTokens: number
