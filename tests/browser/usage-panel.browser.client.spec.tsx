@@ -65,6 +65,8 @@ describe('Quota widget and usage dialog in Chromium', () => {
     await page.getByText(labels['ov.entry'], { exact: true }).click()
     await expect.element(page.getByRole('dialog')).toBeVisible()
     await page.screenshot({ path: '.tmp/usage-migration/dialog-' + _locale + '.png' })
+    await page.viewport(2014, 814)
+    await page.screenshot({ path: '.tmp/usage-migration/dialog-wide-' + _locale + '.png' })
     await page.getByRole('button', { name: labels.close, exact: true }).click()
     await expect.element(page.getByRole('dialog')).not.toBeInTheDocument()
     await page.screenshot({ path: '.tmp/usage-migration/widget-' + _locale + '.png' })

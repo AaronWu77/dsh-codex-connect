@@ -76,28 +76,32 @@ export function CompactAccountUsage({ accounts, quota, t }: {
       <h3>{t('accountUsageHeading')}</h3>
       {updatedAt === undefined ? null : <span>{t('usageUpdatedAt', { time: updatedAt })}</span>}
     </div>
-    <div className="cc-account-table" role="table" aria-label={t('accountUsageHeading')}>
-      <div className="cc-account-row cc-account-row-head" role="row">
-        <span role="columnheader">{t('ov.dash.account')}</span>
-        <span role="columnheader">{windowLabel(FIVE_HOURS)}</span>
-        <span role="columnheader">{windowLabel(SEVEN_DAYS)}</span>
-        <span role="columnheader">{t('ov.dash.resetCards')}</span>
-      </div>
-      {rows.map(account => {
-        const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
-        return <div className="cc-account-row" role="row" key={account.accountKey} data-active={account.active ? 'true' : undefined}>
-          <div className="cc-account-name" role="cell">
-            <strong title={name === '' ? t('ov.quota.accountCurrent') : name}>{name === '' ? t('ov.quota.accountCurrent') : name}</strong>
-            {account.active ? <span className="cc-account-badge">{t('ov.quota.active')}</span> : null}
-            {account.unavailable === true || account.errorCode !== undefined
-              ? <span className="cc-account-error">{t('ov.quota.readFailed')}</span>
-              : null}
-          </div>
-          <div role="cell"><QuotaCell win={windowOf(account, FIVE_HOURS)} t={t} /></div>
-          <div role="cell"><QuotaCell win={windowOf(account, SEVEN_DAYS)} t={t} /></div>
-          <div role="cell"><ResetCell account={account} t={t} /></div>
-        </div>
-      })}
-    </div>
+    <table className="cc-account-table">
+      <thead>
+        <tr className="cc-account-row-head">
+          <th scope="col">{t('ov.dash.account')}</th>
+          <th scope="col">{windowLabel(FIVE_HOURS)}</th>
+          <th scope="col">{windowLabel(SEVEN_DAYS)}</th>
+          <th scope="col">{t('ov.dash.resetCards')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(account => {
+          const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
+          return <tr className="cc-account-row" key={account.accountKey} data-active={account.active ? 'true' : undefined}>
+            <td className="cc-account-name">
+              <strong title={name === '' ? t('ov.quota.accountCurrent') : name}>{name === '' ? t('ov.quota.accountCurrent') : name}</strong>
+              {account.active ? <span className="cc-account-badge">{t('ov.quota.active')}</span> : null}
+              {account.unavailable === true || account.errorCode !== undefined
+                ? <span className="cc-account-error">{t('ov.quota.readFailed')}</span>
+                : null}
+            </td>
+            <td><QuotaCell win={windowOf(account, FIVE_HOURS)} t={t} /></td>
+            <td><QuotaCell win={windowOf(account, SEVEN_DAYS)} t={t} /></td>
+            <td><ResetCell account={account} t={t} /></td>
+          </tr>
+        })}
+      </tbody>
+    </table>
   </section>
 }
