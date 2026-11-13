@@ -26,10 +26,18 @@ export class OpenAICodexConfigForm implements ConfigForm<OpenAICodexSettingsConf
     if (form === this.formSnapshot && mirror === this.mirrorSnapshot && this.projected !== undefined) return this.projected
     this.formSnapshot = form
     this.mirrorSnapshot = mirror
-    if (form.status !== 'loading') return (this.projected = form)
-    if (mirror.view === undefined) return (this.projected = mirror.error !== null ? { ...form, status: 'unavailable' } : form)
+    // A form that decoded the section itself is authoritative: it shares this
+    // namespace's write queue and carries the revision it accepted.
+    if (form.status === 'ready') return (this.projected = form)
+    // A failed or still-pending describe read is transient: keep the form loading
+    // so a later answer can recover instead of claiming the namespace is absent.
+    if (mirror.view === undefined) return (this.projected = form)
+    // The Host's describe answer is authoritative here. The Harness controller
+    // cannot rehydrate this plugin's Host-only transforms, so it settles on
+    // 'unavailable' for a section that is present and valid; passing that
+    // through would keep the page unusable after the namespace arrives.
     const view = mirror.view.namespaces.find(candidate => candidate.ns === OPENAI_CODEX_SETTINGS_NAMESPACE)
-    if (view === undefined) return (this.projected = { ...form, status: 'unavailable' })
+    if (view === undefined) return (this.projected = { ...form, status: 'unavailable', writable: mirror.view.writable })
     const value = decodeOpenAICodexSettings(view.value)
     this.projected = value === undefined ? { ...form, status: 'unavailable' } : {
       status: 'ready', value, base: view.base, user: view.user,

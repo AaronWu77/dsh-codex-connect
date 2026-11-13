@@ -11,6 +11,7 @@ import type { OpenAICodexSettingsKey } from './locales.ts'
 import { OpenAICodexConfiguration } from './OpenAICodexConfiguration.tsx'
 import type { OpenAICodexSettingsModule } from './OpenAICodexConfiguration.tsx'
 import type { CodexQuota, CodexQuotaService } from './quota-service.ts'
+import type { LocalUsageSource } from './usage-ledger.ts'
 
 /** Dependencies injected by the browser plugin entry. */
 export interface OpenAICodexSettingsInjected {
@@ -24,6 +25,8 @@ export interface OpenAICodexSettingsInjected {
   onOpenUsage?: () => void
   /** Per-account quota service, when the browser plugin publishes it. */
   quota?: CodexQuotaService
+  /** Local session usage observation, independent of account quota. */
+  localUsage?: LocalUsageSource
 }
 
 /** Props delivered by the settings slot renderer. */
@@ -36,12 +39,13 @@ export type OpenAICodexSettingsProps = Partial<OpenAICodexSettingsInjected> & {
   accountOnly?: boolean
 }
 
-const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 720 }
+const pageStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 960 }
 const titleStyle: CSSProperties = { margin: 0, fontSize: 20, lineHeight: '28px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
 const bodyStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' }
 const cardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 14, padding: '18px 20px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 12, background: 'var(--dsw-alias-bg-module-platform)' }
 const embeddedPageStyle: CSSProperties = { ...pageStyle, gap: 0, maxWidth: 'none' }
-const embeddedCardStyle: CSSProperties = { ...cardStyle, padding: 0, border: 0, borderRadius: 0, background: 'transparent' }
+/** Only reset the embedded chrome; the layout stays owned by `settingsLayoutStyle`. */
+const embeddedChromeStyle: CSSProperties = { padding: 0, border: 0, borderRadius: 0, background: 'transparent' }
 const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }
 const statusStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, fontSize: 15, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
 const buttonStyle: CSSProperties = { boxSizing: 'border-box', minHeight: 34, padding: '6px 14px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 18, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', font: 'inherit', fontSize: 14, cursor: 'pointer' }
@@ -55,12 +59,18 @@ const progressTrackStyle: CSSProperties = { height: 8, overflow: 'hidden', borde
 const commandStyle: CSSProperties = { margin: 0, padding: '10px 12px', overflowX: 'auto', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.06))', color: 'var(--dsw-alias-label-primary)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, lineHeight: '20px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }
 const accountPanelStyle: CSSProperties = { overflow: 'hidden', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10 }
 const accountRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, padding: '12px 14px', borderTop: '1px solid var(--dsw-alias-border-l2)' }
-const accountIdentityStyle: CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }
+const accountIdentityStyle: CSSProperties = { minWidth: 0, flex: '1 1 180px', display: 'flex', flexDirection: 'column', gap: 2 }
 const dangerButtonStyle: CSSProperties = { ...buttonStyle, color: 'var(--dsw-alias-state-error-primary, #d92d20)' }
-const moduleTabsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, paddingTop: 2 }
-const moduleTabStyle: CSSProperties = { ...buttonStyle, minWidth: 0, minHeight: 54, borderRadius: 10, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center', gap: 2, overflowWrap: 'anywhere' }
-const activeModuleTabStyle: CSSProperties = { ...moduleTabStyle, border: '1px solid var(--dsw-alias-button-primary-fill)', background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1))' }
-const moduleSummaryStyle: CSSProperties = { fontSize: 11, lineHeight: '16px', fontWeight: 400, color: 'var(--dsw-alias-label-secondary)' }
+const moduleSummaryStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', fontWeight: 400, color: 'var(--dsw-alias-label-secondary)' }
+const settingsLayoutStyle: CSSProperties = { display: 'grid', gap: 16, alignItems: 'start' }
+const settingsNavStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 12, background: 'var(--dsw-alias-bg-layer-1)' }
+const settingsNavButtonStyle: CSSProperties = { ...buttonStyle, minHeight: 58, border: '1px solid transparent', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', textAlign: 'left', background: 'transparent' }
+const settingsNavActiveStyle: CSSProperties = { ...settingsNavButtonStyle, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1))' }
+const settingsNavIndexStyle: CSSProperties = { flex: '0 0 26px', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.06))', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }
+const settingsNavCopyStyle: CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }
+const settingsMainStyle: CSSProperties = { minWidth: 0, width: '100%', boxSizing: 'border-box', alignSelf: 'stretch', padding: '20px 22px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 12, background: 'var(--dsw-alias-bg-module-platform)' }
+/** Embedded account content already sits inside the management card; do not add a second card. */
+const embeddedMainStyle: CSSProperties = { ...settingsMainStyle, padding: 0, border: 0, borderRadius: 0, background: 'transparent' }
 const SETTINGS_MODULES = ['account', 'models', 'network', 'capabilities'] as const satisfies readonly OpenAICodexSettingsModule[]
 const UNAVAILABLE_CONFIG_SNAPSHOT = {
   status: 'unavailable' as const, value: undefined, base: undefined, user: undefined,
@@ -354,7 +364,7 @@ export function AccountActions({ t, store, snapshot, compact = false }: {
 }
 
 /** Saved-account summary and explicit account-management actions. */
-export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControlsId, onToggleQuota, compact = false, management = false }: {
+export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControlsId, onToggleQuota, compact = false }: {
   t: OpenAICodexSettingsInjected['t']
   store: OpenAICodexAccountStore
   snapshot: AccountSnapshot
@@ -362,7 +372,6 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
   quotaControlsId?: string
   onToggleQuota?: () => void
   compact?: boolean
-  management?: boolean
 }) {
   const accountsPanelId = useId()
   const [expanded, setExpanded] = useState(false)
@@ -385,7 +394,7 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
   if (accounts.length === 0) return <AccountActions t={t} store={store} snapshot={snapshot} compact={compact} />
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
     <div style={rowStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, gap: 10, flex: '1 1 220px' }}>
         <span aria-hidden="true" style={{ width: 38, height: 38, borderRadius: '50%', display: 'grid', placeItems: 'center', flex: '0 0 auto', background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.06))', fontWeight: 600 }}>
           {(active?.displayName.trim()[0] ?? 'C').toUpperCase()}
         </span>
@@ -396,7 +405,7 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
             : `${active.maskedEmail} · ${t('defaultAccountDetail')}`}</span>
         </span>
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, flex: '0 0 auto', marginLeft: 'auto' }}>
         {status.status === 'reauth-required' && !authorizing
           ? <button type="button" style={primaryButtonStyle} disabled={busy} onClick={() => { void store.signIn() }}>{t('reauthorize')}</button>
           : null}
@@ -406,13 +415,13 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
             {t(quotaExpanded === true ? 'hideQuota' : 'viewQuota')}
           </button>
         )}
-        {management ? null : <button type="button" style={buttonStyle} aria-expanded={expanded} aria-controls={accountsPanelId} onClick={() => { setExpanded(!expanded) }}>
+        <button type="button" style={buttonStyle} aria-expanded={expanded} aria-controls={accountsPanelId} onClick={() => { setExpanded(!expanded) }}>
           {t(expanded ? 'hideAccounts' : 'manageAccounts')}
-        </button>}
+        </button>
       </div>
     </div>
     {authorizing ? <p style={bodyStyle}>{t('addingAccountKeepsCurrent')}</p> : null}
-    {expanded || management ? <div id={accountsPanelId} style={accountPanelStyle}>
+    {expanded ? <div id={accountsPanelId} style={accountPanelStyle}>
       <div style={{ ...rowStyle, padding: '10px 14px', background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.04))' }}>
         <strong>{t('savedAccounts')} · {accounts.length}</strong>
         <button type="button" style={primaryButtonStyle} disabled={busy || authorizing} onClick={() => { void store.signIn() }}>
@@ -426,7 +435,7 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
             ? t('savedAccountDetail')
             : `${account.maskedEmail} · ${t('savedAccountDetail')}`}</span>
         </span>
-        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8, flex: '0 0 auto', marginLeft: 'auto' }}>
           <button type="button" style={buttonStyle} disabled={busy || account.active}
             onClick={() => { void store.activate(account.accountKey) }}>
             {operation.kind === 'activating' && operation.accountKey === account.accountKey
@@ -593,31 +602,40 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
           <p style={{ ...bodyStyle, marginTop: 6 }}>{t('intro')}</p>
         </div>
       )}
-      <div style={embedded ? embeddedCardStyle : cardStyle}>
+      <div className="cc-settings-layout" style={{ ...settingsLayoutStyle, ...(embedded ? embeddedChromeStyle : {}) }}>
         {accountOnly ? null : (
-          <div style={moduleTabsStyle} role="tablist" aria-label={t('settingsModules')}>
-            {SETTINGS_MODULES.map((module, index) => (
-              <button key={module} id={`${panelIdPrefix}-${module}-tab`} type="button" role="tab"
-                aria-label={t(`${module}Module`)}
-                aria-selected={activeModule === module} aria-controls={`${panelIdPrefix}-${module}`}
-                tabIndex={activeModule === module ? 0 : -1}
-                style={activeModule === module ? activeModuleTabStyle : moduleTabStyle}
-                onClick={() => { setActiveModule(module) }}
-                onKeyDown={event => {
-                  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-                  event.preventDefault()
-                  const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? SETTINGS_MODULES.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + SETTINGS_MODULES.length) % SETTINGS_MODULES.length
-                  const next = SETTINGS_MODULES[nextIndex]!
-                  setActiveModule(next)
-                  document.getElementById(`${panelIdPrefix}-${next}-tab`)?.focus()
-                }}>
-                <span>{t(`${module}Module`)}</span>
-                <span style={moduleSummaryStyle}>{moduleSummary(module)}</span>
-              </button>
-            ))}
-          </div>
+          <nav className="cc-settings-nav" style={settingsNavStyle} aria-label={t('settingsModules')}>
+            <div style={{ padding: '5px 8px 8px' }}>
+              <p style={{ ...bodyStyle, margin: 0, fontSize: 12 }}>{t('settingsModules')}</p>
+            </div>
+            <div role="tablist" aria-label={t('settingsModules')} aria-orientation="vertical" style={{ display: 'contents' }}>
+              {SETTINGS_MODULES.map((module, index) => (
+                <button key={module} id={`${panelIdPrefix}-${module}-tab`} type="button" role="tab"
+                  aria-label={t(`${module}Module`)}
+                  aria-selected={activeModule === module} aria-controls={`${panelIdPrefix}-${module}`}
+                  tabIndex={activeModule === module ? 0 : -1}
+                  style={activeModule === module ? settingsNavActiveStyle : settingsNavButtonStyle}
+                  onClick={() => { setActiveModule(module) }}
+                  onKeyDown={event => {
+                    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return
+                    event.preventDefault()
+                    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? SETTINGS_MODULES.length - 1 : (index + (event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1) + SETTINGS_MODULES.length) % SETTINGS_MODULES.length
+                    const next = SETTINGS_MODULES[nextIndex]!
+                    setActiveModule(next)
+                    document.getElementById(`${panelIdPrefix}-${next}-tab`)?.focus()
+                  }}>
+                  <span aria-hidden="true" style={settingsNavIndexStyle}>{String(index + 1).padStart(2, '0')}</span>
+                  <span style={settingsNavCopyStyle}>
+                    <span>{t(`${module}Module`)}</span>
+                    <span style={moduleSummaryStyle}>{moduleSummary(module)}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </nav>
         )}
-        <div id={`${panelIdPrefix}-account`} role={accountOnly ? undefined : 'tabpanel'} aria-labelledby={accountOnly ? undefined : `${panelIdPrefix}-account-tab`} hidden={!accountOnly && activeModule !== 'account'} style={{ display: accountOnly || activeModule === 'account' ? 'flex' : 'none', flexDirection: 'column', gap: 14 }}>
+        <main className="cc-settings-main" style={accountOnly ? { ...(embedded ? embeddedMainStyle : settingsMainStyle), gridColumn: '1 / -1' } : settingsMainStyle}>
+          <div id={`${panelIdPrefix}-account`} role={accountOnly ? undefined : 'tabpanel'} aria-labelledby={accountOnly ? undefined : `${panelIdPrefix}-account-tab`} hidden={!accountOnly && activeModule !== 'account'} style={{ display: accountOnly || activeModule === 'account' ? 'flex' : 'none', flexDirection: 'column', gap: 14 }}>
         <h3 style={quotaTitleStyle}>{t('accountHeading')}</h3>
         <div style={rowStyle}>
           <div style={statusStyle} role="status">
@@ -625,7 +643,7 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
             <span>{label}</span>
           </div>
         </div>
-        <AccountManager t={t} store={store} snapshot={snapshot} management={management} />
+        <AccountManager t={t} store={store} snapshot={snapshot} />
         <AccountFeedback t={t} snapshot={snapshot} store={store} />
         {!management && status.status === 'signed-in'
           ? <UsageSummary
@@ -644,6 +662,7 @@ export function OpenAICodexSettings({ t, configScope, account, quota, onOpenUsag
           panelIdPrefix={panelIdPrefix}
           {...configScope === undefined ? {} : { scope: configScope }}
         />}
+        </main>
       </div>
     </section>
   )

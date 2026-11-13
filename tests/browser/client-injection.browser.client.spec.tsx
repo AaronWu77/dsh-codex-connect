@@ -92,7 +92,7 @@ describe('OpenAI Codex client dependency injection', () => {
     ctx.provide('connection', {})
     ctx.provide('configForms', {
       get: () => ({}),
-      describe: () => ({ getSnapshot: () => ({ status: 'idle', view: undefined, error: null }), subscribe: () => () => undefined }),
+      describe: () => ({ getSnapshot: () => ({ status: 'idle', view: undefined, error: null }), subscribe: () => () => undefined, ensure: async () => {} }),
       whileServed: () => () => undefined,
     })
     ctx.provide('sessions', {})

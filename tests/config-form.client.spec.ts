@@ -25,8 +25,12 @@ function fixture() {
     getSnapshot: () => mirrorSnapshot,
     subscribe: (listener: () => void) => { mirrorListeners.add(listener); return () => { mirrorListeners.delete(listener) } },
   } as SettingsDescribeFace
+  const acceptUnavailable = (): void => {
+    formSnapshot = { ...loading, status: 'unavailable' }
+    for (const listener of formListeners) listener()
+  }
   return {
-    scope: new OpenAICodexConfigForm(form, mirror), mutate,
+    scope: new OpenAICodexConfigForm(form, mirror), mutate, acceptUnavailable,
     publish(value: unknown) {
       mirrorSnapshot = {
         status: 'ready', error: null,
@@ -69,10 +73,22 @@ describe('Codex Connect Host configuration form', () => {
     expect(scope.getSnapshot().status).toBe('unavailable')
   })
 
-  it('ends loading with unavailable when the Host read fails', () => {
-    const { scope, rejectRead } = fixture()
+  it('keeps loading when the Host read fails so a later answer can recover', () => {
+    const { scope, rejectRead, publish } = fixture()
     rejectRead()
+    expect(scope.getSnapshot().status).toBe('loading')
+    publish({ ...DEFAULT_OPENAI_CODEX_SETTINGS })
+    expect(scope.getSnapshot().status).toBe('ready')
+  })
+
+  it('recovers when the generic form settles unavailable for a section the Host does serve', () => {
+    const { scope, publish, acceptUnavailable } = fixture()
+    // The Harness controller cannot rehydrate this plugin's Host-only transforms:
+    // it settles on 'unavailable' even though the namespace is present.
+    acceptUnavailable()
     expect(scope.getSnapshot().status).toBe('unavailable')
+    publish({ ...DEFAULT_OPENAI_CODEX_SETTINGS })
+    expect(scope.getSnapshot()).toMatchObject({ status: 'ready', revision: 7 })
   })
 
   it('notifies and disposes both subscriptions', () => {

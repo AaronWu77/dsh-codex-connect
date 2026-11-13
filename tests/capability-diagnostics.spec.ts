@@ -17,7 +17,7 @@ function fixture() {
     capabilities: { modelProvider: true, search: false, imageTool: false, imageGeneration: false, changesHarnessDefaultModel: false, changesHarnessSearchRoute: false },
     providerConflict: false, hints: [],
     compatibility: evaluateCompatibility({ nodeVersion: 'v22.19.0', packageVersions: {
-      '@deepseek-ai/dsh-llm': '0.2.1-rc.2', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-rc.2', '@earendil-works/pi-ai': '0.87.1', '@earendil-works/pi-ai-host': '1.1.0',
+      '@deepseek-ai/dsh-llm': '0.2.1-rc.2', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-rc.2', '@earendil-works/pi-ai': '1.4.0', '@earendil-works/pi-ai-host': '1.4.0',
     } }),
   }
   const credential = { type: 'oauth' as const, access: secrets[0]!, accountId: secrets[1]!, refresh: secrets[2]!, expires: 1_000_000 }
@@ -36,7 +36,7 @@ describe('capability evidence', () => {
   it('allows the complete rc.2 pair but blocks mixed host versions before credential reads', async () => {
     const f = fixture()
     f.local.compatibility = evaluateCompatibility({ nodeVersion: f.local.node, packageVersions: {
-      '@deepseek-ai/dsh-llm': '0.2.1-rc.2', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-rc.2', '@earendil-works/pi-ai': '0.87.1', '@earendil-works/pi-ai-host': '1.1.0',
+      '@deepseek-ai/dsh-llm': '0.2.1-rc.2', '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-rc.2', '@earendil-works/pi-ai': '1.4.0', '@earendil-works/pi-ai-host': '1.4.0',
     } })
     f.readVersion.mockResolvedValue('0.2.1-rc.2')
     expect((await f.diagnostics.inspect({ ...f.request, probe: false })).checks.runtime.status).toBe('supported')
@@ -46,9 +46,9 @@ describe('capability evidence', () => {
     expect(f.probe).not.toHaveBeenCalled()
   })
 
-  it('rejects the old Host stream alias before credential reads or probing', async () => {
+  it.each(['1.0.2', '1.1.0', '1.4.1'])('rejects undeclared Host stream alias %s before credential reads or probing', async version => {
     const f = fixture()
-    f.local.compatibility.packages['@earendil-works/pi-ai-host'].installed = '1.0.2'
+    f.local.compatibility.packages['@earendil-works/pi-ai-host'].installed = version
     const report = await f.diagnostics.inspect(f.request)
     expect(report.checks.runtime).toMatchObject({ status: 'rejected', reason: 'declared-version-mismatch' })
     expect(report.probe.state).toBe('skipped')

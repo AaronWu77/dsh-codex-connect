@@ -1,3 +1,5 @@
+import { ConversationSpeedRegistry } from '../src/speed-mode-registry.ts'
+import { OPENAI_CODEX_FAST_MODE_PATH } from '../src/fast-mode-paths.ts'
 import { routeContext } from './route-context.ts'
 import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -79,13 +81,13 @@ interface CapturedRoute {
   handler(req: IncomingMessage, res: ServerResponse): Promise<void> | void
 }
 
-function captureRoutes(trustedOrigins: OpenAICodexTrustedOriginsStore = emptyTrustedOrigins): CapturedRoute[] {
+function captureRoutes(trustedOrigins: OpenAICodexTrustedOriginsStore = emptyTrustedOrigins, registry?: ConversationSpeedRegistry): CapturedRoute[] {
   const routes: CapturedRoute[] = []
   const ctx = routeContext((route) => {
     routes.push(route)
     return () => undefined
   })
-  registerOpenAICodexAuthRoutes(ctx, store, trustedOrigins)
+  registerOpenAICodexAuthRoutes(ctx, store, trustedOrigins, registry)
   return routes
 }
 
@@ -586,4 +588,17 @@ it('reports active-account HTTP 429 as rate-limited without revoking credentials
     expect(mocked.logout).not.toHaveBeenCalled()
     expect(mocked.login).not.toHaveBeenCalled()
   } finally { await auth.dispose() }
+})
+
+it('rejects a stale legacy boolean write instead of overriding a newer Ultrafast command', async () => {
+  const registry = new ConversationSpeedRegistry()
+  const route = captureRoutes(emptyTrustedOrigins, registry).find(route => route.path === OPENAI_CODEX_FAST_MODE_PATH)!
+  const delayed = request({ method: 'POST', contentType: 'application/json', body: JSON.stringify({ sessionId: 'session', enabled: false }) })
+  const scope = { workspace: registry.workspaceFor('session'), accountKey: 'fixture-account', provider: 'openai-codex', model: 'gpt-6.1-sol' }
+  const before = registry.readSpeed('session', scope)
+  registry.selectSpeed('session', scope, before.generation, before.revision, 'ultrafast')
+  const res = response()
+  await route.handler(delayed, res)
+  expect(res.observed.status).toBe(409)
+  expect(registry.captureSpeed('session').mode).toBe('ultrafast')
 })

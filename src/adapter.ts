@@ -20,6 +20,9 @@ import { isOpenAICodexRouteId, OPENAI_CODEX_PRIMARY_DISPLAY_NAME } from './accou
 import type { FastModeRegistry } from './fast-mode.ts'
 import { ConversationSpeedRegistry } from './speed-mode-registry.ts'
 import { SpeedModeRequestScope } from './speed-mode-request-scope.ts'
+import { OpenAICodexRequestLifecycle } from './request-lifecycle.ts'
+import { DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT } from './settings-contract.ts'
+import type { OpenAICodexModelTransport } from './settings-contract.ts'
 import { projectOpenAICodexSpeedPayload } from './speed-mode-contract.ts'
 import type { OpenAICodexReasoningEffort } from './reasoning-defaults.ts'
 import { openAICodexAccountKey } from './store.ts'
@@ -40,6 +43,8 @@ export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
 
 /** Optional adapter collaborators beyond the positional profile inputs. */
 export interface OpenAICodexAdapterExtras {
+  /** Resolve model transport for new prepared calls; omission retains SSE. */
+  resolveTransport?: () => OpenAICodexModelTransport
   imageEditingEnabled?: () => boolean
   /** Optional profile fallback; explicit request effort wins in the current Host consumer. */
   resolveReasoningEffort?: () => OpenAICodexReasoningEffort | undefined
@@ -270,12 +275,8 @@ export const OPENAI_CODEX_MAX_REQUEST_IMAGES = 50
 /** Count-overflow offload step, never above the retained-image bound. */
 export const OPENAI_CODEX_IMAGE_OFFLOAD_COUNT_QUANTUM = 10
 
-/**
- * Use the finite SSE response path for Codex requests. The automatic
- * WebSocket path keeps a session connection for prompt-cache reuse, which
- * can leave one-shot Headless processes alive after their final answer.
- */
-export const OPENAI_CODEX_TRANSPORT = 'sse' as const
+/** Default transport retained for existing profiles and standalone diagnostics. */
+export const OPENAI_CODEX_TRANSPORT = DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
 
 /**
  * Give the generic dsh adapter a request-scoped bearer-token entry without
@@ -422,8 +423,20 @@ function requestProvider(
   resolveProxyUrl?: () => string | undefined,
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
   requestScope?: SpeedModeRequestScope,
+  requests?: OpenAICodexRequestLifecycle,
 ): Provider {
-  const configured = withOpenAICodexPayloadPolicy(provider, {
+  const nativeStream = provider.streamSimple
+  const requestOwned: Provider = {
+    ...provider,
+    streamSimple(model, context, options) {
+      // Keep the business Session id in payload-policy closures, not PI's socket cache.
+      const { sessionId: _sessionId, ...uncached } = options ?? {}
+      const stream = nativeStream.call(provider, model, context, options?.transport === 'auto' ? uncached : options)
+      requests?.trackProducer(stream.result())
+      return stream
+    },
+  }
+  const configured = withOpenAICodexPayloadPolicy(requestOwned, {
     fastMode, requestScope,
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
@@ -432,7 +445,8 @@ function requestProvider(
   return {
     ...configured,
     streamSimple(model, context, options?: SimpleStreamOptions) {
-      const proxyUrl = resolveProxyUrl?.()
+      const captured = requests?.current()
+      const proxyUrl = captured === undefined ? resolveProxyUrl?.() : captured.proxyUrl
       const operation = () => streamSimple.call(configured, model, context, options)
       return proxyManager?.runStream(proxyUrl, operation) ?? operation()
     },
@@ -476,7 +490,12 @@ export function createOpenAICodexProfile(
   route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
   layer?: OpenAICodexCatalogLayer | undefined,
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
-  requestPolicy?: { requestScope?: SpeedModeRequestScope; reasoningEffort?: OpenAICodexReasoningEffort },
+  requestPolicy?: {
+    requestScope?: SpeedModeRequestScope
+    reasoningEffort?: OpenAICodexReasoningEffort
+    transport?: OpenAICodexModelTransport
+    requests?: OpenAICodexRequestLifecycle
+  },
 ): OpenAICodexRouteProfile & { piProvider: ReturnType<typeof bridgePiProvider> } {
   const effectiveLayer: OpenAICodexCatalogLayer = layer ?? { live: [], mode: 'default' }
   const layeredProvider = applyOpenAICodexLiveCatalog(provider, effectiveLayer.live, effectiveLayer.mode).provider
@@ -492,7 +511,7 @@ export function createOpenAICodexProfile(
   const profile = {
     provider: route.routeId,
     displayName: route.displayName,
-    transport: OPENAI_CODEX_TRANSPORT,
+    transport: requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
     streamIdleTimeoutMs: OPENAI_CODEX_STREAM_IDLE_TIMEOUT_MS,
     maxRequestImageBytes: OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES,
     maxRequestImages: OPENAI_CODEX_MAX_REQUEST_IMAGES,
@@ -503,7 +522,7 @@ export function createOpenAICodexProfile(
     ...requestPolicy?.reasoningEffort === undefined ? {} : { reasoning: requestPolicy.reasoningEffort },
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
     modelErrors,
-    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope)),
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests)),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -629,19 +648,22 @@ export function createOpenAICodexAdapter(
   maxTokensOverrides?: () => Readonly<Record<string, number>> | undefined,
   routeBindings?: () => readonly OpenAICodexRouteBinding[],
   extras?: OpenAICodexAdapterExtras,
-): PiAiAdapter {
+): PiAiAdapter & { dispose(): Promise<void> } {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
   const requestScope = new SpeedModeRequestScope()
+  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl)
   let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
   let previousKey: unknown
   const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {
     const windowOverrides = contextWindowOverrides?.()
     const tokenOverrides = maxTokensOverrides?.()
     const reasoningEffort = extras?.resolveReasoningEffort?.()
+    const transport = extras?.resolveTransport?.() ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
     const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
     // Each route reads the catalog of the account it authenticates as.
     const layers = bindings.map(route => extras?.catalogLayer?.(route.accountKey))
     const key = {
+      transport,
       reasoningEffort: reasoningEffort ?? null,
       window: windowOverrides === undefined ? null : { ...windowOverrides },
       tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
@@ -657,22 +679,27 @@ export function createOpenAICodexAdapter(
       profiles = new Map(bindings.map((route, index) => [
         route.routeId,
         createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields,
-          { requestScope, ...reasoningEffort === undefined ? {} : { reasoningEffort } }),
+          { requestScope, requests, transport, ...reasoningEffort === undefined ? {} : { reasoningEffort } }),
       ] as const))
     }
     return profiles
   }
   class OpenAICodexAdapter extends PiAiAdapter {
     private streamWithImageHandles(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>, options: GenerateOptions): AsyncIterable<StreamChunk> {
-      const projected = extras?.imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(options) : options
-      return fastMode instanceof ConversationSpeedRegistry
-        ? requestScope.stream(stream, projected, () => {
-          const captured = fastMode.captureSpeed(options.sessionId)
-          // Auxiliary title/compaction requests do not opt into a paid conversation tier.
-          return options.purpose !== undefined && captured.mode === 'ultrafast' ? { mode: 'standard' } : captured
-        })
-        : stream(projected)
+      return requests.stream(request => {
+        const projected = extras?.imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(request) : request
+        return fastMode instanceof ConversationSpeedRegistry
+          ? requestScope.stream(stream, projected, () => {
+            const captured = fastMode.captureSpeed(request.sessionId)
+            // Auxiliary title/compaction requests do not opt into a paid conversation tier.
+            return request.purpose !== undefined && captured.mode === 'ultrafast' ? { mode: 'standard' } : captured
+          })
+          : stream(projected)
+      }, options)
     }
+
+    /** Cancel and settle admitted requests before releasing this adapter's proxy resources. */
+    dispose(): Promise<void> { return requests.dispose() }
     override async prepareCall(providerId: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
       const prepared = await super.prepareCall(providerId, model, signal)
       return { ...prepared, stream: options => this.streamWithImageHandles(prepared.stream, options) }
@@ -702,12 +729,17 @@ export function createOpenAICodexAdapter(
     profiles: currentProfiles,
     resolveApiKey: async (_provider, profile) => {
       const accountKey = (profile as OpenAICodexRouteProfile).openaiCodexAccountKey
+      const captured = requests.current()
       const operation = async () => {
-        const auth = accountKey === undefined ? await readOpenAICodexRequestAuth(credentials) : await readOpenAICodexAccountRequestAuth(credentials, accountKey)
+        const auth = accountKey === undefined
+          ? await readOpenAICodexRequestAuth(credentials, captured?.signal)
+          : await readOpenAICodexAccountRequestAuth(credentials, accountKey, captured?.signal)
+        captured?.signal.throwIfAborted()
         requestScope.recordAccount(openAICodexAccountKey(auth.accountId))
         return auth.access
       }
-      return proxyManager?.run(resolveProxyUrl?.(), operation) ?? operation()
+      const proxyUrl = captured === undefined ? resolveProxyUrl?.() : captured.proxyUrl
+      return proxyManager?.run(proxyUrl, operation) ?? operation()
     },
     // Host-side auth accepts only the explicit bearer token resolved above.
     auth: { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() },

@@ -7,6 +7,9 @@ import { AccountModelCatalog } from './AccountModelCatalog.tsx'
 import { requestJson } from './request-json.ts'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { OpenAICodexSettingsConfig } from '../settings-contract.ts'
+import { parseOpenAICodexSpeedDefault } from '../speed-mode-contract.ts'
+import { OPENAI_CODEX_REASONING_EFFORTS, parseOpenAICodexReasoningEffort } from '../reasoning-defaults.ts'
+import { parseAutoReviewLocalPolicy } from '../auto-review-local-policy.ts'
 import {
   isValidOpenAICodexContextWindowOverrides,
   isValidOpenAICodexImageModelHint,
@@ -39,6 +42,8 @@ export interface OpenAICodexConfigurationProps {
   panelIdPrefix?: string
   /** Management reveals actions only for changes or feedback. */
   management?: boolean
+  /** Omit the section divider when the page already supplies the module heading. */
+  flush?: boolean
   account?: OpenAICodexAccountStore
 }
 
@@ -46,6 +51,7 @@ export interface OpenAICodexConfigurationProps {
 export type OpenAICodexSettingsModule = 'account' | 'models' | 'network' | 'capabilities'
 
 const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 18, borderTop: '1px solid var(--dsw-alias-border-l2)' }
+const flushSectionStyle: CSSProperties = { ...sectionStyle, gap: 18, paddingTop: 0, borderTop: 0 }
 const headingStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
 const bodyStyle: CSSProperties = { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' }
 const fieldsetStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 13, margin: 0, padding: 0, border: 0 }
@@ -121,6 +127,10 @@ const CONFIG_FIELDS = [
   'contextWindowMode',
   'enableNewSessionFastMode',
   'enableNewSubagentFastMode',
+  'newSessionSpeedMode',
+  'newSubagentSpeedMode',
+  'reasoningEffort',
+  'autoReviewLocalPolicy',
   'debugLogPayloadFields',
   'enableProxy',
   'proxyUrl',
@@ -190,7 +200,7 @@ function sameField(
 }
 
 /** Edit the Host-owned llm-openai-codex settings section with Save/Discard staging. */
-export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix, management = false, account }: OpenAICodexConfigurationProps) {
+export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix, management = false, flush = false, account }: OpenAICodexConfigurationProps) {
   const subscribe = useCallback((listener: () => void) => scope?.subscribe(listener) ?? (() => undefined), [scope])
   const getSnapshot = useCallback(() => scope?.getSnapshot() ?? UNAVAILABLE_SNAPSHOT, [scope])
   const snapshot = useSyncExternalStore(
@@ -528,7 +538,9 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           ? { ...Object.fromEntries((modelCatalog ?? []).map(model => [model.id, null])), ...desired.contextWindowOverrides }
           : field === 'maxTokensOverrides'
             ? { ...Object.fromEntries((modelCatalog ?? []).map(model => [model.id, null])), ...desired.maxTokensOverrides }
-            : desired[field]
+            : (field === 'newSessionSpeedMode' || field === 'newSubagentSpeedMode' || field === 'reasoningEffort') && desired[field] === undefined
+              ? null
+              : desired[field]
         return value === undefined ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value }
       })
       if (ops.length > 0) await scope.mutate(ops, current.revision)
@@ -568,12 +580,12 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     document.getElementById(`${panelPrefix}-${module}-tab`)?.focus()
   }
 
+  const resolvedSectionStyle = flush ? flushSectionStyle : sectionStyle
   return (
-    <section style={{ ...sectionStyle, display: visibleModule === 'account' && !dirty && !manualProxyEdited && (!management || feedback === 'idle') ? 'none' : sectionStyle.display }} aria-label={t('configurationHeading')}>
+    <section style={{ ...resolvedSectionStyle, display: visibleModule === 'account' && !dirty && !manualProxyEdited && (!management || feedback === 'idle') ? 'none' : resolvedSectionStyle.display }} aria-label={t('configurationHeading')}>
       {loading ? <p style={bodyStyle} role="status">{t('settingsLoading')}</p> : null}
       {snapshot.status === 'unavailable' ? <p style={errorStyle} role="alert">{t('settingsUnavailable')}</p> : null}
       {snapshot.status === 'ready' && !snapshot.writable ? <p style={errorStyle} role="alert">{t('settingsReadOnly')}</p> : null}
-      {management && account && visibleModule === 'models' ? <AccountModelCatalog account={account} t={t} active refreshRevision={catalogRefreshRevision} /> : null}
       {draft === undefined ? null : (
         <>
           {activeModule === undefined ? (
@@ -608,8 +620,10 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           <div id={`${panelPrefix}-models`} role="tabpanel" aria-labelledby={`${panelPrefix}-models-tab`} hidden={visibleModule !== 'models'} style={{ ...fieldsetStyle, display: visibleModule === 'models' ? fieldsetStyle.display : 'none' }}>
           <div>
             <h3 style={headingStyle}>{t(management ? 'managementGlobalModels' : 'modelCatalog')}</h3>
-            {management ? <p style={bodyStyle}>{t('managementModelScope')}</p> : null}
-            <p style={{ ...bodyStyle, marginTop: 4 }}>{t('modelCatalogIntro')}</p>
+            {flush ? null : <>
+              {management ? <p style={bodyStyle}>{t('managementModelScope')}</p> : null}
+              <p style={{ ...bodyStyle, marginTop: 4 }}>{t('modelCatalogIntro')}</p>
+            </>}
           </div>
           {modelCatalog === undefined && !modelCatalogError ? <p style={bodyStyle} role="status">{t('modelCatalogLoading')}</p> : null}
           {modelCatalogError ? <p style={errorStyle} role="alert">{t('modelCatalogFailed')}</p> : null}
@@ -735,7 +749,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           <label style={formFieldStyle}>
             <span style={labelStyle}>{t('contextModeLabel')}</span>
             <select
-              style={controlStyle}
+              style={{ ...controlStyle, maxWidth: 360 }}
               value={draft.contextWindowMode}
               onChange={event => { update('contextWindowMode', event.currentTarget.value as OpenAICodexSettingsConfig['contextWindowMode']) }}
             >
@@ -750,10 +764,10 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           {!validMaxTokens ? <p style={errorStyle} role="alert">{t('maxTokensInvalid')}</p> : null}
           </div>
           <div id={`${panelPrefix}-network`} role="tabpanel" aria-labelledby={`${panelPrefix}-network-tab`} hidden={visibleModule !== 'network'} style={{ ...fieldsetStyle, display: visibleModule === 'network' ? fieldsetStyle.display : 'none' }}>
-          <div style={{ paddingTop: 4 }}>
+          {flush ? null : <div style={{ paddingTop: 4 }}>
             <h3 style={headingStyle}>{t('networkHeading')}</h3>
             <p style={{ ...bodyStyle, marginTop: 4 }}>{t('networkIntro')}</p>
-          </div>
+          </div>}
           <div style={fieldsetStyle} role="group" aria-label={t('currentConnection')}>
             <h4 style={headingStyle}>{t('currentConnection')}</h4>
             <div style={connectionCardStyle}>
@@ -870,10 +884,10 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
           {proxyDraftChanged ? <p style={pendingStyle} role="status">{draft.enableProxy ? t('pendingProxy', { proxyUrl: draft.proxyUrl }) : t('pendingDirect')}</p> : null}
           </div>
           <div id={`${panelPrefix}-capabilities`} role="tabpanel" aria-labelledby={`${panelPrefix}-capabilities-tab`} hidden={visibleModule !== 'capabilities'} style={{ ...fieldsetStyle, display: visibleModule === 'capabilities' ? fieldsetStyle.display : 'none' }}>
-          <div style={{ paddingTop: 4 }}>
+          {flush ? null : <div style={{ paddingTop: 4 }}>
             <h3 style={headingStyle}>{t('capabilitiesHeading')}</h3>
             <p style={{ ...bodyStyle, marginTop: 4 }}>{t('capabilitiesIntro')}</p>
-          </div>
+          </div>}
           <label style={toggleRowStyle}>
             <input
               type="checkbox"
@@ -963,6 +977,27 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
             <label style={toggleRowStyle}><input type="checkbox" checked={draft.enableNewSubagentFastMode} onChange={e => update('enableNewSubagentFastMode', e.currentTarget.checked)} /><span>{t('newSubagentFastMode')}</span></label>
             <p style={bodyStyle}>{t('fastDefaultsHelp')}</p>
           </div>
+          <div style={formGridStyle}>
+            {(['newSessionSpeedMode', 'newSubagentSpeedMode'] as const).map(field => <label key={field} style={formFieldStyle}>
+              <span style={labelStyle}>{t(field)}</span>
+              <select style={controlStyle} value={draft[field] ?? ''} onChange={event => { update(field, parseOpenAICodexSpeedDefault(event.currentTarget.value || undefined) ?? undefined) }}>
+                <option value="">{t('speedDefaultLegacy')}</option>
+                <option value="standard">{t('speedStandard')}</option>
+                <option value="fast">{t('speedFast')}</option>
+                <option value="ultrafast">{t('speedUltrafast')}</option>
+              </select>
+            </label>)}
+            <label style={formFieldStyle}>
+              <span style={labelStyle}>{t('reasoningDefault')}</span>
+              <select style={controlStyle} value={draft.reasoningEffort ?? ''} onChange={event => { update('reasoningEffort', parseOpenAICodexReasoningEffort(event.currentTarget.value || undefined) ?? undefined) }}>
+                <option value="">{t('reasoningDefaultNone')}</option>
+                {OPENAI_CODEX_REASONING_EFFORTS.map(effort => <option key={effort} value={effort}>{t(({ off: 'reasoningOff', minimal: 'reasoningMinimal', low: 'reasoningLow', medium: 'reasoningMedium', high: 'reasoningHigh', xhigh: 'reasoningXhigh', max: 'reasoningMax' } as const)[effort])}</option>)}
+              </select>
+            </label>
+          </div>
+          <p style={bodyStyle}>{t('speedDefaultsHelp')}</p>
+          <p style={bodyStyle}>{t('reasoningDefaultsHelp')}</p>
+          <p style={bodyStyle}>{t('ultrafastDisclosure')}</p>
           <label style={formFieldStyle}>
             <span style={labelStyle}>{t('imageModelHint')}</span>
             <input
@@ -1006,6 +1041,15 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
               <span style={bodyStyle}>{t('enableAutoReviewHelp')}</span>
             </span>
           </label>
+          <label style={formFieldStyle}>
+            <span style={labelStyle}>{t('autoReviewLocalPolicy')}</span>
+            <select style={controlStyle} aria-label={t('autoReviewLocalPolicy')} value={draft.autoReviewLocalPolicy} onChange={event => { update('autoReviewLocalPolicy', parseAutoReviewLocalPolicy(event.currentTarget.value)) }}>
+              <option value="manual">{t('autoReviewPolicyManual')}</option>
+              <option value="workspace-read">{t('autoReviewPolicyRead')}</option>
+              <option value="workspace-files">{t('autoReviewPolicyFiles')}</option>
+            </select>
+            <span style={bodyStyle}>{t('autoReviewPolicyHelp')}</span>
+          </label>
           <details style={{ marginLeft: 26 }}>
             <summary style={{ ...bodyStyle, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}>{t('autoReviewDetails')}</summary>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
@@ -1018,6 +1062,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
         </fieldset>
         </>
       )}
+      {management && account && visibleModule === 'models' ? <AccountModelCatalog account={account} t={t} active refreshRevision={catalogRefreshRevision} /> : null}
       {autoReviewConfirmOpen ? <AutoReviewConsentDialog t={t} onCancel={() => { setAutoReviewConfirmOpen(false) }} onConfirm={confirmAutoReview} /> : null}
       {visibleModule === 'capabilities' && !validModel && draft !== undefined ? <p style={errorStyle} role="alert">{t('invalidSearchModel')}</p> : null}
       {visibleModule === 'capabilities' && !validTokens && draft !== undefined ? <p style={errorStyle} role="alert">{t('invalidSearchTokens')}</p> : null}

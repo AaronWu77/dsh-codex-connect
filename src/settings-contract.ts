@@ -1,6 +1,12 @@
 /** Node-free settings contract shared by the Host plugin and browser card. */
 
 import type { OpenAICodexContextWindowMode } from './model-contract.ts'
+import { parseOpenAICodexSpeedDefault } from './speed-mode-contract.ts'
+import type { OpenAICodexSpeedMode } from './speed-mode-contract.ts'
+import { parseOpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import type { OpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import { parseAutoReviewLocalPolicy } from './auto-review-local-policy.ts'
+import type { AutoReviewLocalPolicy } from './auto-review-local-policy.ts'
 
 /** Stable Harness settings namespace owned by this plugin. */
 export const OPENAI_CODEX_SETTINGS_NAMESPACE = 'llm-openai-codex'
@@ -147,8 +153,27 @@ export const DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE: OpenAICodexSearchContextS
 /** Default output budget for the standalone search response. */
 export const DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS = 10_000
 
+/** Codex model transport; auto tries WebSocket before native SSE fallback without connection reuse. */
+export type OpenAICodexModelTransport = 'sse' | 'auto'
+
+/** Preserve finite SSE requests unless the profile explicitly opts into WebSocket. */
+export const DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT: OpenAICodexModelTransport = 'sse'
+
+/**
+ * Resolve the model transport without enabling cached or strict-WebSocket modes.
+ * @param value - serialized selection; omission preserves the SSE default.
+ * @returns the validated model transport.
+ */
+export function parseOpenAICodexModelTransport(value: unknown): OpenAICodexModelTransport {
+  if (value === undefined) return DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
+  if (value !== 'sse' && value !== 'auto') throw new TypeError('OpenAI Codex transport must be "sse" or "auto"')
+  return value
+}
+
 /** Fully resolved user-editable section presented by Plugin configuration. */
 export interface OpenAICodexSettingsConfig {
+  /** Model transport; auto uses request-owned WebSocket connections with native SSE fallback. */
+  transport?: OpenAICodexModelTransport
   /** Model ids advertised in selectors; undefined advertises the full catalog. */
   models: string[] | undefined
   /** Route Codex Connect requests through the explicitly configured proxy. */
@@ -185,6 +210,9 @@ export interface OpenAICodexSettingsConfig {
   debugLogPayloadFields: boolean
   enableNewSessionFastMode: boolean
   enableNewSubagentFastMode: boolean
+  newSessionSpeedMode: OpenAICodexSpeedMode | undefined
+  newSubagentSpeedMode: OpenAICodexSpeedMode | undefined
+  reasoningEffort: OpenAICodexReasoningEffort | undefined
   enableSearch: boolean
   enableImageTool: boolean
   enableImageGeneration: boolean
@@ -194,6 +222,8 @@ export interface OpenAICodexSettingsConfig {
   autoReviewDisclosureAcknowledged: boolean
   /** Let the hidden Codex reviewer answer eligible DSH approval requests. */
   enableAutoReview: boolean
+  /** Explicit local standing scope; remote model advice never grants authority. */
+  autoReviewLocalPolicy: AutoReviewLocalPolicy
   searchModel: string
   searchMode: OpenAICodexSearchMode
   searchContextSize: OpenAICodexSearchContextSize
@@ -201,6 +231,7 @@ export interface OpenAICodexSettingsConfig {
 }
 
 export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> = Object.freeze({
+  transport: DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
   models: undefined,
   enableProxy: false,
   proxyUrl: DEFAULT_OPENAI_CODEX_PROXY_URL,
@@ -211,12 +242,16 @@ export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> 
   debugLogPayloadFields: false,
   enableNewSessionFastMode: false,
   enableNewSubagentFastMode: false,
+  newSessionSpeedMode: undefined,
+  newSubagentSpeedMode: undefined,
+  reasoningEffort: undefined,
   enableSearch: false,
   enableImageTool: false,
   enableImageGeneration: false,
   imageModelHint: DEFAULT_OPENAI_CODEX_IMAGE_MODEL_HINT,
   autoReviewDisclosureAcknowledged: false,
   enableAutoReview: false,
+  autoReviewLocalPolicy: 'manual',
   searchModel: DEFAULT_OPENAI_CODEX_SEARCH_MODEL,
   searchMode: DEFAULT_OPENAI_CODEX_SEARCH_MODE,
   searchContextSize: DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE,
@@ -225,7 +260,10 @@ export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> 
 
 /** Input settings allow null to disable overrides inherited from a lower settings layer. */
 export interface OpenAICodexSettingsInput
-  extends Partial<Omit<OpenAICodexSettingsConfig, 'contextWindowOverrides' | 'maxTokensOverrides'>> {
+  extends Partial<Omit<OpenAICodexSettingsConfig, 'contextWindowOverrides' | 'maxTokensOverrides' | 'newSessionSpeedMode' | 'newSubagentSpeedMode' | 'reasoningEffort'>> {
+  newSessionSpeedMode?: OpenAICodexSpeedMode | null | undefined
+  newSubagentSpeedMode?: OpenAICodexSpeedMode | null | undefined
+  reasoningEffort?: OpenAICodexReasoningEffort | null | undefined
   contextWindowOverrides?: Readonly<Record<string, number | null>> | null | undefined
   maxTokensOverrides?: Readonly<Record<string, number | null>> | null | undefined
 }
@@ -245,6 +283,11 @@ export function resolveOpenAICodexSettings(
   }
   return {
     ...resolved,
+    transport: parseOpenAICodexModelTransport(resolved.transport),
+    newSessionSpeedMode: parseOpenAICodexSpeedDefault(resolved.newSessionSpeedMode) ?? undefined,
+    newSubagentSpeedMode: parseOpenAICodexSpeedDefault(resolved.newSubagentSpeedMode) ?? undefined,
+    reasoningEffort: parseOpenAICodexReasoningEffort(resolved.reasoningEffort) ?? undefined,
+    autoReviewLocalPolicy: parseAutoReviewLocalPolicy(resolved.autoReviewLocalPolicy),
     contextWindowOverrides: resolveOpenAICodexContextWindowOverrides(resolved.contextWindowOverrides),
     maxTokensOverrides: resolveOpenAICodexMaxTokensOverrides(resolved.maxTokensOverrides),
   }
@@ -265,6 +308,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Narrow the redacted settings wire payload before it enters React state. */
 export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsConfig | undefined {
   if (!isRecord(value)) return undefined
+  const transport = value['transport']
+  if (transport !== undefined && transport !== 'sse' && transport !== 'auto') return undefined
   const models = value['models']
   const enableProxy = value['enableProxy']
   const proxyUrl = value['proxyUrl']
@@ -275,6 +320,10 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   const debugLogPayloadFields = value['debugLogPayloadFields']
   const enableNewSessionFastMode = value['enableNewSessionFastMode']
   const enableNewSubagentFastMode = value['enableNewSubagentFastMode']
+  const newSessionSpeedMode = value['newSessionSpeedMode']
+  const newSubagentSpeedMode = value['newSubagentSpeedMode']
+  const reasoningEffort = value['reasoningEffort']
+  const autoReviewLocalPolicy = value['autoReviewLocalPolicy']
   const enableSearch = value['enableSearch']
   const enableImageTool = value['enableImageTool']
   const enableImageGeneration = value['enableImageGeneration']
@@ -309,9 +358,23 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   if (searchMode !== 'cached' && searchMode !== 'indexed' && searchMode !== 'live') return undefined
   if (searchContextSize !== 'low' && searchContextSize !== 'medium' && searchContextSize !== 'high') return undefined
   if (typeof searchMaxOutputTokens !== 'number' || !Number.isInteger(searchMaxOutputTokens) || searchMaxOutputTokens < 1) return undefined
+  let newSessionSpeed: OpenAICodexSpeedMode | undefined
+  let newSubagentSpeed: OpenAICodexSpeedMode | undefined
+  let effort: OpenAICodexReasoningEffort | undefined
+  let localPolicy: AutoReviewLocalPolicy
+  try {
+    newSessionSpeed = parseOpenAICodexSpeedDefault(newSessionSpeedMode) ?? undefined
+    newSubagentSpeed = parseOpenAICodexSpeedDefault(newSubagentSpeedMode) ?? undefined
+    effort = parseOpenAICodexReasoningEffort(reasoningEffort) ?? undefined
+    localPolicy = parseAutoReviewLocalPolicy(autoReviewLocalPolicy)
+  } catch (error) {
+    // Malformed wire settings must not become an editable or permissive snapshot.
+    return undefined
+  }
   const overrides = resolveOpenAICodexContextWindowOverrides(contextWindowOverrides)
   const tokenOverrides = resolveOpenAICodexMaxTokensOverrides(maxTokensOverrides)
   return {
+    transport: parseOpenAICodexModelTransport(transport),
     models: models === undefined ? undefined : [...new Set(models)],
     enableProxy: enableProxy ?? false,
     proxyUrl: proxyUrl === undefined ? DEFAULT_OPENAI_CODEX_PROXY_URL : normalizeOpenAICodexProxyUrl(proxyUrl)!,
@@ -322,6 +385,10 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
     debugLogPayloadFields: debugLogPayloadFields ?? false,
     enableNewSessionFastMode: enableNewSessionFastMode ?? false,
     enableNewSubagentFastMode: enableNewSubagentFastMode ?? false,
+    newSessionSpeedMode: newSessionSpeed,
+    newSubagentSpeedMode: newSubagentSpeed,
+    reasoningEffort: effort,
+    autoReviewLocalPolicy: localPolicy,
     enableSearch,
     enableImageTool,
     enableImageGeneration: enableImageGeneration ?? false,

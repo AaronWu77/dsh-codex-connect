@@ -10,6 +10,7 @@ import * as PiAiRuntime from '@deepseek-ai/dsh-llm-pi-ai'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import * as OpenAICodex from '../src/index.ts'
 import { OpenAICodexCredentialStore } from '../src/store.ts'
@@ -73,7 +74,8 @@ describe('OpenAI Codex Host settings integration', () => {
       search: () => Promise.resolve({ content: 'DeepSeek search', sources: [], truncated: false }),
     })
     await ctx.plugin(SystemPrompt)
-    await ctx.plugin(ToolRuntime, { mode: 'native' })
+    await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(LocalFileSystem, { cwd: workspace })
     await ctx.plugin(LocalAttachmentStore, { dshHome: root })
     const { entry } = await loadSettingsPlugin(ctx, root, 'dsh-codex-connect', OpenAICodex, { oauthTimeoutMs: 120_000 })
@@ -174,4 +176,33 @@ describe('OpenAI Codex Host settings integration', () => {
     await piAi.dispose()
     expect(ctx.llm.listConfigurableProviders()).toEqual([])
   })
+})
+
+it('retains explicit local scope and null-masked request defaults across a Loader reload', async () => {
+  root = await mkdtemp(join(tmpdir(), 'codex-feature-settings-'))
+  vi.stubEnv('DSH_HOME', root)
+  const ctx = new Context()
+  context = ctx
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(PiAiRuntime, {})
+  const { entry } = await loadSettingsPlugin(ctx, root, 'dsh-codex-connect', OpenAICodex, {
+    enableNewSessionFastMode: true,
+    newSessionSpeedMode: 'ultrafast',
+    newSubagentSpeedMode: 'fast',
+    reasoningEffort: 'high',
+  })
+  const resolve = () => OpenAICodex.resolveOpenAICodexSettings(ctx.settings.describe().find(row => row.ns === OpenAICodex.OPENAI_CODEX_SETTINGS_NS)?.value ?? {})
+  expect(resolve()).toMatchObject({ newSessionSpeedMode: 'ultrafast', newSubagentSpeedMode: 'fast', reasoningEffort: 'high', autoReviewLocalPolicy: 'manual' })
+  await ctx.settings.update(OpenAICodex.OPENAI_CODEX_SETTINGS_NS, {
+    newSessionSpeedMode: 'standard', newSubagentSpeedMode: null, reasoningEffort: null, autoReviewLocalPolicy: 'workspace-read',
+  })
+  expect(resolve()).toMatchObject({ newSessionSpeedMode: 'standard', autoReviewLocalPolicy: 'workspace-read' })
+  expect(resolve().newSubagentSpeedMode).toBeUndefined()
+  expect(resolve().reasoningEffort).toBeUndefined()
+  await entry.update({ config: entry.options.config }, false, true)
+  expect(resolve()).toMatchObject({ newSessionSpeedMode: 'standard', enableNewSessionFastMode: true, autoReviewLocalPolicy: 'workspace-read' })
+  expect(resolve().newSubagentSpeedMode).toBeUndefined()
+  expect(resolve().reasoningEffort).toBeUndefined()
+  await expect(ctx.settings.update(OpenAICodex.OPENAI_CODEX_SETTINGS_NS, { autoReviewLocalPolicy: 'all-files' })).rejects.toThrow()
+  expect(resolve().autoReviewLocalPolicy).toBe('workspace-read')
 })

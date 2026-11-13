@@ -75,7 +75,7 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-codex-connect: usage styles')
   const quota = createCodexQuotaService(account)
   ctx.provide('codexQuota', quota)
-  const localUsage = new LocalUsageStore()
+  const localUsage = new LocalUsageStore(ctx)
   ctx.effect(() => () => localUsage.dispose(), 'dsh-codex-connect: local usage observation')
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-codex-connect: settings copy')
   const t = ctx.locale.bind(namespace) as OpenAICodexPluginCardInjected['t']

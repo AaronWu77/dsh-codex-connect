@@ -30,14 +30,14 @@ export interface QuotaGridProps {
 const WINDOWS_PER_ACCOUNT = 2
 
 /** Currency symbol for the balance cells the platform serves. */
-function symbolOf(currency: string): string {
+export function symbolOf(currency: string): string {
   if (currency === 'CNY') return String.fromCharCode(0x00a5)
   if (currency === 'USD') return String.fromCharCode(0x0024)
   return currency + ' '
 }
 
 /** One rolling window length as a compact label (5h, 7d). */
-function windowLabel(seconds: number): string {
+export function windowLabel(seconds: number): string {
   if (seconds % 86400 === 0) return String(seconds / 86400) + 'd'
   if (seconds % 3600 === 0) return String(seconds / 3600) + 'h'
   return String(Math.round(seconds / 60)) + 'm'
@@ -51,7 +51,7 @@ function windowLabel(seconds: number): string {
  * @param account - one signed-in account as the service publishes it.
  * @returns up to two windows, shortest first.
  */
-function windowsOf(account: CodexQuotaAccount): CodexQuotaWindow[] {
+export function windowsOf(account: CodexQuotaAccount): CodexQuotaWindow[] {
   const byLength = new Map<number, CodexQuotaWindow>()
   for (const win of account.windows) {
     const current = byLength.get(win.windowSeconds)
@@ -63,7 +63,7 @@ function windowsOf(account: CodexQuotaAccount): CodexQuotaWindow[] {
 }
 
 /** The account rows to render: the service's list, or the active account alone. */
-function accountsOf(quota: CodexQuota | null): CodexQuotaAccount[] {
+export function accountsOf(quota: CodexQuota | null): CodexQuotaAccount[] {
   if (quota === null) return []
   const listed = quota.accounts
   if (listed !== undefined && listed.length > 0) return [...listed]
@@ -151,7 +151,7 @@ export function makeQuotaGrid(service: CodexQuotaService, kit: ViewKit): (props:
         { kind: 'balance' },
       ))
     }
-    if (today !== undefined && today.tokens > 0) {
+    if (today !== undefined) {
       summary.push(cell(
         'today',
         t('ov.quota.today'),

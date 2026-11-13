@@ -40,7 +40,7 @@ function forward(source: AssistantMessageEventStream) {
 }
 
 /** Preserve the local provider while returning streams minted by the host PI version.
- * @param provider - configured PI 0.87.1 Codex provider.
+ * @param provider - configured PI 1.4.0 Codex provider.
  * @returns host-compatible provider with unchanged request and catalog behavior.
  */
 export function bridgePiProvider(provider: Provider): HostProvider {

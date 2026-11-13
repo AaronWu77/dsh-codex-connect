@@ -32,6 +32,7 @@ import {
 import { OPENAI_CODEX_ACCOUNT_KEY_PATTERN } from './account-contract.ts'
 import { FastModeRegistry, isFastModeSessionId } from './fast-mode.ts'
 import { OPENAI_CODEX_FAST_MODE_PATH } from './fast-mode-paths.ts'
+import { ConversationSpeedRegistry } from './speed-mode-registry.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 import { publicAuthError as safeMessage } from './auth-error.ts'
 
@@ -762,6 +763,9 @@ export function registerOpenAICodexAuthRoutes(
         if (req.method === 'GET') {
           const sessionId = fastModeSessionIdFromQuery(req)
           if (sessionId === undefined) return json(res, 400, { error: 'invalid input' })
+          if (fastMode instanceof ConversationSpeedRegistry && fastMode.isUltrafastSelected(sessionId)) {
+            return json(res, 409, { error: 'use the conversation speed control for Ultrafast' })
+          }
           return json(res, 200, { enabled: fastMode.isEnabled(sessionId) })
         }
         const type = header(req, 'content-type')
@@ -771,6 +775,9 @@ export function registerOpenAICodexAuthRoutes(
         try {
           const body = fastModeBody(await readFastModeBody(req, signal))
           if (body === undefined) return json(res, 400, { error: 'invalid input' })
+          if (fastMode instanceof ConversationSpeedRegistry && fastMode.isUltrafastSelected(body.sessionId)) {
+            return json(res, 409, { error: 'use the conversation speed control for Ultrafast' })
+          }
           fastMode.set(body.sessionId, body.enabled)
           return json(res, 200, { enabled: fastMode.isEnabled(body.sessionId) })
         } catch (error: unknown) {

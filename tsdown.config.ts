@@ -51,6 +51,8 @@ export default [
         '@deepseek-ai/dsh-agent',
         '@deepseek-ai/dsh-attachment',
         '@deepseek-ai/dsh-fs',
+        '@deepseek-ai/dsh-fs-local',
+        '@deepseek-ai/dsh-working-directory',
         '@deepseek-ai/dsh-host-webserver',
         '@deepseek-ai/dsh-llm',
         '@deepseek-ai/dsh-llm-pi-ai',

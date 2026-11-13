@@ -4,7 +4,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { createAssistantMessageEventStream, AssistantMessageEventStream as LocalStream } from '@earendil-works/pi-ai/utils/event-stream'
 import { normalizeContext as hostNormalizeContext } from '@earendil-works/pi-ai-host'
 import { AssistantMessageEventStream as HostStream } from '@earendil-works/pi-ai-host/utils/event-stream'
-import type { AssistantMessage, AssistantMessageEvent, Provider, StreamOptions, TranscriptContext } from '@earendil-works/pi-ai'
+import type { AssistantMessage, AssistantMessageEvent, Provider, StreamOptions, ToolCall, TranscriptContext } from '@earendil-works/pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { createOpenAICodexProfile } from '../src/adapter.ts'
 import { FastModeRegistry } from '../src/fast-mode.ts'
@@ -51,8 +51,11 @@ describe('local PI to host stream bridge', () => {
     const samplingParams = { top_p: 0.75, custom_sampling: { keep: true } }
     const onPayload: NonNullable<StreamOptions['onPayload']> = payload => payload
     const onResponse = () => undefined
-    const options = { apiKey: 'local-key', headers: { 'x-preserve': 'yes' }, samplingParams,
-      cacheRetention: 'long' as const, maxRetries: 2, maxRetryDelayMs: 1234, onPayload, onResponse }
+    const onProviderStreamEvent: NonNullable<StreamOptions['onProviderStreamEvent']> = () => undefined
+    const fetchImpl: NonNullable<StreamOptions['fetch']> = async () => new Response(null, { status: 204 })
+    const options = { apiKey: 'local-key', headers: { 'x-preserve': 'yes', 'x-suppress': null }, samplingParams,
+      cacheRetention: 'long' as const, maxRetries: 2, maxRetryDelayMs: 1234, onPayload, onResponse,
+      onProviderStreamEvent, fetch: fetchImpl }
     const stream = host[method](model, context, options)
     expect(stream).toBeInstanceOf(HostStream)
     const observed = []
@@ -64,6 +67,8 @@ describe('local PI to host stream bridge', () => {
     expect(f.calls[0]?.context.messages).toEqual(context.messages)
     expect(f.calls[0]?.options).toEqual(options)
     expect(f.calls[0]?.options?.onPayload).toBe(onPayload)
+    expect(f.calls[0]?.options?.onProviderStreamEvent).toBe(onProviderStreamEvent)
+    expect(f.calls[0]?.options?.fetch).toBe(fetchImpl)
     expect(f.calls[0]?.options?.samplingParams).toBe(samplingParams)
     expect(host.auth).toBe(f.local.auth)
     expect(host.getModels()).toEqual(f.local.getModels())
@@ -82,6 +87,35 @@ describe('local PI to host stream bridge', () => {
       expect(await stream.result()).toBe(f.terminal)
       expect(f.calls[0]?.options?.signal).toBe(abort.signal)
     }
+  })
+
+  it.each(['stream', 'streamSimple'] as const)('preserves malformed tool arguments through %s events and results', async method => {
+    const f = fixture('stop')
+    const toolCall: ToolCall = {
+      type: 'toolCall', id: 'call-invalid', name: 'search', arguments: {},
+      argumentsError: 'Invalid tool arguments JSON: {"query":',
+    }
+    const terminal: AssistantMessage = { ...f.terminal, content: [toolCall], stopReason: 'toolUse' }
+    const events: AssistantMessageEvent[] = [
+      { type: 'start', partial: terminal },
+      { type: 'toolcall_start', contentIndex: 0, partial: terminal },
+      { type: 'toolcall_end', contentIndex: 0, toolCall, partial: terminal },
+      { type: 'done', reason: 'toolUse', message: terminal },
+    ]
+    const produce = () => {
+      const source = createAssistantMessageEventStream()
+      for (const event of events) source.push(event)
+      return source
+    }
+    const local: Provider = { ...f.local, stream: produce, streamSimple: produce }
+    const stream = bridgePiProvider(local)[method](model, hostNormalizeContext({ messages: [] }))
+    const observed = []
+    for await (const event of stream) observed.push(event)
+    expect(observed).toEqual(events)
+    observed.forEach((event, index) => expect(event).toBe(events[index]))
+    expect(await stream.result()).toBe(terminal)
+    expect(terminal.content[0]).toBe(toolCall)
+    expect(toolCall.argumentsError).toBe('Invalid tool arguments JSON: {"query":')
   })
 
   it('rejects both consumers when an asynchronous provider iterator fails', async () => {

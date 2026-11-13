@@ -8,12 +8,24 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2024",
-    "lib": ["es2024", "dom"],
+    "lib": [
+      "es2024",
+      "dom"
+    ],
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src", "tests"],
-  "exclude": ["src/client", "tests/**/*.client.spec.tsx"]
+  "include": [
+    "src",
+    "tests"
+  ],
+  "exclude": [
+    "src/client",
+    "tests/**/*.client.spec.tsx",
+    "tests/**/*.integration.spec.tsx"
+  ]
 }

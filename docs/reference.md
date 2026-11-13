@@ -56,6 +56,16 @@ Fresh installations register the model provider and leave every additional capab
 
 Edit these options under **Settings → Codex Connect** or **Settings → Models → Openai-Codex → More settings**. Changes are staged until **Save changes**. Saving commits edited fields together and preserves concurrent changes to untouched fields. A conflicting edit or failed save keeps your draft; discard it to reload the latest settings. Most settings affect only this plugin; enabling Codex Search also selects it as the active profile-wide search route.
 
+### Model transport
+
+`transport` accepts `sse` (the default) or `auto` in the `llm-openai-codex` profile configuration. `auto` uses the pinned PI provider's WebSocket-first behavior and native SSE fallback; it does not add a retry-count policy or switch accounts. The custom settings card has no transport control. Keep `sse` unless the intended Host, proxy, and real account have passed transport acceptance.
+
+Each `auto` request owns a fresh WebSocket connection. The Harness Session id remains in request attribution and the prompt-cache key, but is not supplied to PI's connection cache; no connection or WebSocket continuation is reused across requests. This adds handshake overhead and does not disable prompt caching. A rejected handshake can fall back to SSE using the same captured proxy and credential; a failed proxy request never falls back to direct traffic.
+
+Native fallback stops after the provider stream starts, which can precede the first visible text token. API/protocol errors, cancellation, and partial-stream failures do not authorize concatenating a new SSE response or executing incomplete tool calls. Existing Harness recovery owns any later request retry.
+
+Disposal stops admission, cancels admitted model work, and waits for its producers before releasing shared proxy resources. PI 1.4 initiates WebSocket close but exposes no awaitable close acknowledgement; a completed producer is not proof that a remote close handshake finished. Validate natural Headless exit and unload with the target runtime before enabling `auto`. Set `transport: sse` to revert; no credential or Session migration is needed. This setting does not change the separate HTTP search, image, or Auto-review endpoints.
+
 ### Proxy
 
 Disabling the proxy or unloading the plugin gives active proxy operations one second to finish, then destroys this instance's pools with a further one-second completion limit. New proxy operations are rejected during shutdown; interrupted requests are not retried directly. Arbitrary application callbacks cannot be forcibly terminated by the proxy manager. The scoped dispatcher remains until late callbacks settle, so they cannot bypass their destroyed proxy; unrelated traffic still uses the host dispatcher.
@@ -104,6 +114,7 @@ The main plugin options are:
 
 | Field | Default | Meaning |
 |---|---:|---|
+| `transport` | `sse` | `sse` or opt-in `auto`; model requests only, without cross-request WS reuse |
 | `models` | full catalog | Visible Codex model ids; an empty array hides all entries |
 | `enableNewSessionFastMode` | `false` | Seed priority only for newly started main conversations |
 | `enableNewSubagentFastMode` | `false` | Seed priority only for newly started subagent conversations |

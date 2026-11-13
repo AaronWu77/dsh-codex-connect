@@ -1,11 +1,11 @@
 /** Read-only account evidence in management; navigation never changes the active account. */
 import { useSyncExternalStore } from 'react'
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
-export function AccountReadiness({account, quota, t, navigate}: Required<Pick<OpenAICodexSettingsInjected,'account'|'quota'|'t'>> & {navigate:()=>void}) {
+export function AccountReadiness({account, quota, t, navigate, heading = true}: Required<Pick<OpenAICodexSettingsInjected,'account'|'quota'|'t'>> & {navigate:()=>void; heading?: boolean}) {
   const state=useSyncExternalStore(account.subscribe,account.getSnapshot,account.getSnapshot)
   const figures=useSyncExternalStore(quota.subscribe,quota.snapshot,quota.snapshot)
   return <section className="cc-manage-card" aria-label={t('accountReadiness')}>
-    <h3>{t('accountReadiness')}</h3><p>{t('readinessManualOnly')}</p>
+    {heading ? <h3>{t('accountReadiness')}</h3> : null}<p>{t('readinessManualOnly')}</p>
     {state.accounts.length===0 ? <p>{t('usageNoData')}</p> : <ul className="cc-account-readiness">
       {state.accounts.map(saved=>{
         const item=figures?.accounts?.find(a=>a.accountKey===saved.accountKey)

@@ -1,7 +1,7 @@
 /** Evidence-scoped diagnostics, separate from model routing and durable sessions. */
 
 import { createHash } from 'node:crypto'
-import { openAICodexModelCatalog, OPENAI_CODEX_TRANSPORT } from './adapter.ts'
+import { openAICodexModelCatalog } from './adapter.ts'
 import { evaluateCompatibility, DSH_PLUGIN_API_PACKAGES, readInstalledPackageVersion, isSupportedDshPluginApiVersion } from './compatibility.ts'
 import { diagnoseOpenAICodex } from './doctor.ts'
 import { probeCodexResponses } from './capability-probe.ts'
@@ -125,7 +125,7 @@ export class CodexCapabilityDiagnostics {
       && (!isSupportedDshPluginApiVersion(versions[name]!) || versions[name] !== dshVersion))
       || compatibility.status === 'incompatible' || compatibility.status === 'unverified'
     const runtime = mismatch
-      ? result('rejected', 'declared-version-mismatch', 'Use DSH 0.2.1-rc.2 consistently with request pi-ai 0.87.1 and Host alias 1.1.0; all DSH packages must match. Alpha.2 and other combinations require separate verification.')
+      ? result('rejected', 'declared-version-mismatch', 'Use DSH 0.2.1-rc.2 consistently with request pi-ai 1.4.0 and Host alias 1.4.0; all DSH packages must match. Alpha.2 and other combinations require separate verification.')
       : missing || compatibility.status === 'unknown'
         ? result('unknown', 'version-metadata-unavailable', 'Run this command from the plugin installation in the intended profile.')
         : result('supported', 'declared-host-versions-match', 'Host package versions satisfy the declared requirements; this is not a live profile or browser compatibility test.')
@@ -137,15 +137,15 @@ export class CodexCapabilityDiagnostics {
         ? result('unknown', 'credential-metadata-only', 'A private credential file does not prove authorization; use an explicit probe.')
         : result('rejected', 'credential-file-unusable', 'Sign in or repair owner-only credential-file permissions; no credential content was read.'),
       responses: { ...unknownNetwork },
-      transport: result('unknown', `configured-${OPENAI_CODEX_TRANSPORT}-not-probed`, unknownNetwork.action),
+      transport: result('unknown', 'standalone-sse-not-probed', 'This standalone probe tests SSE, not the running profile\'s transport setting or WebSocket support.'),
       model: model === null
         ? result(request.model === undefined ? 'unknown' : 'rejected', 'model-not-selected-from-catalog', 'Select an exact model id from the installed Codex provider catalog; unknown ids are not probed.')
         : result('unknown', 'catalog-is-not-entitlement', unknownNetwork.action),
-      providerFallback: result('rejected', 'no-automatic-provider-failover', 'Select another provider explicitly. SSE is already selected; WebSocket-to-SSE fallback is inactive. Authentication, request, and partial-stream errors do not authorize provider switching.'),
+      providerFallback: result('rejected', 'no-automatic-provider-failover', 'Select another provider explicitly. Model transport auto can fall back from WebSocket to SSE without switching providers or accounts; this standalone SSE probe does not verify that path.'),
       contextManagement: result('unknown', 'no-successful-optional-operation', 'Schema recognition is not capability evidence; keep optional context management disabled.'),
       continuation: result('unknown', 'no-continuation-round-trip', 'A stateless probe does not verify continuation, Fork, or restart; retain Harness-owned history.'),
       nativeCompaction: result('rejected', 'no-native-compaction-integration', 'Keep Harness text-summary compaction; track the typed-operation and durable-replay prerequisites in Issue #65.'),
-      websocketReuse: result('rejected', 'finite-sse-policy', 'Keep finite SSE selected; cached WebSocket lifecycle work is outside this diagnostic.'),
+      websocketReuse: result('rejected', 'request-owned-websockets', 'Model transport auto uses a fresh connection per request; this plugin does not expose cached WebSocket reuse.'),
     }
     const report: CapabilityReport = {
       schemaVersion: 1, package: 'dsh-codex-connect', version: CODEX_CONNECT_VERSION,

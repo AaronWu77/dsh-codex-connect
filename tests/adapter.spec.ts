@@ -5,6 +5,8 @@ import {
   createOpenAICodexAdapter,
   createOpenAICodexProfile,
   openAICodexModelCatalog,
+  openAICodexModelCatalogFrom,
+  openAICodexUnavailableModels,
   OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES,
   OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES,
   OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET,
@@ -239,6 +241,33 @@ describe('maximum-output-token overrides', () => {
     const overridden = withOpenAICodexMaxTokensOverrides(provider, { [baseline[0]!.id]: 2_048 })
     expect(overridden.getModels()[0]!.maxTokens).toBe(2_048)
     expect(provider.getModels()[0]!.maxTokens).toBe(baseline[0]!.maxTokens)
+  })
+})
+
+describe('live model catalog mapping', () => {
+  it('enables server-only GPT-6.1 Terra through its bundled frontier sibling', () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{
+      slug: 'gpt-6.1-terra',
+      display_name: 'GPT-6.1 Terra',
+      context_window: 500_000,
+      max_context_window: 872_000,
+      supported_reasoning_levels: [{ effort: 'max' }],
+      input_modalities: ['text', 'image'],
+    }] })
+
+    expect(openAICodexUnavailableModels(live)).toEqual([])
+    expect(openAICodexModelCatalogFrom({ live, mode: 'default' })).toContainEqual(expect.objectContaining({
+      id: 'gpt-6.1-terra',
+      name: 'GPT-6.1 Terra',
+      contextWindow: 500_000,
+      maxContextWindow: 872_000,
+      contextLimitSource: 'codex-catalog',
+    }))
+  })
+
+  it('still reports a slug whose family and role the installed catalog does not know', () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{ slug: 'gpt-7-orbit', context_window: 272_000 }] })
+    expect(openAICodexUnavailableModels(live)).toEqual(['gpt-7-orbit'])
   })
 })
 

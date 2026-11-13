@@ -22,11 +22,14 @@ export function CodexImageEditForm({ decoded, sessionId, pending, followUp, onCl
   onClose: () => void
   t: Translate<OpenAICodexSettingsKey>
 }) {
-  const initial = useMemo<ImageInventoryItem[]>(() => decoded.images.map(image => ({
-    input: image.original === undefined ? { attachmentId: String(image.preview.attachmentId), usePreview: true } : { assetId: image.original.assetId },
-    source: image.original === undefined ? 'preview' : 'original', name: image.original?.name ?? image.preview.name ?? String(image.preview.attachmentId),
-    width: image.original?.width ?? image.preview.width, height: image.original?.height ?? image.preview.height,
-  })), [decoded])
+  const initial = useMemo<ImageInventoryItem[]>(() => decoded.images.map(image => {
+    if (image.previewStatus === 'unavailable' || image.original !== undefined) {
+      const original = image.original!
+      return { input: { assetId: original.assetId }, source: 'original', name: original.name, width: original.width, height: original.height }
+    }
+    const preview = image.preview
+    return { input: { attachmentId: String(preview.attachmentId), usePreview: true }, source: 'preview', name: preview.name ?? String(preview.attachmentId), width: preview.width, height: preview.height }
+  }), [decoded])
   const [inventory, setInventory] = useState<ImageInventoryItem[]>([])
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)

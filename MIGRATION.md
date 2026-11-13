@@ -1,5 +1,9 @@
 # Migrating from `dsh-codex`
 
+## Private local-review and request-default update
+
+This private candidate defaults `autoReviewLocalPolicy` to `manual`, including profiles that previously enabled remote Auto-review. A remote allow no longer grants local file authority. Choose a narrower explicit scope only when intended, or retain human approval; `/approve` now requires the real command interface and no longer creates a synthetic user follow-up. New speed/effort resets write null masks rather than re-inheriting composition defaults. Read the paired [integration and migration reference](docs/local-feature-update.md) / [中文](docs/local-feature-update.zh.md) before applying the candidate. Do not run the old PI-AI switch plan for this separate feature update.
+
 `dsh-codex-connect` uses the same provider id (`openai-codex`), OAuth filename (`.openai-codex-auth.json`), Cordis row id (`llm-openai-codex`), and browser auth routes for compatibility. The packages cannot be active together because Harness forbids duplicate provider adapters.
 
 1. Record the effective default model, search route, and `llm-openai-codex` config without reading any OAuth file.

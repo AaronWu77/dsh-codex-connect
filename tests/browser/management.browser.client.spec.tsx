@@ -31,7 +31,7 @@ describe('Codex management on fixed host primitives', () => {
     root = createRoot(host)
     root.render(<OpenAICodexPluginCard {...fixture.props} />)
     await expect.element(page.getByText('¥42.50', { exact: true })).toBeVisible()
-    expect(host.querySelectorAll('.cc-manage-tabs > [role="tab"]')).toHaveLength(5)
+    expect(host.querySelectorAll('.cc-tabs > [role="tab"]')).toHaveLength(5)
     for (const theme of ['light', 'dark']) {
       document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark')
       const ink = getComputedStyle(document.body).getPropertyValue('--dsw-alias-label-primary')
@@ -51,6 +51,11 @@ describe('Codex management on fixed host primitives', () => {
           const center = host.querySelector('.cc-manage')!
           expect(center.scrollWidth).toBeLessThanOrEqual(center.clientWidth + 1)
           expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width + 1)
+          if (module === labels.managementAccounts) {
+            const main = center.querySelector('.cc-account-panel')
+            expect(main).not.toBeNull()
+            expect(main!.getBoundingClientRect().width).toBeGreaterThan(240)
+          }
           if (theme === 'dark' && width === 390) await page.screenshot({ path: '.tmp/management/' + locale + '-' + module.replaceAll('/', '-') + '-dark-390.png' })
         }
         await page.getByRole('tab', { name: labels.managementOverview, exact: true }).click()

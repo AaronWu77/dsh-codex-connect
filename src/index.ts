@@ -1,3 +1,5 @@
+import { watchLocalUsage } from './host/usage-watch.ts'
+import type { LocalUsageOptions } from './host/usage-watch.ts'
 import { registerImageHandleBridge } from './image-handle-bridge.ts'
 import { registerImageInventoryRoute } from './image-inventory-routes.ts'
 import { registerOpenAICodexFastModeDefaults } from './fast-mode-defaults.ts'
@@ -50,7 +52,14 @@ import {
   compareOpenAICodexVersions,
   parseOpenAICodexVersion,
 } from './update.ts'
-import { FastModeRegistry } from './fast-mode.ts'
+import { createConversationSpeedRegistry } from './speed-mode-registry.ts'
+import { registerOpenAICodexSpeedModeRoutes } from './speed-mode-routes.ts'
+import { parseOpenAICodexSpeedDefault } from './speed-mode-contract.ts'
+import type { OpenAICodexSpeedMode } from './speed-mode-contract.ts'
+import { parseOpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import type { OpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import { parseAutoReviewLocalPolicy } from './auto-review-local-policy.ts'
+import type { AutoReviewLocalPolicy } from './auto-review-local-policy.ts'
 import { assertNoOpenAICodexProviderConflict } from './doctor.ts'
 import { imageGenerateTool } from './image-tool.ts'
 import { viewImageTool } from './view-image.ts'
@@ -131,7 +140,8 @@ import {
   parseOpenAICodexContextWindowOverrides,
   parseOpenAICodexMaxTokensOverrides,
 } from './settings-contract.ts'
-import type { OpenAICodexSettingsInput } from './settings-contract.ts'
+import type { OpenAICodexSettingsInput, OpenAICodexModelTransport } from './settings-contract.ts'
+import { DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT } from './settings-contract.ts'
 
 export {
   decodeOpenAICodexSettings,
@@ -285,6 +295,8 @@ export const OPENAI_CODEX_SETTINGS_NS = OPENAI_CODEX_SETTINGS_NAMESPACE
 
 /** Composite model and standalone-search configuration. */
 export interface Config {
+  /** Model requests use SSE unless auto explicitly enables WebSocket with native SSE fallback. */
+  transport?: OpenAICodexModelTransport
   /** Complete interactive OAuth deadline in milliseconds; applies when the plugin loads. */
   oauthTimeoutMs?: number
   /** Model ids advertised in selectors; omitted to advertise the full catalog. */
@@ -328,6 +340,9 @@ export interface Config {
   debugLogPayloadFields?: boolean
   enableNewSessionFastMode?: boolean
   enableNewSubagentFastMode?: boolean
+  newSessionSpeedMode?: OpenAICodexSpeedMode | null | undefined
+  newSubagentSpeedMode?: OpenAICodexSpeedMode | null | undefined
+  reasoningEffort?: OpenAICodexReasoningEffort | null | undefined
   /** Register the optional standalone Codex search provider. */
   enableSearch?: boolean
   /** Register the optional image-loading tool. */
@@ -340,6 +355,15 @@ export interface Config {
   autoReviewDisclosureAcknowledged?: boolean
   /** Let the hidden Codex reviewer answer eligible DSH approval requests. */
   enableAutoReview?: boolean
+  autoReviewLocalPolicy?: AutoReviewLocalPolicy
+  /** IANA time zone for local Session usage days; defaults to the Host time zone. */
+  localUsageTimeZone?: string
+  /** Number of populated local usage days retained per Session. */
+  localUsageRetainedDays?: number
+  /** Client observation interval for the on-demand usage warm-up, in milliseconds. */
+  localUsagePollMs?: number
+  /** Pause between two stored-log reads during the warm-up, in milliseconds. */
+  localUsageRestMs?: number
   /** Model used for auxiliary standalone searches. */
   searchModel?: string
   /** Cached, indexed, or live web access. */
@@ -352,6 +376,7 @@ export interface Config {
 
 /** Runtime configuration exposes each editable field through Cordis's public Volatile type. */
 export interface VolatileConfig {
+  transport: Volatile<OpenAICodexModelTransport>
   oauthTimeoutMs: number
   models: Volatile<string[] | undefined>
   enableProxy: Volatile<boolean>
@@ -363,12 +388,20 @@ export interface VolatileConfig {
   debugLogPayloadFields: Volatile<boolean>
   enableNewSessionFastMode: Volatile<boolean>
   enableNewSubagentFastMode: Volatile<boolean>
+  newSessionSpeedMode: Volatile<OpenAICodexSpeedMode | null | undefined>
+  newSubagentSpeedMode: Volatile<OpenAICodexSpeedMode | null | undefined>
+  reasoningEffort: Volatile<OpenAICodexReasoningEffort | null | undefined>
   enableSearch: Volatile<boolean>
   enableImageTool: Volatile<boolean>
   enableImageGeneration: Volatile<boolean>
   imageModelHint: Volatile<string>
   autoReviewDisclosureAcknowledged: Volatile<boolean>
   enableAutoReview: Volatile<boolean>
+  autoReviewLocalPolicy: Volatile<AutoReviewLocalPolicy>
+  localUsageTimeZone: string
+  localUsageRetainedDays: number
+  localUsagePollMs: number
+  localUsageRestMs: number
   searchModel: Volatile<string>
   searchMode: Volatile<OpenAICodexSearchMode>
   searchContextSize: Volatile<OpenAICodexSearchContextSize>
@@ -406,7 +439,33 @@ function parseSettingsMaxTokensOverrides(
   return parsed
 }
 
+const localUsageDefaults = {
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  retainedDays: 400,
+  pollMs: 2000,
+  restMs: 25,
+}
+
+function resolveLocalUsageOptions(config: Config | VolatileConfig): LocalUsageOptions {
+  return {
+    timeZone: config.localUsageTimeZone ?? localUsageDefaults.timeZone,
+    retainedDays: config.localUsageRetainedDays ?? localUsageDefaults.retainedDays,
+    pollMs: config.localUsagePollMs ?? localUsageDefaults.pollMs,
+    restMs: config.localUsageRestMs ?? localUsageDefaults.restMs,
+  }
+}
+
+function validateLocalUsageTimeZone(value: string): string {
+  new Intl.DateTimeFormat('en', { timeZone: value })
+  return value
+}
+
 const configSchema = z.object({
+  transport: z.union(['sse', 'auto'] as const).default(DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT).volatile(),
+  localUsageTimeZone: z.transform(z.string(), validateLocalUsageTimeZone).default(localUsageDefaults.timeZone),
+  localUsageRetainedDays: z.number().step(1).min(1).default(localUsageDefaults.retainedDays),
+  localUsagePollMs: z.number().step(1).min(100).default(localUsageDefaults.pollMs),
+  localUsageRestMs: z.number().step(1).min(0).default(localUsageDefaults.restMs),
   oauthTimeoutMs: z.number().step(1).min(1_000).max(1_800_000).default(OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS),
   models: z.union([z.const(undefined), z.array(z.string())]).volatile(),
   enableProxy: z.boolean().default(false).volatile(),
@@ -425,12 +484,16 @@ const configSchema = z.object({
   debugLogPayloadFields: z.boolean().default(false).volatile(),
   enableNewSessionFastMode: z.boolean().default(false).volatile(),
   enableNewSubagentFastMode: z.boolean().default(false).volatile(),
+  newSessionSpeedMode: z.transform(z.union([z.const(undefined), z.const(null), z.union(['standard', 'fast', 'ultrafast'] as const)]), parseOpenAICodexSpeedDefault).volatile(),
+  newSubagentSpeedMode: z.transform(z.union([z.const(undefined), z.const(null), z.union(['standard', 'fast', 'ultrafast'] as const)]), parseOpenAICodexSpeedDefault).volatile(),
+  reasoningEffort: z.transform(z.union([z.const(undefined), z.const(null), z.string()]), parseOpenAICodexReasoningEffort).volatile(),
   enableSearch: z.boolean().default(false).volatile(),
   enableImageTool: z.boolean().default(false).volatile(),
   enableImageGeneration: z.boolean().default(false).volatile(),
   imageModelHint: z.transform(z.string(), parseOpenAICodexImageModelHint).default('').volatile(),
   autoReviewDisclosureAcknowledged: z.boolean().default(false).volatile(),
   enableAutoReview: z.boolean().default(false).volatile(),
+  autoReviewLocalPolicy: z.transform(z.union(['manual', 'workspace-read', 'workspace-files'] as const), parseAutoReviewLocalPolicy).default('manual').volatile(),
   searchModel: z.string().default(DEFAULT_OPENAI_CODEX_SEARCH_MODEL).volatile(),
   searchMode: z.union(['cached', 'indexed', 'live'] as const).default(DEFAULT_OPENAI_CODEX_SEARCH_MODE).volatile(),
   searchContextSize: z.union(['low', 'medium', 'high'] as const).default(DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE).volatile(),
@@ -448,12 +511,17 @@ export const Config: z<Config, VolatileConfig> = configSchema
  */
 export function apply(ctx: Context, config: Config | VolatileConfig): void {
   const current = (): OpenAICodexSettingsInput => Object.fromEntries(Object.entries({
+    transport: configValue(config.transport),
     models: configValue(config.models), enableProxy: configValue(config.enableProxy),
     proxyUrl: configValue(config.proxyUrl), contextWindowOverrides: configValue(config.contextWindowOverrides),
     maxTokensOverrides: configValue(config.maxTokensOverrides), contextWindowMode: configValue(config.contextWindowMode),
     modelCatalogClientVersion: configValue(config.modelCatalogClientVersion),
     enableNewSessionFastMode: configValue(config.enableNewSessionFastMode),
     enableNewSubagentFastMode: configValue(config.enableNewSubagentFastMode),
+    newSessionSpeedMode: configValue(config.newSessionSpeedMode),
+    newSubagentSpeedMode: configValue(config.newSubagentSpeedMode),
+    reasoningEffort: configValue(config.reasoningEffort),
+    autoReviewLocalPolicy: configValue(config.autoReviewLocalPolicy),
     debugLogPayloadFields: configValue(config.debugLogPayloadFields), enableSearch: configValue(config.enableSearch),
     enableImageTool: configValue(config.enableImageTool), enableImageGeneration: configValue(config.enableImageGeneration),
     imageModelHint: configValue(config.imageModelHint),
@@ -464,6 +532,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   }).filter(([, value]) => value !== undefined)) as OpenAICodexSettingsInput
   // Only currency totals reach the browser; the Host retains the DeepSeek credential.
   watchBalanceChannel(ctx)
+  watchLocalUsage(ctx, resolveLocalUsageOptions(config))
   const proxyManager = new OpenAICodexProxyManager()
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
@@ -520,49 +589,62 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   const trustedOrigins = new OpenAICodexTrustedOriginsStore(
     join(dirname(credentials.filename), OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME),
   )
-  const fastMode = new FastModeRegistry()
-  registerOpenAICodexFastModeDefaults(ctx, fastMode, () => resolveOpenAICodexSettings(current()))
+  const fastMode = createConversationSpeedRegistry(ctx)
+  const resolveRouteAccountKey = async (provider: string, signal: AbortSignal): Promise<string | undefined> => {
+    signal.throwIfAborted()
+    const binding = routeBindings.find(route => route.routeId === provider)
+    if (binding === undefined) return undefined
+    const accounts = await credentials.accounts()
+    signal.throwIfAborted()
+    return binding.accountKey === undefined
+      ? accounts.find(account => account.active)?.accountKey
+      : accounts.find(account => account.accountKey === binding.accountKey)?.accountKey
+  }
+  registerOpenAICodexFastModeDefaults(ctx, fastMode, () => resolveOpenAICodexSettings(current()), resolveRouteAccountKey)
   assertNoOpenAICodexProviderConflict(ctx.llm.listProviders().map(provider => provider.id))
   new OpenAICodexTransport(ctx, credentials, proxyManager, resolveProviderProxyUrl, () => resolveOpenAICodexSettings(current()).imageModelHint)
-  registerOpenAICodexAutoReview(
+  const autoReview = registerOpenAICodexAutoReview(
     ctx,
     credentials,
     proxyManager,
     resolveProviderProxyUrl,
     () => resolveOpenAICodexSettings(current()).enableAutoReview,
+    () => resolveOpenAICodexSettings(current()).autoReviewLocalPolicy,
+    resolveRouteAccountKey,
   )
   // The active account keeps the primary route id so existing settings and the
   // settings card keep addressing it; every other stored account gets its own
   // route, reconciled below whenever the account document changes.
   const accountRoutes = new OpenAICodexAccountRouteRegistry()
   let routeBindings: readonly OpenAICodexRouteBinding[] = [OPENAI_CODEX_PRIMARY_ROUTE]
-  const registration = ctx.llm.registerAdapter(
-    [OPENAI_CODEX_PROVIDER],
-    createOpenAICodexAdapter(
-      credentials,
-      () => ctx.get('attachments'),
-      fastMode,
-      () => resolveOpenAICodexSettings(current()).models,
-      proxyManager,
-      resolveProviderProxyUrl,
-      () => resolveOpenAICodexSettings(current()).contextWindowOverrides,
-      () => resolveOpenAICodexSettings(current()).maxTokensOverrides,
-      () => routeBindings,
-      {
-        catalogLayer,
-        imageEditingEnabled: () => resolveOpenAICodexSettings(current()).enableImageGeneration,
-        resolveOnPayloadFields: () => resolveOpenAICodexSettings(current()).debugLogPayloadFields
-          // Payload field names only; never the request or response content.
-          ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
-          : undefined,
-      },
-    ),
+  const modelAdapter = createOpenAICodexAdapter(
+    credentials,
+    () => ctx.get('attachments'),
+    fastMode,
+    () => resolveOpenAICodexSettings(current()).models,
+    proxyManager,
+    resolveProviderProxyUrl,
+    () => resolveOpenAICodexSettings(current()).contextWindowOverrides,
+    () => resolveOpenAICodexSettings(current()).maxTokensOverrides,
+    () => routeBindings,
+    {
+      catalogLayer,
+      resolveTransport: () => resolveOpenAICodexSettings(current()).transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+      imageEditingEnabled: () => resolveOpenAICodexSettings(current()).enableImageGeneration,
+      resolveReasoningEffort: () => resolveOpenAICodexSettings(current()).reasoningEffort,
+      resolveOnPayloadFields: () => resolveOpenAICodexSettings(current()).debugLogPayloadFields
+        // Payload field names only; never the request or response content.
+        ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
+        : undefined,
+    },
   )
+  const registration = ctx.llm.registerAdapter([OPENAI_CODEX_PROVIDER], modelAdapter)
 
   ctx.inject(['webServer', 'connection'], webCtx => {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl,
       configValue(config.oauthTimeoutMs) ?? OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS)
     registerOpenAICodexProxyRoutes(webCtx, trustedOrigins, proxyManager)
+    registerOpenAICodexSpeedModeRoutes(webCtx, { trustedOrigins, registry: fastMode, resolveRouteAccountKey })
     const catalogAccountKeys = async () => (await credentials.accounts()).map(account => account.accountKey)
     registerOpenAICodexModelCatalogRoute(webCtx, effectiveCatalog, trustedOrigins, catalogAccountKeys)
     registerOpenAICodexModelCatalogStatusRoutes(webCtx, {
@@ -740,6 +822,9 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   }
 
   ctx.effect(() => credentials.onDidChange(() => {
+    // Captured refreshes do not emit account-selection commits. Do not coalesce A/B/A choices.
+    fastMode.invalidateAccountSelections()
+    autoReview.invalidateAccountSelections()
     modelCatalog.setClientVersion(resolveOpenAICodexSettings(current()).modelCatalogClientVersion)
     scheduleAccountRoutes()
     scheduleCatalogRefresh()
@@ -747,21 +832,26 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
 
   ctx.effect(() => async () => {
     stopped = true
-    await modelCatalog.dispose()
-    await Promise.all([searchTail, imageTail, imageGenerationTail, accountRouteTail, catalogTail])
+    const consumers = await Promise.allSettled([
+      modelAdapter.dispose(), autoReview.dispose(), modelCatalog.dispose(),
+    ])
+    const reconciliations = await Promise.allSettled([searchTail, imageTail, imageGenerationTail, accountRouteTail, catalogTail])
     const search = searchFiber
     const image = imageFiber
     const imageGeneration = imageGenerationFiber
     searchFiber = undefined
     imageFiber = undefined
     imageGenerationFiber = undefined
-    await Promise.allSettled([
+    const capabilities = await Promise.allSettled([
       search?.dispose() ?? Promise.resolve(),
       image?.dispose() ?? Promise.resolve(),
       imageGeneration?.dispose() ?? Promise.resolve(),
     ])
-    await proxyManager.dispose()
-  }, 'dsh-codex-connect: optional capability lifecycle')
+    const proxy = await Promise.allSettled([proxyManager.dispose()])
+    const errors = [...consumers, ...reconciliations, ...capabilities, ...proxy]
+      .flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length > 0) throw new AggregateError(errors, 'OpenAI Codex plugin cleanup failed')
+  }, 'dsh-codex-connect: request and optional capability lifecycle')
 
   ctx.on('loader/volatile-update', () => {
     const proxyIsActive = resolveProviderProxyUrl() !== undefined

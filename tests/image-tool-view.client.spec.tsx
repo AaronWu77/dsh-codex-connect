@@ -310,3 +310,21 @@ describe('Codex image Tool view', () => {
     expect(screen.queryByText('private response')).toBeNull()
   })
 })
+
+describe('saved original without a stored preview', () => {
+  it('keeps the original downloadable and shows persistent recovery state without another generation', async () => {
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'image/png' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:retained-original'), revokeObjectURL: vi.fn() })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<CodexImageToolView {...standard} t={t} sessions={actionSessions} phase="result" block={{ kind: 'tool-result', seq: 2, time: 2, callId: 'call-1', name: 'codex_connect_image_generate', args: PartialArguments.EMPTY, call: null, callTime: 1, content: [], isError: false, meta: { kind: 'codex-connect-images', schemaVersion: 3, prompt: 'retained image', images: [{ original, previewStatus: 'unavailable' }] }, subCalls: [] }} />)
+    expect(screen.getByText(en.imagePreviewUnavailable)).toBeTruthy()
+    expect(screen.queryByTestId('codex-image-gallery')).toBeNull()
+    expect(screen.queryByRole('button', { name: en.downloadPreview })).toBeNull()
+    expect(actionPrompt).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: en.downloadOriginal }))
+    await waitFor(() => { expect(click).toHaveBeenCalledOnce() })
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining(original.assetId), expect.objectContaining({ method: 'GET' }))
+    expect(actionPrompt).not.toHaveBeenCalled()
+  })
+})

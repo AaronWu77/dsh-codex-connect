@@ -186,6 +186,8 @@ function accountKey(accountId: string): string {
   return `${OPENAI_CODEX_ACCOUNT_KEY_PREFIX}${createHash('sha256').update(accountId).digest('base64url')}`
 }
 
+export { accountKey as openAICodexAccountKey }
+
 function serializeDocument(document: AuthDocument): string {
   const text = `${JSON.stringify(document, null, 2)}\n`
   if (Buffer.byteLength(text) > OPENAI_CODEX_AUTH_DOCUMENT_LIMIT) {

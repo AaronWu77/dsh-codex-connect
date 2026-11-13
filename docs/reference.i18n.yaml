@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record for the operational reference. Re-record with:
 #   node scripts/record-bilingual-pair.mjs docs/reference.md docs/reference.zh.md
-docs/reference.md: 8ffe62116b0e4e932f401ecf5902c3e9c33450cd
-docs/reference.zh.md: b3a1d0f8fc53504dec5d153ff027fc667d0ffd64
+docs/reference.md: d19cedfb875762918c4e58c5f3bbcb3d4e24af40
+docs/reference.zh.md: 2706011ee34da4ec938b3d51ba188ac0bad79dcf

@@ -69,3 +69,57 @@ it('keeps refresh and the full reviewer stream inside one proxy operation', asyn
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('redacts the complete outgoing review evidence without mutating exact action arguments', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-review-redaction-'))
+  const store = new OpenAICodexCredentialStore(join(root, 'auth.json'))
+  const proxy = new OpenAICodexProxyManager()
+  let captured = ''
+  try {
+    await store.modify(OPENAI_CODEX_PROVIDER, async () => ({ type: 'oauth', accountId: 'fixture', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 3_600_000 }))
+    vi.mocked(reviewFetch).mockImplementation(async (_url, init) => {
+      captured = String(init?.body)
+      return new UndiciResponse('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const arguments_ = { nested: { password: 'private-argument-value' }, ordinary: 'retained' }
+    const input: AutoReviewBackendInput = {
+      action: { toolName: 'write', callId: 'fixture' as AutoReviewBackendInput['action']['callId'], turn: 1, arguments: arguments_, fingerprint: 'fixture', reason: 'Cookie: opaque-reason-cookie' },
+      context: { transcript: 'Bearer private-transcript-token', tools: 'api_key=private-tool-key', transcriptEntriesOmitted: 0, toolEntriesOmitted: 0, entriesTruncated: 0 },
+    }
+    await expect(new OpenAICodexAutoReviewBackend(store, proxy, () => undefined).review(input)).resolves.toEqual({ status: 'unavailable' })
+    expect(captured).not.toMatch(/private-argument-value|opaque-reason-cookie|private-transcript-token|private-tool-key/u)
+    expect(captured).toContain('retained')
+    expect(captured).toContain('sensitive_values_redacted')
+    expect(arguments_.nested.password).toBe('private-argument-value')
+  } finally {
+    vi.restoreAllMocks()
+    await proxy.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('authenticates a secondary-route review as its frozen account and never falls back to the active account', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-review-bound-account-'))
+  const store = new OpenAICodexCredentialStore(join(root, 'auth.json'))
+  const proxy = new OpenAICodexProxyManager()
+  const sent: string[] = []
+  try {
+    await store.modify(OPENAI_CODEX_PROVIDER, async () => ({ type: 'oauth', accountId: 'secondary', access: 'fixture-secondary', refresh: 'fixture-refresh-b', expires: Date.now() + 3_600_000 }))
+    await store.modify(OPENAI_CODEX_PROVIDER, async () => ({ type: 'oauth', accountId: 'primary', access: 'fixture-primary', refresh: 'fixture-refresh-a', expires: Date.now() + 3_600_000 }))
+    const secondary = (await store.accounts()).find(account => !account.active)!.accountKey
+    const active = vi.spyOn(store, 'captureActiveAccount')
+    vi.mocked(reviewFetch).mockImplementation(async (_url, init) => {
+      sent.push(new Headers(init?.headers as HeadersInit).get('chatgpt-account-id') ?? '')
+      return new UndiciResponse('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const backend = new OpenAICodexAutoReviewBackend(store, proxy, () => undefined)
+    const input: AutoReviewBackendInput = { accountKey: secondary,
+      action: { provider: 'openai-codex-16', toolName: 'read', callId: 'fixture' as AutoReviewBackendInput['action']['callId'], turn: 1, arguments: {}, fingerprint: 'fixture' },
+      context: { transcript: '', tools: '', transcriptEntriesOmitted: 0, toolEntriesOmitted: 0, entriesTruncated: 0 } }
+    await expect(backend.review(input)).resolves.toEqual({ status: 'unavailable' })
+    expect(sent).toEqual(['secondary'])
+    expect(active).not.toHaveBeenCalled()
+    await expect(backend.review({ ...input, accountKey: 'missing-account' })).resolves.toEqual({ status: 'unavailable' })
+    expect(sent).toEqual(['secondary'])
+  } finally { vi.restoreAllMocks(); await proxy.dispose(); await rm(root, { recursive: true, force: true }) }
+})

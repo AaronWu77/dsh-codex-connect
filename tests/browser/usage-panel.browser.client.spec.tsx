@@ -26,8 +26,9 @@ describe('Quota widget and usage dialog in Chromium', () => {
     ] }
     const quota = { snapshot: () => snapshot, subscribe: () => () => {} }
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(Date.now())
-    const sessions = { ids: ['main'], byId: { main: { projectionValues: { contextUsage: { timeZone: 'Asia/Shanghai', days: { [today]: { tokens: 12345, requests: 7, humanInputs: 1 } } } } } } }
-    const injected = { t: (key: keyof typeof en, params?: Record<string, unknown>) => Object.entries(params ?? {}).reduce((text, [name, value]) => text.replaceAll('{' + name + '}', String(value)), labels[key] as string), account, panel, quota, useSessions: <T,>(selector: (value: unknown) => T) => selector(sessions) }
+    const usageSnapshot = { state: 'ready' as const, data: { timeZone: 'Asia/Shanghai', days: { [today]: { tokens: 12345, requests: 7, sessions: 1 } } } }
+    const localUsage = { snapshot: () => usageSnapshot, subscribe: () => () => {}, retry: vi.fn() }
+    const injected = { t: (key: keyof typeof en, params?: Record<string, unknown>) => Object.entries(params ?? {}).reduce((text, [name, value]) => text.replaceAll('{' + name + '}', String(value)), labels[key] as string), account, panel, quota, localUsage }
     style = document.createElement('style')
     style.textContent = usageStyles + usageDialogStyles + ':root { --dsw-alias-label-primary: #222; --dsw-alias-label-secondary: #555; --dsw-alias-label-tertiary: #666; --dsw-alias-bg-layer-1: #fff; --dsw-alias-bg-layer-2: #eee; --dsw-alias-border-l2: #ccc; --color-blue-500: #2563eb; }'
     document.head.append(style)

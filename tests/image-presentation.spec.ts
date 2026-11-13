@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeImagePresentationMeta } from '../src/image-presentation.ts'
+import { decodeImagePresentationMeta, decodeImageResultContent } from '../src/image-presentation.ts'
 
 const image = { attachmentId: 'sha256:one', mediaType: 'image/png', width: 64, height: 32, bytes: 120, name: 'codex-image-1.png' }
 const original = {
@@ -37,5 +37,22 @@ describe('generated image presentation contract', () => {
     expect(decodeImagePresentationMeta({ kind: 'codex-connect-images', schemaVersion: 2, prompt: 'draw', images: [{ original, preview: image }] })).toBeUndefined()
     expect(decodeImagePresentationMeta({ kind: 'codex-connect-images', schemaVersion: 1, prompt: 'draw', images: [{ original: { ...original, assetId: '../secret' }, preview: image }] })).toBeUndefined()
     expect(decodeImagePresentationMeta({ kind: 'codex-connect-images', schemaVersion: 1, prompt: 'draw', images: [{ original, preview: { ...image, attachmentId: undefined } }] })).toBeUndefined()
+  })
+})
+
+describe('original-only recovery metadata', () => {
+  const recovered = { kind: 'codex-connect-images', schemaVersion: 3, prompt: 'draw', images: [{ original, previewStatus: 'unavailable' }] }
+  it('decodes originals when a successful generation has no stored preview', () => {
+    expect(decodeImagePresentationMeta(recovered)).toEqual(recovered)
+  })
+  it('recovers the same original-only result from a persisted PTC envelope', () => {
+    const content = [{ type: 'text', text: 'codex-connect-image-result-v3:' + JSON.stringify(recovered) }]
+    expect(decodeImageResultContent(content, 'draw')).toEqual(recovered)
+    expect(decodeImageResultContent(content, 'a different call')).toBeUndefined()
+  })
+  it('rejects unavailable previews without valid originals and mixed recovery claims', () => {
+    expect(decodeImagePresentationMeta({ ...recovered, images: [{ previewStatus: 'unavailable' }] })).toBeUndefined()
+    expect(decodeImagePresentationMeta({ ...recovered, images: [{ original, preview: image, previewStatus: 'unavailable' }] })).toBeUndefined()
+    expect(decodeImagePresentationMeta({ ...recovered, images: [{ original }] })).toBeUndefined()
   })
 })

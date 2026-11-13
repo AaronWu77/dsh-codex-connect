@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Context, resolveConfig } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Loader, { type Entry, type EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
 import SettingsForms from '@deepseek-ai/dsh-settings'
@@ -39,8 +39,9 @@ class MemoryConfigEditor implements ConfigEditorFixture {
     const next = change(structuredClone(entry.options.config ?? {}), {})
     const fiber = entry.fiber
     if (fiber?.runtime == null) throw new Error('fixture plugin fiber is unavailable')
-    const resolved = fiber.ctx.waterfall(fiber, 'internal/config', next, () => next)
-    resolveConfig(fiber.runtime, resolved as Record<string, unknown>)
+    // The global internal/config listener applies the runtime schema; pass only the candidate.
+    // The global internal/config listener applies the runtime schema; the candidate is the fallback.
+    fiber.ctx.waterfall('internal/config', fiber, () => next)
     await entry.update({ config: next })
   }
 }

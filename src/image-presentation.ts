@@ -12,17 +12,24 @@ export const IMAGE_PRESENTATION_SCHEMA_VERSION = 1
 /** PTC persists rendered content, but does not project presentationMeta. */
 export const IMAGE_RESULT_PREFIX = 'codex-connect-image-result-v1:'
 export const IMAGE_EDIT_RESULT_PREFIX = 'codex-connect-image-result-v2:'
+/** Original-only recovery when preview persistence failed, including nested PTC results. */
+export const IMAGE_RECOVERY_RESULT_PREFIX = 'codex-connect-image-result-v3:'
 
 
-export interface ImagePresentationItem {
+export type ImagePresentationItem = {
   preview: ImageAttachmentRef
+  previewStatus?: never
   /** Missing only for sessions created before exact originals were persisted. */
   original?: OpenAICodexOriginalImageRef
+} | {
+  preview?: never
+  previewStatus: 'unavailable'
+  original: OpenAICodexOriginalImageRef
 }
 
 export interface ImagePresentationMeta {
   kind: typeof IMAGE_PRESENTATION_KIND
-  schemaVersion: typeof IMAGE_PRESENTATION_SCHEMA_VERSION | 2
+  schemaVersion: typeof IMAGE_PRESENTATION_SCHEMA_VERSION | 2 | 3
   prompt: string
   images: ImagePresentationItem[]
   operation?: 'edit'
@@ -73,17 +80,25 @@ export function decodeImagePresentationMeta(value: unknown): ImagePresentationMe
       images: (previews as ImageAttachmentRef[]).map(preview => ({ preview })),
     }
   }
-  if (candidate.schemaVersion !== IMAGE_PRESENTATION_SCHEMA_VERSION && candidate.schemaVersion !== 2) return undefined
-  const edit = candidate.schemaVersion === 2 ? decodeImageEditSources(candidate.edit) : undefined
-  if (candidate.schemaVersion === 2 && (candidate.operation !== 'edit' || edit === undefined)) return undefined
+  if (candidate.schemaVersion !== IMAGE_PRESENTATION_SCHEMA_VERSION && candidate.schemaVersion !== 2 && candidate.schemaVersion !== 3) return undefined
+  const editing = candidate.schemaVersion === 2 || (candidate.schemaVersion === 3 && candidate.operation === 'edit')
+  const edit = editing ? decodeImageEditSources(candidate.edit) : undefined
+  if (editing && (candidate.operation !== 'edit' || edit === undefined)) return undefined
+  if (candidate.schemaVersion === 3 && !editing && (candidate.operation !== undefined || candidate.edit !== undefined)) return undefined
   const images: ImagePresentationItem[] = []
   for (const value of candidate.images) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
     const entry = value as Record<string, unknown>
     const preview = imageRef(entry.preview)
     const original = decodeOpenAICodexOriginalImageRef(entry.original)
-    if (preview === undefined || original === undefined) return undefined
-    images.push({ preview, original })
+    if (original === undefined) return undefined
+    if (candidate.schemaVersion === 3) {
+      if (entry.preview !== undefined || entry.previewStatus !== 'unavailable') return undefined
+      images.push({ original, previewStatus: 'unavailable' })
+    } else {
+      if (preview === undefined || entry.previewStatus !== undefined) return undefined
+      images.push({ preview, original })
+    }
   }
   return {
     kind: IMAGE_PRESENTATION_KIND,
@@ -108,23 +123,27 @@ export function decodeImageResultContent(content: readonly unknown[], prompt: st
       previews.push(ref)
     }
     if (block.type === 'text' && typeof block.text === 'string'
-      && (block.text.startsWith(IMAGE_RESULT_PREFIX) || block.text.startsWith(IMAGE_EDIT_RESULT_PREFIX))) envelopes.push(block.text)
+      && (block.text.startsWith(IMAGE_RESULT_PREFIX) || block.text.startsWith(IMAGE_EDIT_RESULT_PREFIX)
+        || block.text.startsWith(IMAGE_RECOVERY_RESULT_PREFIX))) envelopes.push(block.text)
   }
-  if (previews.length < 1 || previews.length > 4 || envelopes.length > 1) return undefined
+  if (previews.length > 4 || envelopes.length > 1) return undefined
   const envelope = envelopes[0]
   if (envelope !== undefined) {
-    if (envelope.length > (envelope.startsWith(IMAGE_EDIT_RESULT_PREFIX) ? 256_000 : 16_000)) return undefined
+    const recovery = envelope.startsWith(IMAGE_RECOVERY_RESULT_PREFIX)
+    if (envelope.length > (envelope.startsWith(IMAGE_EDIT_RESULT_PREFIX) || recovery ? 256_000 : 16_000)) return undefined
     try {
       const isEdit = envelope.startsWith(IMAGE_EDIT_RESULT_PREFIX)
-      const payload: unknown = JSON.parse(envelope.slice(isEdit ? IMAGE_EDIT_RESULT_PREFIX.length : IMAGE_RESULT_PREFIX.length))
-      const decoded = decodeImagePresentationMeta(isEdit ? payload : { kind: IMAGE_PRESENTATION_KIND, schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION, prompt, images: payload })
-      if (decoded === undefined || decoded.prompt !== prompt || decoded.images.length !== previews.length
+      const payload: unknown = JSON.parse(envelope.slice(recovery ? IMAGE_RECOVERY_RESULT_PREFIX.length : isEdit ? IMAGE_EDIT_RESULT_PREFIX.length : IMAGE_RESULT_PREFIX.length))
+      const decoded = decodeImagePresentationMeta(isEdit || recovery ? payload : { kind: IMAGE_PRESENTATION_KIND, schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION, prompt, images: payload })
+      if (recovery) return decoded?.schemaVersion === 3 && decoded.prompt === prompt && previews.length === 0 ? decoded : undefined
+      if (decoded === undefined || decoded.schemaVersion === 3 || decoded.prompt !== prompt || decoded.images.length !== previews.length
         || decoded.images.some((image, index) => JSON.stringify(image.preview) !== JSON.stringify(previews[index]))) return undefined
       return decoded
     } catch {
       return undefined
     }
   }
+  if (previews.length < 1) return undefined
   // Historical PTC logs retain previews, not original IDs. Never infer an original.
   return { kind: IMAGE_PRESENTATION_KIND, schemaVersion: IMAGE_PRESENTATION_SCHEMA_VERSION, prompt, images: previews.map(preview => ({ preview })) }
 }

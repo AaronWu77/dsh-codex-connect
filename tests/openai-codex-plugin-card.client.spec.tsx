@@ -18,26 +18,26 @@ function start(messages = en, writable = true) {
 }
 
 describe('Codex management center', () => {
-  it.each([en, zh])('waits for a matching calendar before labeling a retained value today', labels => {
+  it.each([en, zh])('labels today from the producer calendar, not the browser clock', labels => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-15T16:00:00Z'))
     const f = fixture = managementFixture(labels)
-    let snapshot: LocalUsageSnapshot = { state: 'partial', data: {
-      state: 'partial', total: 1, completed: 1, skipped: 0, timeZone: 'UTC', scanTimeZone: 'Asia/Shanghai',
-      days: { '2026-10-15': { tokens: 12345, requests: 1, sessions: 1 } }, pollMs: 500, stale: true,
-    } }
+    let snapshot: LocalUsageSnapshot = { state: 'ready', data: { timeZone: 'UTC', days: {
+      '2026-10-15': { tokens: 42, requests: 1, sessions: 1 },
+      '2026-10-16': { tokens: 7, requests: 1, sessions: 1 },
+    } } }
     const source = { snapshot: () => snapshot, subscribe: () => () => {}, retry: vi.fn() }
     const view = render(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
-    expect(screen.queryByText(labels['ov.quota.today'])).toBeNull()
-    expect(screen.queryByText('12.3k')).toBeNull()
-    snapshot = { state: 'done', data: {
-      state: 'done', total: 1, completed: 1, skipped: 0, timeZone: 'Asia/Shanghai',
-      days: { '2026-10-16': { tokens: 42, requests: 1, sessions: 1 } }, pollMs: 500, stale: false,
-    } }
-    view.rerender(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
+    // 16:00 UTC on 15 Oct is that Host calendar's today, so only its figure is labeled.
     expect(screen.getByText(labels['ov.quota.today'])).toBeDefined()
     expect(screen.getByText('42')).toBeDefined()
+    expect(screen.queryByText('12.3k')).toBeNull()
+    snapshot = { state: 'ready', data: { timeZone: 'Asia/Shanghai', days: {
+      '2026-10-15': { tokens: 42, requests: 1, sessions: 1 },
+      '2026-10-16': { tokens: 12345, requests: 1, sessions: 1 },
+    } } }
+    view.rerender(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
+    expect(screen.getByText('12.3k')).toBeDefined()
   })
-
   it.each([en, zh])('opens the shared usage overview without a second disclosure card', async labels => {
     start(labels)
     await screen.findByText('¥42.50')

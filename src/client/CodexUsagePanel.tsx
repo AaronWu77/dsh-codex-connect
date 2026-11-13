@@ -8,7 +8,8 @@ import { AccountUsage, accountStatusLabel, dotStyle } from './OpenAICodexSetting
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
 import { makeQuotaGrid } from './UsageQuotaGrid.tsx'
 import { fmtDuration } from './usage-format.ts'
-import { usageLedgerOf, usageToday, type UsageSessionProps } from './usage-ledger.ts'
+import { subscribeUnavailableUsage, unavailableUsageSnapshot, usageToday } from './usage-ledger.ts'
+import type { LocalUsageSnapshot, LocalUsageSource } from './usage-ledger.ts'
 
 /** Whether a panel is currently open; the capsule and the panel share this store. */
 export class CodexUsagePanelStore {
@@ -43,21 +44,42 @@ export class CodexUsagePanelStore {
 
 
 /** Services shared by the sidebar entry and the overlay. */
-export interface CodexUsageInjected extends UsageSessionProps {
+export interface CodexUsageInjected {
   t: OpenAICodexSettingsInjected['t']
   account: OpenAICodexAccountStore
   quota: CodexQuotaService
   panel: CodexUsagePanelStore
+  localUsage?: LocalUsageSource
   wide?: boolean
 }
 
+/** Actionable local usage failures; ordinary loading stays silent. */
+export function LocalUsageNotice({ t, usage, source, compact = false }: {
+  t: OpenAICodexSettingsInjected['t']; usage: LocalUsageSnapshot; source: LocalUsageSource | undefined; compact?: boolean
+}) {
+  if (source === undefined) return null
+  const message = usage.state === 'unavailable' ? t('ov.local.unavailable')
+    : usage.state === 'failed' || usage.failure === 'request' ? t('ov.local.failed') : undefined
+  if (message === undefined) return null
+  return <div className="cc-codex-empty">
+    <div role="status">{message}</div>
+    {compact ? null : <button type="button" className="cc-usage-quota-detail-action" onClick={() => { source.retry() }}>{t('ov.local.retry')}</button>}
+  </div>
+}
+
+/** Present only the established daily figure for the current calendar. */
+function currentUsageDays(data: LocalUsageSnapshot['data'], day: string): NonNullable<LocalUsageSnapshot['data']>['days'] {
+  const value = data?.days[day]
+  return value === undefined ? {} : { [day]: value }
+}
+
 /** Original compact quota card; the collapsed rail retains the same gauge entry. */
-export function CodexUsageCapsule({ t, quota, panel, wide, useSessions }: CodexUsageInjected) {
+export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUsageInjected) {
   const open = useSyncExternalStore(panel.subscribe, panel.snapshot)
-  const snapshot = useSessions?.(value => value)
-  const usage = useMemo(() => usageLedgerOf(snapshot), [snapshot])
+  const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
   const locale = t('dateLocale')
   const Grid = useMemo(() => makeQuotaGrid(quota, { t, fmtDuration, locale }), [quota, t, locale])
+  const today = usageToday(usage.data?.timeZone)
   const show = (): void => { panel.show() }
   if (wide !== true) return (
     <button type="button" className="cc-usage-entry cc-usage-entry-rail" title={t('ov.entry')}
@@ -77,27 +99,29 @@ export function CodexUsageCapsule({ t, quota, panel, wide, useSessions }: CodexU
         <span className="cc-usage-widget-title">{t('ov.entry')}</span>
         <span className="cc-usage-widget-more" aria-hidden="true">{String.fromCharCode(0x203a)}</span>
       </div>
-      <Grid days={usage.days} today={usageToday(usage.timeZone)} compact onSelectDay={show} />
+      <LocalUsageNotice t={t} usage={usage} source={localUsage} compact />
+      <Grid days={currentUsageDays(usage.data, today)} today={today} compact onSelectDay={show} />
     </div>
   )
 }
 
 /** Shared read-only usage content for the overview tab and the existing dialog. */
-export function CodexUsageOverview({ t, account, quota, useSessions }: Omit<CodexUsageInjected, 'panel' | 'wide'>) {
+export function CodexUsageOverview({ t, account, quota, localUsage, includeAccountUsage = true, showStatus = true }: Omit<CodexUsageInjected, 'panel' | 'wide'> & { includeAccountUsage?: boolean; showStatus?: boolean }) {
   const snapshot = useSyncExternalStore(account.subscribe, account.getSnapshot)
   const quotaSnapshot = useSyncExternalStore(quota.subscribe, quota.snapshot)
-  const sessions = useSessions?.(value => value)
-  const usage = useMemo(() => usageLedgerOf(sessions), [sessions])
+  const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
   const locale = t('dateLocale')
   const Grid = useMemo(() => makeQuotaGrid(quota, { t, fmtDuration, locale }), [quota, t, locale])
+  const today = usageToday(usage.data?.timeZone)
   return (
     <div className="cc-usage-panel">
-        <div className="cc-usage-status" role="status">
+        {showStatus ? <div className="cc-usage-status" role="status">
           <span aria-hidden="true" style={dotStyle(snapshot.status.status)} />
           <span>{accountStatusLabel(snapshot.status.status, t)}</span>
-        </div>
-        <Grid days={usage.days} today={usageToday(usage.timeZone)} currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} />
-        {quotaSnapshot === null ? null : <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} />}
+        </div> : null}
+        <LocalUsageNotice t={t} usage={usage} source={localUsage} />
+        <Grid days={currentUsageDays(usage.data, today)} today={today} currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} />
+        {includeAccountUsage && quotaSnapshot !== null ? <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} /> : null}
       </div>
   )
 }

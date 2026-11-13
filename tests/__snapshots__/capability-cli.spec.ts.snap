@@ -10,19 +10,19 @@ oauth: unknown (credential-metadata-only)
   A private credential file does not prove authorization; use an explicit probe.
 responses: unknown (not-probed)
   Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
-transport: unknown (configured-sse-not-probed)
-  Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
+transport: unknown (standalone-sse-not-probed)
+  This standalone probe tests SSE, not the running profile's transport setting or WebSocket support.
 model: unknown (catalog-is-not-entitlement)
   Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
 providerFallback: rejected (no-automatic-provider-failover)
-  Select another provider explicitly. SSE is already selected; WebSocket-to-SSE fallback is inactive. Authentication, request, and partial-stream errors do not authorize provider switching.
+  Select another provider explicitly. Model transport auto can fall back from WebSocket to SSE without switching providers or accounts; this standalone SSE probe does not verify that path.
 contextManagement: unknown (no-successful-optional-operation)
   Schema recognition is not capability evidence; keep optional context management disabled.
 continuation: unknown (no-continuation-round-trip)
   A stateless probe does not verify continuation, Fork, or restart; retain Harness-owned history.
 nativeCompaction: rejected (no-native-compaction-integration)
   Keep Harness text-summary compaction; track the typed-operation and durable-replay prerequisites in Issue #65.
-websocketReuse: rejected (finite-sse-policy)
-  Keep finite SSE selected; cached WebSocket lifecycle work is outside this diagnostic.
+websocketReuse: rejected (request-owned-websockets)
+  Model transport auto uses a fresh connection per request; this plugin does not expose cached WebSocket reuse.
 "
 `;

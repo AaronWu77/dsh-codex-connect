@@ -498,9 +498,9 @@ describe('live catalog merge', () => {
     const extended = openAICodexModelCatalogFrom({ live, mode: 'extended' }).find(model => model.id === 'gpt-5.6-sol')!
     expect(extended).toMatchObject({ contextWindow: 872_000, maxContextWindow: 872_000 })
     const pinned = openAICodexModelCatalogFrom({
-      live: [liveEntry('gpt-5.5', { context_window: 272_000, max_context_window: 272_000 })],
+      live: [liveEntry('gpt-5.6-sol', { context_window: 272_000, max_context_window: 272_000 })],
       mode: 'extended',
-    }).find(model => model.id === 'gpt-5.5')!
+    }).find(model => model.id === 'gpt-5.6-sol')!
     expect(pinned).toMatchObject({ contextWindow: 272_000, maxContextWindow: 272_000 })
   })
 
@@ -528,8 +528,11 @@ describe('live catalog merge', () => {
     expect(openAICodexUnavailableModels(live)).toEqual(['gpt-reserve', 'codex-auto-review'])
   })
 
-  it('adds server-advertised GPT-6.1 Sol with Sol tool settings and supported reasoning', () => {
-    const provider = withOpenAICodexAstra(openaiCodexProvider())
+  it('adds server-advertised GPT-6.1 Sol when the installed catalog predates it', () => {
+    const installed = openaiCodexProvider()
+    const provider = withOpenAICodexAstra({
+      ...installed, getModels: () => installed.getModels().filter(model => model.id !== 'gpt-6.1-sol'),
+    })
     const live = [liveEntry('gpt-6.1-sol', { display_name: 'GPT-6.1-Sol', max_output_tokens: 128_000 }), liveEntry('gpt-6.2-sol')]
     const before = provider.getModels().map(model => model.id)
     const merged = applyOpenAICodexLiveCatalog(provider, live, 'default')
@@ -550,7 +553,25 @@ describe('live catalog merge', () => {
       .piProvider.getModels().find(model => model.id === 'gpt-6.1-sol')?.contextWindow).toBe(872_000)
     expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
       { 'gpt-6.1-sol': 872_001 }, undefined, undefined, { live, mode: 'default' })).toThrow('integer from 1 to 872000')
-    expect(openAICodexModelCatalogFrom().map(model => model.id)).not.toContain('gpt-6.1-sol')
+    expect(before).not.toContain('gpt-6.1-sol')
+  })
+
+  it('calibrates native GPT-6.1 Sol with and without a live layer without changing native metadata', () => {
+    const provider = openaiCodexProvider()
+    const native = provider.getModels().find(model => model.id === 'gpt-6.1-sol')!
+    expect(native).toBeDefined()
+    const original = structuredClone(native)
+    const profiles = [
+      applyOpenAICodexLiveCatalog(provider, [], 'default').provider,
+      applyOpenAICodexLiveCatalog(provider, [liveEntry('gpt-6.1-sol')], 'default').provider,
+      createOpenAICodexProfile(provider).piProvider,
+    ]
+    for (const calibrated of profiles) {
+      const entry = calibrated.getModels().find(model => model.id === 'gpt-6.1-sol')!
+      expect(entry).toMatchObject({ name: native.name, compat: native.compat,
+        thinkingLevelMap: { ...native.thinkingLevelMap, off: null, minimal: null } })
+    }
+    expect(native).toEqual(original)
   })
 
   it('uses the matching 5.6 variant when the installed catalog predates server-advertised GPT-6 Sol and Luna', () => {
