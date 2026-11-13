@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -24,6 +24,7 @@ vi.mock('@earendil-works/pi-ai/providers/openai-codex', async original => {
 describe('complete Codex Connect Loader shutdown', () => {
   it('cancels an active native WS request before its plugin fiber finishes unloading', async () => {
     const prefix = fileURLToPath(new URL('../.tmp/ws-loader-', import.meta.url))
+    await mkdir(fileURLToPath(new URL('../.tmp/', import.meta.url)), { recursive: true })
     const root = await mkdtemp(prefix)
     const server = await createCodexWsFixture('stall')
     const ctx = new Context()
