@@ -3,6 +3,7 @@ node_modules/
 .openai-codex-auth.json
 .playwright-cli/
 /lib/
+/ws-package-candidate/
 .tmp/
 /.vitest-attachments/
 /coverage/

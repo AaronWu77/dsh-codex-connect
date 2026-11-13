@@ -4,45 +4,45 @@ exports[`Codex-owned quota widget > keeps DeepSeek balance, today tokens and bot
 <div
   aria-expanded="false"
   aria-haspopup="dialog"
-  aria-label="Quota & Usage"
+  aria-label="Codex Connect"
   class="cc-usage-widget"
   role="button"
   tabindex="0"
-  title="Quota & Usage"
+  title="Codex Connect"
 >
   <div
     class="cc-usage-widget-head"
   >
-    <svg
+    <span
       aria-hidden="true"
       class="cc-usage-entry-icon"
-      fill="none"
-      height="14"
-      viewBox="0 0 16 16"
-      width="14"
-      xmlns="http://www.w3.org/2000/svg"
     >
-      <path
-        d="M3.49 13.26A6.375 6.375 0 1 1 12.51 13.26"
-        stroke="currentColor"
-        stroke-width="1.25"
-      />
-      <path
-        d="M8 8.75L11.4 5.35"
-        stroke="currentColor"
-        stroke-width="1.25"
-      />
-      <circle
-        cx="8"
-        cy="8.75"
-        fill="currentColor"
-        r="1.55"
-      />
-    </svg>
+      <svg
+        aria-hidden="true"
+        fill="none"
+        focusable="false"
+        height="14"
+        viewBox="0 0 16 16"
+        width="14"
+      >
+        <path
+          d="M8 1.75 3.25 4.5v7L8 14.25l4.75-2.75v-7L8 1.75Z"
+          stroke="currentColor"
+          stroke-linejoin="round"
+          stroke-width="1.2"
+        />
+        <path
+          d="M8 5.1a2.9 2.9 0 1 0 0 5.8"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.2"
+        />
+      </svg>
+    </span>
     <span
       class="cc-usage-widget-title"
     >
-      Quota & Usage
+      Codex Connect
     </span>
     <span
       aria-hidden="true"

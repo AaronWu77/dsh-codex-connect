@@ -58,4 +58,37 @@ export const usageDialogStyles = `
 .cc-usage-dialog-content { overflow-y: auto; max-height: calc(100dvh - 100px); box-sizing: border-box; padding-right: 20px; }
 .cc-usage-panel { --cc-usage-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--color-blue-500)); display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .cc-usage-status { display: flex; align-items: center; gap: 9px; }
+.cc-recent { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 4px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.cc-recent-head { display: flex; align-items: baseline; gap: 10px; }
+.cc-recent-title { margin: 0; color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 600; }
+.cc-recent-limit { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.cc-recent-list { display: flex; flex-direction: column; gap: 8px; }
+.cc-recent-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "lead metrics" "key metrics" "meta meta"; gap: 4px 12px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
+.cc-recent-row[data-outcome="error"] { border-color: color-mix(in srgb, var(--dsw-alias-status-danger, #dc2626) 35%, var(--dsw-alias-border-l2)); }
+.cc-recent-lead { grid-area: lead; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cc-recent-transport { flex: none; padding: 1px 7px; border-radius: 999px; font-size: 10px; line-height: 16px; font-weight: 600; }
+.cc-recent-transport-ws { color: var(--cc-usage-accent); background: color-mix(in srgb, var(--cc-usage-accent) 14%, transparent); }
+.cc-recent-transport-sse { color: var(--dsw-alias-status-warning, #b45309); background: color-mix(in srgb, var(--dsw-alias-status-warning, #d97706) 16%, transparent); }
+.cc-recent-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 600; }
+.cc-recent-time { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cc-recent-outcome { flex: none; color: var(--dsw-alias-status-danger, #dc2626); background: color-mix(in srgb, var(--dsw-alias-status-danger, #dc2626) 12%, transparent); border-radius: 999px; padding: 1px 6px; font-size: 10px; line-height: 15px; }
+.cc-recent-outcome[data-outcome="aborted"] { color: var(--dsw-alias-label-secondary); background: color-mix(in srgb, var(--dsw-alias-label-secondary) 12%, transparent); }
+.cc-recent-key { grid-area: key; display: flex; align-items: baseline; gap: 6px; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.cc-recent-key-label { color: var(--dsw-alias-label-tertiary); }
+.cc-recent-key-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-recent-metrics { grid-area: metrics; display: grid; grid-template-columns: repeat(2, minmax(62px, auto)); gap: 2px 12px; align-content: start; }
+.cc-recent-metric { display: flex; align-items: baseline; gap: 4px; font-variant-numeric: tabular-nums; }
+.cc-recent-metric-label { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.cc-recent-metric-value { color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 600; }
+.cc-recent-meta { grid-area: meta; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.cc-recent-meta b { color: var(--dsw-alias-label-primary); font-weight: 600; }
+.cc-recent-note { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.cc-recent-empty-hint { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.cc-recent-inline-failure { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.cc-recent-inline-failure .cc-usage-quota-detail-action { margin-left: auto; }
+@media (max-width: 620px) {
+  .cc-recent-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "lead" "key" "metrics" "meta"; }
+  .cc-recent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cc-recent-time { margin-left: 0; }
+}
 `

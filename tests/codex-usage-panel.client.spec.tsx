@@ -5,6 +5,7 @@ import { CodexUsageCapsule, CodexUsagePanel, CodexUsagePanelStore, LocalUsageNot
 import type { CodexUsageInjected } from '../src/client/CodexUsagePanel.tsx'
 import type { LocalUsageSnapshot } from '../src/client/usage-ledger.ts'
 import { LocalUsageStore } from '../src/client/usage-warmup.ts'
+import { RecentRequestsStore } from '../src/client/recent-requests.ts'
 import { CodexManagementOverview } from '../src/client/CodexManagementOverview.tsx'
 import { OpenAICodexAccountStore } from '../src/client/account-store.ts'
 import { resetPlatformBalance } from '../src/client/balance.ts'
@@ -42,7 +43,7 @@ function props(): CodexUsageInjected {
     timeZone: 'Asia/Shanghai', days: { [today]: { tokens: 12345, requests: 7, sessions: 1 } } } }
   const localUsage = { snapshot: () => usageSnapshot, subscribe: () => () => {}, retry: vi.fn() }
   return { t, account, quota: { snapshot: () => quota, subscribe: () => () => {} }, panel: new CodexUsagePanelStore(),
-    localUsage, wide: true }
+    localUsage, recent: new RecentRequestsStore(), wide: true }
 }
 
 describe('Codex-owned quota widget', () => {
@@ -93,17 +94,17 @@ describe('Codex-owned quota widget', () => {
     expect(screen.getByText('¥2.50')).toBeDefined()
     expect(screen.getByText('¥40.00')).toBeDefined()
     expect(injected.panel.snapshot()).toBe(false)
-    fireEvent.click(screen.getByText('Quota & Usage'))
+    fireEvent.click(screen.getByText(en['ov.entry']))
     expect(injected.panel.snapshot()).toBe(true)
   })
   it('keeps the collapsed icon entry and keyboard activation', () => {
     const injected = props()
     const { rerender } = render(<CodexUsageCapsule {...injected} wide={false} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Quota & Usage' }))
+    fireEvent.click(screen.getByRole('button', { name: en['ov.entry'] }))
     expect(injected.panel.snapshot()).toBe(true)
     injected.panel.close()
     rerender(<CodexUsageCapsule {...injected} />)
-    fireEvent.keyDown(screen.getByRole('button', { name: 'Quota & Usage' }), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('button', { name: en['ov.entry'] }), { key: 'Enter' })
     expect(injected.panel.snapshot()).toBe(true)
   })
   it('opens a body-portaled dialog with Escape dismissal, independent of Context', async () => {
@@ -256,7 +257,7 @@ describe('Codex-owned quota widget', () => {
         expect(within(view).queryByText(messages['ov.local.failed'])).toBeNull()
         expect(within(view).queryByRole('button', { name: messages['ov.local.retry'] })).toBeNull()
       }
-      expect(within(dialog).getByRole('status')).toBeDefined()
+      expect(within(dialog).getAllByRole('status').length).toBeGreaterThan(0)
       expect(within(dialog).getByText(localized('ov.quota.remaining', { p: 43 }))).toBeDefined()
     },
   )

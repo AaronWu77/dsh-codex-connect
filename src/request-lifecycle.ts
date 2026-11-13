@@ -1,16 +1,46 @@
 /** Request-owned cancellation and producer settlement for the Codex model adapter. */
+import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { RecentRequestLog, RecentRequestOutcome, RecentRequestTransport } from './recent-requests.ts'
+
+type ConfigTransport = 'auto' | 'sse'
+
+interface UsageTotals {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
 
 interface RequestState {
   signal: AbortSignal
   proxyUrl: string | undefined
   producers: Promise<void>[]
+  startedAt: number
+  provider: string
+  model: string
+  entryId: string
+  recorded: boolean
+  routeLabel?: string | undefined
+  configuredTransport?: ConfigTransport | undefined
+  reasoning?: string | undefined
+  bodyBytes?: number | undefined
+  usage?: UsageTotals | undefined
+  transport?: RecentRequestTransport | undefined
 }
 
 interface ActiveRequest {
   close(): Promise<IteratorResult<StreamChunk>>
+}
+
+/** @param reason - terminal finish reason. @returns the recent-request outcome it represents. */
+function outcomeOf(reason: Extract<StreamChunk, { type: 'finish' }>['reason']): RecentRequestOutcome {
+  if (reason.kind === 'error') return 'error'
+  if (reason.kind === 'aborted') return 'aborted'
+  return 'ok'
 }
 
 /** Own model requests without retaining provider WebSocket sessions between requests. */
@@ -20,10 +50,58 @@ export class OpenAICodexRequestLifecycle {
   private readonly active = new Set<ActiveRequest>()
   private disposal: Promise<void> | undefined
 
-  constructor(private readonly resolveProxyUrl?: () => string | undefined) {}
+  constructor(
+    private readonly resolveProxyUrl?: () => string | undefined,
+    private readonly recentRequests?: RecentRequestLog,
+  ) {}
 
   /** The request's captured proxy and cancellation, including authentication. */
   current(): Readonly<RequestState> | undefined { return this.scope.getStore() }
+
+  /** Record the route label and configured transport for the active request. */
+  noteRoute(routeLabel: string | undefined, transport: ConfigTransport): void {
+    const request = this.scope.getStore()
+    if (request === undefined) return
+    request.routeLabel = routeLabel
+    request.configuredTransport = transport
+  }
+
+  /** Record the serialized payload bytes for the active request. */
+  noteBodyBytes(bytes: number): void {
+    const request = this.scope.getStore()
+    if (request === undefined) return
+    request.bodyBytes = bytes
+    if (request.recorded) this.recentRequests?.update(request.entryId, { bodyBytes: bytes })
+  }
+
+  /** Merge the provider's final usage and transport diagnostics into the active request. */
+  noteResult(message: AssistantMessage): void {
+    const request = this.scope.getStore()
+    if (request === undefined) return
+    const failure = message.diagnostics?.find(diagnostic => diagnostic.type === 'provider_transport_failure')
+    const fallback = failure?.details?.['fallbackTransport'] === 'sse' && failure.details?.['eventsEmitted'] === false
+    const transport: RecentRequestTransport = request.configuredTransport === 'sse' || fallback ? 'sse' : 'ws'
+    request.transport = transport
+    if (message.usage !== undefined) {
+      request.usage = {
+        input: message.usage.input,
+        output: message.usage.output,
+        cacheRead: message.usage.cacheRead,
+        cacheWrite: message.usage.cacheWrite,
+      }
+    }
+    if (request.recorded) {
+      this.recentRequests?.update(request.entryId, {
+        transport,
+        ...request.usage === undefined ? {} : {
+          inputTokens: request.usage.input,
+          outputTokens: request.usage.output,
+          cacheReadTokens: request.usage.cacheRead,
+          cacheWriteTokens: request.usage.cacheWrite,
+        },
+      })
+    }
+  }
 
   /**
    * Await producer termination even when the Host stops consuming its iterator early.
@@ -50,6 +128,12 @@ export class OpenAICodexRequestLifecycle {
           signal: AbortSignal.any([controller.signal, owner.lifetime.signal, ...options.signal === undefined ? [] : [options.signal]]),
           proxyUrl: owner.resolveProxyUrl?.(),
           producers: [],
+          startedAt: Date.now(),
+          provider: options.provider,
+          model: options.model,
+          entryId: randomUUID(),
+          recorded: false,
+          reasoning: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
         }
         const source = owner.scope.run(state, () => stream({ ...options, signal: state.signal })[Symbol.asyncIterator]())
         let finished = false
@@ -69,6 +153,7 @@ export class OpenAICodexRequestLifecycle {
           close() {
             closing ??= (async () => {
               controller.abort('OpenAI Codex request consumer stopped')
+              owner.record(state, 'aborted')
               try {
                 return await owner.scope.run(state, () => source.return?.() ?? Promise.resolve({ done: true as const, value: undefined }))
               } finally {
@@ -98,10 +183,20 @@ export class OpenAICodexRequestLifecycle {
             try {
               const result = await owner.scope.run(state, () => source.next())
               if (!result.done && result.value.type === 'finish') terminalDelivered = true
+              if (!result.done && result.value.type === 'usage') {
+                state.usage = {
+                  input: result.value.usage.inputTokens,
+                  output: result.value.usage.outputTokens,
+                  cacheRead: result.value.usage.cacheReadTokens ?? 0,
+                  cacheWrite: result.value.usage.cacheWriteTokens ?? 0,
+                }
+              }
+              if (!result.done && result.value.type === 'finish') owner.record(state, outcomeOf(result.value.reason))
               if (result.done) await settle()
               return result
             } catch (error) {
               consumerReturned = true
+              owner.record(state, 'error')
               controller.abort('OpenAI Codex model request failed')
               await request.close()
               throw error
@@ -126,5 +221,28 @@ export class OpenAICodexRequestLifecycle {
       if (errors.length > 0) throw new AggregateError(errors, 'OpenAI Codex request cleanup failed')
     })()
     return this.disposal
+  }
+
+  /** Publish one completed request once, including late facts already captured. */
+  private record(state: RequestState, outcome: RecentRequestOutcome): void {
+    if (state.recorded) return
+    state.recorded = true
+    if (this.recentRequests === undefined) return
+    const usage = state.usage
+    this.recentRequests.record({
+      id: state.entryId,
+      startedAt: state.startedAt,
+      provider: state.provider,
+      model: state.model,
+      routeLabel: state.routeLabel ?? state.provider,
+      ...state.reasoning === undefined ? {} : { reasoning: state.reasoning },
+      transport: state.transport ?? (state.configuredTransport === 'sse' ? 'sse' : 'ws'),
+      inputTokens: usage?.input ?? 0,
+      outputTokens: usage?.output ?? 0,
+      cacheReadTokens: usage?.cacheRead ?? 0,
+      cacheWriteTokens: usage?.cacheWrite ?? 0,
+      ...state.bodyBytes === undefined ? {} : { bodyBytes: state.bodyBytes },
+      outcome,
+    })
   }
 }

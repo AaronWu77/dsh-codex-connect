@@ -37,6 +37,7 @@ import {
 } from './model-contract.ts'
 import type { OpenAICodexLiveModel } from './model-catalog.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
+import type { RecentRequestLog } from './recent-requests.ts'
 
 /** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
 export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
@@ -52,6 +53,8 @@ export interface OpenAICodexAdapterExtras {
   catalogLayer?: (accountKey: string | undefined) => OpenAICodexCatalogLayer
   /** Resolve the payload field-name logger for each request; undefined disables logging. */
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined
+  /** Process-local request summaries for the sidebar panel; absent records nothing. */
+  recentRequests?: RecentRequestLog
 }
 
 /** One LLM route this adapter registers and the store account it authenticates as. */
@@ -351,6 +354,8 @@ export interface OpenAICodexPayloadPolicy {
   derivePromptCacheKey?: ((context: PiContext, sessionId: string | undefined) => string | undefined) | undefined
   /** Resolve the field-name logger for each request; undefined disables logging. */
   onPayloadFields?: (() => ((names: readonly string[]) => void) | undefined) | undefined
+  /** Observe the serialized payload byte count for the active request. */
+  onPayloadBytes?: ((bytes: number) => void) | undefined
 }
 
 /**
@@ -399,6 +404,11 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
           const additions: Record<string, unknown> = {}
           if (cacheKey !== undefined) additions['prompt_cache_key'] = cacheKey
           const result = { ...speedPayload, ...additions }
+          if (policy.onPayloadBytes !== undefined) {
+            try { policy.onPayloadBytes(Buffer.byteLength(JSON.stringify(result), 'utf8')) } catch (_error) {
+              // The provider built this payload as JSON; a failed measurement must not alter the request.
+            }
+          }
           logFields?.(Object.keys(result))
           return result
         },
@@ -424,21 +434,30 @@ function requestProvider(
   resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
   requestScope?: SpeedModeRequestScope,
   requests?: OpenAICodexRequestLifecycle,
+  routeLabel?: string,
+  transport: OpenAICodexModelTransport = DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
 ): Provider {
   const nativeStream = provider.streamSimple
   const requestOwned: Provider = {
     ...provider,
     streamSimple(model, context, options) {
+      requests?.noteRoute(routeLabel, transport)
       // Keep the business Session id in payload-policy closures, not PI's socket cache.
       const { sessionId: _sessionId, ...uncached } = options ?? {}
       const stream = nativeStream.call(provider, model, context, options?.transport === 'auto' ? uncached : options)
-      requests?.trackProducer(stream.result())
+      if (requests !== undefined) {
+        requests.trackProducer(stream.result().then(
+          message => { requests.noteResult(message) },
+          () => undefined,
+        ))
+      }
       return stream
     },
   }
   const configured = withOpenAICodexPayloadPolicy(requestOwned, {
     fastMode, requestScope,
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
+    onPayloadBytes: bytes => { requests?.noteBodyBytes(bytes) },
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
   })
   const streamSimple = configured.streamSimple
@@ -522,7 +541,7 @@ export function createOpenAICodexProfile(
     ...requestPolicy?.reasoningEffort === undefined ? {} : { reasoning: requestPolicy.reasoningEffort },
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
     modelErrors,
-    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests)),
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests, route.displayName, requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT)),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -651,7 +670,7 @@ export function createOpenAICodexAdapter(
 ): PiAiAdapter & { dispose(): Promise<void> } {
   const provider = withOpenAICodexAstra(openaiCodexProvider())
   const requestScope = new SpeedModeRequestScope()
-  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl)
+  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl, extras?.recentRequests)
   let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
   let previousKey: unknown
   const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {

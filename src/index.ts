@@ -1,5 +1,7 @@
 import { watchLocalUsage } from './host/usage-watch.ts'
 import type { LocalUsageOptions } from './host/usage-watch.ts'
+import { watchRecentRequests } from './host/recent-requests-route.ts'
+import { RecentRequestLog } from './recent-requests.ts'
 import { registerImageHandleBridge } from './image-handle-bridge.ts'
 import { registerImageInventoryRoute } from './image-inventory-routes.ts'
 import { registerOpenAICodexFastModeDefaults } from './fast-mode-defaults.ts'
@@ -533,6 +535,8 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   // Only currency totals reach the browser; the Host retains the DeepSeek credential.
   watchBalanceChannel(ctx)
   watchLocalUsage(ctx, resolveLocalUsageOptions(config))
+  const recentRequests = new RecentRequestLog()
+  watchRecentRequests(ctx, recentRequests)
   const proxyManager = new OpenAICodexProxyManager()
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
@@ -636,6 +640,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
         // Payload field names only; never the request or response content.
         ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
         : undefined,
+      recentRequests,
     },
   )
   const registration = ctx.llm.registerAdapter([OPENAI_CODEX_PROVIDER], modelAdapter)

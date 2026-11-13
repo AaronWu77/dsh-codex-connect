@@ -1,7 +1,9 @@
 /** Sidebar quota widget and its account usage dialog. */
-import { useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import { UsageIcon } from './UsageIcon.tsx'
+import { CodexSettingsIcon } from './CodexSettingsIcon.tsx'
+import { RecentRequests } from './RecentRequests.tsx'
+import type { RecentRequestsStore } from './recent-requests.ts'
 import type { OpenAICodexAccountStore } from './account-store.ts'
 import type { CodexQuotaService } from './quota-service.ts'
 import { AccountUsage, accountStatusLabel, dotStyle } from './OpenAICodexSettings.tsx'
@@ -50,6 +52,7 @@ export interface CodexUsageInjected {
   quota: CodexQuotaService
   panel: CodexUsagePanelStore
   localUsage?: LocalUsageSource
+  recent: RecentRequestsStore
   wide?: boolean
 }
 
@@ -84,7 +87,7 @@ export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUs
   if (wide !== true) return (
     <button type="button" className="cc-usage-entry cc-usage-entry-rail" title={t('ov.entry')}
       aria-label={t('ov.entry')} aria-haspopup="dialog" aria-expanded={open} onClick={show}>
-      <UsageIcon size={18} className="cc-usage-entry-icon" />
+      <span className="cc-usage-entry-icon" aria-hidden="true"><CodexSettingsIcon size={18} /></span>
     </button>
   )
   return (
@@ -95,7 +98,7 @@ export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUs
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show() }
       }}>
       <div className="cc-usage-widget-head">
-        <UsageIcon size={14} className="cc-usage-entry-icon" />
+        <span className="cc-usage-entry-icon" aria-hidden="true"><CodexSettingsIcon size={14} /></span>
         <span className="cc-usage-widget-title">{t('ov.entry')}</span>
         <span className="cc-usage-widget-more" aria-hidden="true">{String.fromCharCode(0x203a)}</span>
       </div>
@@ -106,7 +109,7 @@ export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUs
 }
 
 /** Shared read-only usage content for the overview tab and the existing dialog. */
-export function CodexUsageOverview({ t, account, quota, localUsage, includeAccountUsage = true, showStatus = true }: Omit<CodexUsageInjected, 'panel' | 'wide'> & { includeAccountUsage?: boolean; showStatus?: boolean }) {
+export function CodexUsageOverview({ t, account, quota, localUsage, recent, includeAccountUsage = true, showStatus = true }: Omit<CodexUsageInjected, 'panel' | 'wide'> & { includeAccountUsage?: boolean; showStatus?: boolean }) {
   const snapshot = useSyncExternalStore(account.subscribe, account.getSnapshot)
   const quotaSnapshot = useSyncExternalStore(quota.subscribe, quota.snapshot)
   const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
@@ -122,14 +125,21 @@ export function CodexUsageOverview({ t, account, quota, localUsage, includeAccou
         <LocalUsageNotice t={t} usage={usage} source={localUsage} />
         <Grid days={currentUsageDays(usage.data, today)} today={today} currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} />
         {includeAccountUsage && quotaSnapshot !== null ? <AccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} /> : null}
+        <RecentRequests t={t} store={recent} />
       </div>
   )
 }
 
 /** Account usage dialog; its entry and read-only interactions remain unchanged. */
 export function CodexUsagePanel(props: CodexUsageInjected) {
-  const { t, panel } = props
+  const { t, panel, recent } = props
   const open = useSyncExternalStore(panel.subscribe, panel.snapshot)
+  useEffect(() => {
+    if (!open) return
+    void recent.refresh()
+    const timer = setInterval(() => { void recent.refresh() }, 5_000)
+    return () => { clearInterval(timer) }
+  }, [open, recent])
   return (
     <Modal open={open} onClose={() => { panel.close() }} title={t('usagePanelTitle')} closeLabel={t('close')}
       className="cc-usage-dialog" contentClassName="cc-usage-dialog-content">

@@ -36,6 +36,7 @@ import type { CodexUsageInjected } from './CodexUsagePanel.tsx'
 import { usageStyles, usageDialogStyles } from './usage-styles.ts'
 import { managementStyles } from './management-styles.ts'
 import { LocalUsageStore } from './usage-warmup.ts'
+import { RecentRequestsStore } from './recent-requests.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   /**
@@ -46,6 +47,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Frame-wide sidebar footer actions. */
     'sidebar.footer.action': { kind: 'list'; scope: 'root' }
+    /** Icon seat beside one Settings section row; declared by the settings shell at runtime. */
+    'settings.section.icon': { kind: 'list'; scope: 'root' }
   }
 
   interface LocaleNamespaceMap {
@@ -77,6 +80,7 @@ export function apply(ctx: ClientContext): void {
   ctx.provide('codexQuota', quota)
   const localUsage = new LocalUsageStore(ctx)
   ctx.effect(() => () => localUsage.dispose(), 'dsh-codex-connect: local usage observation')
+  const recent = new RecentRequestsStore()
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-codex-connect: settings copy')
   const t = ctx.locale.bind(namespace) as OpenAICodexPluginCardInjected['t']
   const describe = ctx.configForms.describe()
@@ -116,7 +120,7 @@ export function apply(ctx: ClientContext): void {
     inject: () => ({ t, account, configScope }),
   }, OpenAICodexModelsCard))
 
-  const usageInjected = (): CodexUsageInjected => ({ t, account, quota, panel, localUsage })
+  const usageInjected = (): CodexUsageInjected => ({ t, account, quota, panel, localUsage, recent })
 
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
