@@ -1,9 +1,18 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 // The install checker is plain Node tooling, outside the TypeScript source build.
 // @ts-expect-error JavaScript helper has no declaration file.
 import { resolveExactDshOverrides } from '../scripts/exact-dsh-fixture.mjs'
 
 describe('exact DSH install fixture', () => {
+  it('pins the profile graph as well as the CLI graph and explicitly denies SDK build scripts', async () => {
+    const installer = await readFile(new URL('../scripts/check-dsh-install.mjs', import.meta.url), 'utf8')
+    expect(installer).toContain('overrides: ${JSON.stringify(overrides)}')
+    expect(installer).toContain("'@google/genai': false")
+    expect(installer).toContain('protobufjs: false')
+    expect(installer).not.toContain('dangerouslyAllowAllBuilds')
+  })
+
   it('pins transitive and peer DSH packages despite floating ranges, without pinning third parties', async () => {
     const seen: string[] = []
     const version = '0.1.5-alpha.1'
