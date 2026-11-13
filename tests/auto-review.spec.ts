@@ -1,7 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -433,12 +432,17 @@ describe('Auto-review local file preflight', () => {
     await expect(resolveAutoReviewPreflight(f.request('write', { file_path: 'dangling', content: 'Fixture.' }), 'workspace-files', new AbortController().signal)).resolves.toMatchObject({ kind: 'human' })
   })
 
-  it('rejects an existing ancestor junction by canonical containment without reading its target', async ({ skip }) => {
+  it('rejects an existing ancestor link by canonical containment without reading its target', async () => {
     await using f = await fixture()
-    const workspaceRoot = fileURLToPath(new URL('../node_modules/@deepseek-ai/', import.meta.url))
+    const workspaceRoot = join(f.root, 'dependency-view')
+    const externalPackage = join(f.root, 'external-package')
+    await mkdir(workspaceRoot)
+    await mkdir(join(externalPackage, 'src'), { recursive: true })
+    await writeFile(join(externalPackage, 'src', 'index.ts'), 'Outside the original workspace.')
+    await symlink(externalPackage, join(workspaceRoot, 'dsh-working-directory'), process.platform === 'win32' ? 'junction' : 'dir')
     const path = 'dsh-working-directory/src/index.ts'
     const ancestor = await f.ctx.fs.lstat('dsh-working-directory', { cwd: workspaceRoot })
-    if (ancestor?.type !== 'symlink') skip('The named isolated dependency view is not a symlink or junction on this host')
+    expect(ancestor?.type).toBe('symlink')
     expect((await f.ctx.fs.lstat(path, { cwd: workspaceRoot }))?.type).toBe('file')
     const workspace = await f.ctx.fs.resolve(workspaceRoot)
     const target = await f.ctx.fs.resolve(path, { cwd: workspaceRoot })

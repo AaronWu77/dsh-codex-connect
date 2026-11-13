@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vitest/config'
+import { localHostResolution } from './tests/support/local-host-resolution.ts'
 import { playwright } from '@vitest/browser-playwright'
 
 const packageVersion = (JSON.parse(
@@ -7,6 +8,7 @@ const packageVersion = (JSON.parse(
 ) as { version: string }).version
 
 export default defineConfig({
+  plugins: localHostResolution(new URL('./local-host-validation.json', import.meta.url)),
   define: {
     __CODEX_CONNECT_VERSION__: JSON.stringify(packageVersion),
   },
