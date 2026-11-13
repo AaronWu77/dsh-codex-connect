@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RecentRequests } from '../src/client/RecentRequests.tsx'
 import { RecentRequestsStore, recentRequestsOf } from '../src/client/recent-requests.ts'
 import type { RecentRequestView } from '../src/client/recent-requests.ts'
-import { en } from '../src/client/locales.ts'
+import { en, zh } from '../src/client/locales.ts'
 import type { OpenAICodexSettingsKey } from '../src/client/locales.ts'
 
 const ROUTE = '/api/dsh-codex-connect/recent-requests'
@@ -81,6 +81,18 @@ describe('recent request section', () => {
     expect(screen.getByText('274.18K')).toBeDefined()
     expect(screen.getByText('xhigh')).toBeDefined()
     expect(screen.getByText('1.00 MiB')).toBeDefined()
+  })
+
+  it('keeps English compact units and metric labels in the Chinese UI', async () => {
+    const store = new RecentRequestsStore()
+    const zhT = (key: OpenAICodexSettingsKey): string => zh[key]
+    render(<RecentRequests t={zhT} store={store} />)
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ requests: [view({ inputTokens: 300_700, outputTokens: 317 })] }))
+    await act(async () => { await store.refresh() })
+    expect(screen.getByText('300.7K')).toBeDefined()
+    expect(screen.getByText('317')).toBeDefined()
+    expect(screen.getByText(zh['ov.recent.in'])).toBeDefined()
+    expect(screen.queryByText('30.07万')).toBeNull()
   })
 
   it('labels an SSE fallback as Stream and retains rows when a later refresh fails', async () => {

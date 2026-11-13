@@ -8,10 +8,10 @@ interface RecentRequestsProps {
   store: RecentRequestsStore
 }
 
-/** @param value - token count. @param locale - display locale. @returns compact token text. */
-function formatTokens(value: number, locale: string): string {
+/** @param value - token count. @returns compact English-unit token text (K/M/B) regardless of UI locale. */
+function formatTokens(value: number): string {
   if (value === 0) return '0'
-  return new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 2 }).format(value)
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(value)
 }
 
 /** @param value - byte count. @returns a binary byte label. */
@@ -60,10 +60,10 @@ function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequ
       <span className="cc-recent-key-value" title={request.routeLabel}>{request.routeLabel}</span>
     </div>
     <div className="cc-recent-metrics" aria-label={t('ov.recent.metrics')}>
-      <Metric label={t('ov.recent.in')} value={formatTokens(request.inputTokens, locale)} />
-      <Metric label={t('ov.recent.out')} value={formatTokens(request.outputTokens, locale)} />
-      <Metric label={t('ov.recent.cacheW')} value={formatTokens(request.cacheWriteTokens, locale)} />
-      <Metric label={t('ov.recent.cacheR')} value={formatTokens(request.cacheReadTokens, locale)} />
+      <Metric label={t('ov.recent.in')} value={formatTokens(request.inputTokens)} />
+      <Metric label={t('ov.recent.out')} value={formatTokens(request.outputTokens)} />
+      <Metric label={t('ov.recent.cacheW')} value={formatTokens(request.cacheWriteTokens)} />
+      <Metric label={t('ov.recent.cacheR')} value={formatTokens(request.cacheReadTokens)} />
     </div>
     <div className="cc-recent-meta">
       <span>{t('ov.recent.reasoning')} <b>{request.reasoning ?? '—'}</b></span>
