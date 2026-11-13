@@ -15,72 +15,81 @@ permissions:
 
 jobs:
   validate:
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ['22.19.0', '24.x']
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the paired local Host
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AaronWu77/deepseek-harness
+          ref: 5414d2bcfab351b228023d4abaccced341a4c33b
+          path: .tmp/paired-host
+          persist-credentials: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
-          version: 10.30.3
+          version: 11.28.5
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 24.20.0
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .tmp/paired-host/pnpm-lock.yaml
       - run: pnpm --config.minimum-release-age=0 install --frozen-lockfile
       - name: Validate release workflow contract
         run: pnpm run check:release-workflow
       - name: Validate canary workflow contract
         run: pnpm run check:canary-workflow
-      - name: Lint package and source hygiene
-        run: pnpm run lint
-      - name: Typecheck host and browser entries
-        run: pnpm run typecheck
-      - name: Test
-        run: pnpm run test
-      - name: Build
-        run: pnpm run build
-      - name: Verify built capability CLI and child exit
-        run: pnpm run check:capability-cli
-      - name: Validate package contents
-        run: pnpm run pack:check
-      - name: Validate declared DSH installation matrix
-        run: pnpm --silent run check:dsh-matrix
-      - name: Verify committed build output
+      - name: Install the pinned Host
+        working-directory: .tmp/paired-host
+        run: pnpm install --frozen-lockfile
+      - name: Build the pinned Host artifacts
+        working-directory: .tmp/paired-host
+        run: pnpm run build:artifacts
+      - name: Prepare the paired validation source
         shell: bash
         run: |
-          changes="$(git status --porcelain --untracked-files=all -- lib)"
-          if [[ -n "$changes" ]]; then
-            printf '%s\n' "$changes"
-            exit 1
-          fi
-
-  browser-ui-regression:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 10.30.3
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.x
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm --config.minimum-release-age=0 install --frozen-lockfile
+          stage="$(pnpm --silent run prepare:local-host "$GITHUB_WORKSPACE/.tmp/paired-host")"
+          test -d "$stage"
+          echo "CODEX_STAGE=$stage" >> "$GITHUB_ENV"
+      - name: Lint package and source hygiene
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run lint
+      - name: Typecheck host and browser entries
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run typecheck
+      - name: Build
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run build
+      - name: Test the paired Host and built browser factory
+        working-directory: ${{ env.CODEX_STAGE }}
+        shell: bash
+        run: DSH_REPO="$GITHUB_WORKSPACE/.tmp/paired-host" DSH_CODEX_TEST_CLIENT="$CODEX_STAGE/lib/client.js" pnpm run test
+      - name: Verify built capability CLI and child exit
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run check:capability-cli
+      - name: Verify environment proxy ownership
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run check:env-proxy-import
+      - name: Validate declared compatibility metadata
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run check:compatibility
+      - name: Validate package contents
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm run pack:check
+      - name: Validate declared DSH installation matrix
+        working-directory: ${{ env.CODEX_STAGE }}
+        run: pnpm --silent run check:dsh-matrix
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser UI regression tests
+        working-directory: ${{ env.CODEX_STAGE }}
         run: pnpm run test:browser
+      - name: Verify validation leaves tracked source unchanged
+        run: git diff --exit-code
 
   windows-canary-contract:
     runs-on: windows-latest

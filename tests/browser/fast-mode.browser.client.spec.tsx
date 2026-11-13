@@ -6,6 +6,7 @@ import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selec
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { OpenAICodexFastModeToggle } from '../../src/client/OpenAICodexFastModeToggle.tsx'
 import { OPENAI_CODEX_FAST_MODE_PATH } from '../../src/fast-mode-paths.ts'
+import { OPENAI_CODEX_SPEED_MODE_PATH } from '../../src/speed-mode-contract.ts'
 import { en, zh } from '../../src/client/locales.ts'
 
 let root: Root | undefined
@@ -13,7 +14,7 @@ let host: HTMLDivElement | undefined
 afterEach(() => { root?.unmount(); host?.remove(); root = undefined; host = undefined; vi.unstubAllGlobals() })
 
 describe('Codex account Fast Mode in Chromium', () => {
-  it.each([['openai-codex', en], ['openai-codex-2', en], ['openai-codex-16', zh]] as const)('toggles conversation state on %s without changing account or model', async (provider, labels) => {
+  it.each([['openai-codex', en], ['openai-codex-2', en], ['openai-codex-16', zh]] as const)('toggles legacy conversation state on %s without changing account or model', async (provider, labels) => {
     const sessionId = 'fast-mode-browser-fixture'
     const fetchMock = vi.fn(async (url: RequestInfo | URL, options?: RequestInit) => {
       if (options?.method === 'POST') return Response.json({ enabled: true })
@@ -21,7 +22,7 @@ describe('Codex account Fast Mode in Chromium', () => {
       return Response.json({ enabled: false })
     })
     vi.stubGlobal('fetch', fetchMock)
-    const state: ModelDirectoryState = { status: 'ready', current: { provider, model: 'gpt-6.1-sol' }, groups: [], failures: [], routable: true, pending: null, error: null }
+    const state: ModelDirectoryState = { status: 'ready', current: { provider, model: 'gpt-5.6-sol' }, groups: [], failures: [], routable: true, pending: null, error: null }
     const directory = createSnapshotStore(state)
     host = document.createElement('div')
     document.body.append(host)
@@ -33,13 +34,43 @@ describe('Codex account Fast Mode in Chromium', () => {
     await button.click()
     await expect.element(button).toHaveAttribute('aria-pressed', 'true')
     expect(fetchMock).toHaveBeenLastCalledWith(OPENAI_CODEX_FAST_MODE_PATH, expect.objectContaining({ method: 'POST', body: JSON.stringify({ sessionId, enabled: true }) }))
-    expect(directory.getSnapshot().current).toEqual({ provider, model: 'gpt-6.1-sol' })
+    expect(directory.getSnapshot().current).toEqual({ provider, model: 'gpt-5.6-sol' })
+  })
+
+  it.each([['openai-codex', en], ['openai-codex-2', en], ['openai-codex-16', zh]] as const)('selects revisioned speed on %s without changing the model directory', async (provider, labels) => {
+    const sessionId = 'speed-mode-browser-fixture', model = 'gpt-6.1-sol'
+    const state = { generation: 'browser-generation', revision: 0, provider, model, mode: 'standard',
+      modelSupported: true, eligibility: 'unknown', hasAccount: true, selectionAvailable: true, selectionExpired: false }
+    const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        expect(String(url)).toBe(OPENAI_CODEX_SPEED_MODE_PATH)
+        expect(JSON.parse(String(init.body))).toEqual({ sessionId, provider, model, generation: state.generation, revision: 0, mode: 'fast' })
+        return Response.json({ ...state, mode: 'fast', revision: 1 })
+      }
+      const query = new URL(String(url), location.origin).searchParams
+      expect(query.get('provider')).toBe(provider)
+      expect(query.get('model')).toBe(model)
+      expect(query.get('sessionId')).toBe(sessionId)
+      return Response.json(state)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const snapshot: ModelDirectoryState = { status: 'ready', current: { provider, model }, groups: [], failures: [], routable: true, pending: null, error: null }
+    const directory = createSnapshotStore(snapshot)
+    host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+    root.render(createElement(OpenAICodexFastModeToggle, { directory, sessionId, t: key => labels[key] }))
+    const trigger = page.getByRole('button', { name: labels.speedMenuStandardTitle, exact: true })
+    await expect.element(trigger).toBeEnabled()
+    await trigger.click()
+    await page.getByRole('menuitemradio', { name: labels.speedFast, exact: true }).click()
+    await expect.element(page.getByRole('button', { name: labels.speedMenuFastTitle, exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(directory.getSnapshot().current).toEqual({ provider, model })
   })
 
   it('does not show or fetch Codex controls for a lookalike provider', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const state: ModelDirectoryState = { status: 'ready', current: { provider: 'custom-route-2', model: 'gpt-6.1-sol' }, groups: [], failures: [], routable: true, pending: null, error: null }
+    const state: ModelDirectoryState = { status: 'ready', current: { provider: 'custom-route-2', model: 'gpt-5.6-sol' }, groups: [], failures: [], routable: true, pending: null, error: null }
     host = document.createElement('div')
     document.body.append(host)
     root = createRoot(host)

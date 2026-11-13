@@ -27,8 +27,8 @@ describe('Quota widget and usage dialog in Chromium', () => {
     account = new OpenAICodexAccountStore()
     const panel = new CodexUsagePanelStore()
     const snapshot = { windows: [], accounts: [
-      { accountKey: 'one', label: 'First account', active: true, windows: [{ bucketId: 'main', remainingPercent: 43, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 82, windowSeconds: 604800 }], resetCredits: { availableCount: 2, credits: [{ id: 'one-a', expiresAt: Math.floor(Date.now() / 1000) + 86_400 }] } },
-      { accountKey: 'two', label: 'Second account', active: false, windows: [{ bucketId: 'main', remainingPercent: 91, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 95, windowSeconds: 604800 }], resetCredits: { availableCount: 3, credits: [{ id: 'two-a', expiresAt: Math.floor(Date.now() / 1000) + 172_800 }] } },
+      { accountKey: 'one', label: 'First account', active: true, windows: [{ bucketId: 'main', remainingPercent: 43, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 82, windowSeconds: 604800 }], resetCredits: { availableCount: 2, credits: [{ id: 'one-a', resetType: 'codex_rate_limits', status: 'available', grantedAt: Math.floor(Date.now() / 1000) - 86_400, expiresAt: Math.floor(Date.now() / 1000) + 86_400 }] } },
+      { accountKey: 'two', label: 'Second account', active: false, windows: [{ bucketId: 'main', remainingPercent: 91, windowSeconds: 18000 }, { bucketId: 'main', remainingPercent: 95, windowSeconds: 604800 }], resetCredits: { availableCount: 3, credits: [{ id: 'two-a', resetType: 'codex_rate_limits', status: 'available', grantedAt: Math.floor(Date.now() / 1000) - 86_400, expiresAt: Math.floor(Date.now() / 1000) + 172_800 }] } },
       { accountKey: 'three', label: 'Third account', active: false, windows: [{ bucketId: 'main', remainingPercent: 99, windowSeconds: 604800 }], resetCredits: { availableCount: 1, credits: [] } },
     ] }
     const quota = { snapshot: () => snapshot, subscribe: () => () => {} }

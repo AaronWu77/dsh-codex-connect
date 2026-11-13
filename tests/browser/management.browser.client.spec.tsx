@@ -8,8 +8,8 @@ import { en, zh } from '../../src/client/locales.ts'
 import { managementStyles } from '../../src/client/management-styles.ts'
 import { usageStyles, usageDialogStyles } from '../../src/client/usage-styles.ts'
 import { resetPlatformBalance } from '../../src/client/balance.ts'
-import baseCss from '../../../../../packages/client/ui-theme/src/styles/base.css?raw'
-import themeCss from '../../../../../packages/client/ui-theme/src/styles/design-platform.css?raw'
+import baseCss from './fixtures/base.css?raw'
+import themeCss from './fixtures/design-platform.css?raw'
 import { vi } from 'vitest'
 
 let root: Root | undefined

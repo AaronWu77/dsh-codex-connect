@@ -240,6 +240,12 @@ async function main() {
       web: configBlock(beforeDump.stdout, 'web'),
     }
 
+    // These SDKs need no lifecycle script for the keyless fixture. Explicitly deny
+    // only their scripts; pnpm 11 rejects an unreviewed build even when it skips it.
+    const profileRoot = join(dshHome, 'profiles', 'web')
+    await mkdir(profileRoot, { recursive: true })
+    await writeFile(join(profileRoot, 'pnpm-workspace.yaml'), "packages:\n  - .\n\nallowBuilds:\n  '@google/genai': false\n  protobufjs: false\n")
+
     const add = await runCommand(dshBinary, [
       'plugin', '--profile', 'web', 'add', pluginSpec,
     ], { cwd: workspace, env })

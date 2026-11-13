@@ -2,7 +2,13 @@
 
 import type WebRuntime from '@deepseek-ai/dsh-web'
 
-function readSearchProvider(web: WebRuntime): string | undefined {
+/** Optional search-selection extension supplied by the local Host fork. */
+type SearchRouteRuntime = WebRuntime & {
+  getSearchProvider?: () => string | undefined
+  setSearchProvider?: (provider: string | undefined) => void
+}
+
+function readSearchProvider(web: SearchRouteRuntime): string | undefined {
   if (typeof web.getSearchProvider !== 'function' || typeof web.setSearchProvider !== 'function') {
     throw new Error('The installed DeepSeek Harness does not expose the supported search route API')
   }
@@ -13,7 +19,7 @@ function readSearchProvider(web: WebRuntime): string | undefined {
   return value
 }
 
-function writeSearchProvider(web: WebRuntime, provider: string | undefined): void {
+function writeSearchProvider(web: SearchRouteRuntime, provider: string | undefined): void {
   if (typeof web.setSearchProvider !== 'function') {
     throw new Error('The installed DeepSeek Harness does not expose the supported search route API')
   }
@@ -30,7 +36,7 @@ function writeSearchProvider(web: WebRuntime, provider: string | undefined): voi
  * @param provider - registered provider id selected while the capability is enabled.
  * @returns disposer that restores the route observed before selection.
  */
-export function selectOpenAICodexSearchRoute(web: WebRuntime, provider: string): () => void {
+export function selectOpenAICodexSearchRoute(web: SearchRouteRuntime, provider: string): () => void {
   const previous = readSearchProvider(web)
   writeSearchProvider(web, provider)
   let active = true

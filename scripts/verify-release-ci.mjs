@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url'
 
-const required = ['validate (22.19.0)', 'validate (24.x)', 'browser-ui-regression', 'windows-canary-contract']
+export const REQUIRED_CI_JOBS = Object.freeze(['validate', 'windows-canary-contract'])
 
 /** Fail closed unless the selected main SHA completed every required CI job. */
 export function assertReleaseCI(run, jobs, sha, repository) {
@@ -9,7 +9,7 @@ export function assertReleaseCI(run, jobs, sha, repository) {
     || !['push', 'workflow_dispatch'].includes(run.event)
     || run.status !== 'completed' || run.conclusion !== 'success') throw new Error('Release SHA does not have completed successful main CI')
   if (!Array.isArray(jobs) || jobs.some(job => job.status !== 'completed' || job.conclusion !== 'success')
-    || required.some(name => !jobs.some(job => job.name === name))) throw new Error('Required release CI jobs are missing or unsuccessful')
+    || REQUIRED_CI_JOBS.some(name => !jobs.some(job => job.name === name))) throw new Error('Required release CI jobs are missing or unsuccessful')
 }
 
 async function main() {

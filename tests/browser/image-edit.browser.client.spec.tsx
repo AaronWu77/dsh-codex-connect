@@ -1,18 +1,18 @@
 import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { CodexImageEditForm } from '../../src/client/CodexImageEditForm.tsx'
 import { en, zh } from '../../src/client/locales.ts'
 import type { OpenAICodexSettingsKey } from '../../src/client/locales.ts'
 import type { ImagePresentationMeta } from '../../src/image-presentation.ts'
-import baseCss from '../../../../../packages/client/ui-theme/src/styles/base.css?raw'
-import themeCss from '../../../../../packages/client/ui-theme/src/styles/design-platform.css?raw'
+import baseCss from './fixtures/base.css?raw'
+import themeCss from './fixtures/design-platform.css?raw'
 
 const original = { assetId: 'img_' + 'a'.repeat(32), mediaType: 'image/png' as const, width: 4096, height: 2048, bytes: 3, name: 'same.png', sha256: 'b'.repeat(64) }
-const preview = { attachmentId: AttachmentId('sha256:preview'), mediaType: 'image/png' as const, width: 100, height: 50, bytes: 3, name: 'same.png' }
-const upload = { ...preview, attachmentId: AttachmentId('sha256:upload'), originalDimensions: { width: 200, height: 100 } }
+const preview = { attachmentId: 'sha256:preview' as AttachmentId, mediaType: 'image/png' as const, width: 100, height: 50, bytes: 3, name: 'same.png' }
+const upload = { ...preview, attachmentId: 'sha256:upload' as AttachmentId, originalDimensions: { width: 200, height: 100 } }
 const decoded: ImagePresentationMeta = { kind: 'codex-connect-images', schemaVersion: 1, prompt: 'old result', images: [{ original, preview }] }
 let root: Root | undefined
 let host: HTMLElement | undefined

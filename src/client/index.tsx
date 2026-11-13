@@ -47,8 +47,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Frame-wide sidebar footer actions. */
     'sidebar.footer.action': { kind: 'list'; scope: 'root' }
-    /** Icon seat beside one Settings section row; declared by the settings shell at runtime. */
-    'settings.section.icon': { kind: 'list'; scope: 'root' }
   }
 
   interface LocaleNamespaceMap {

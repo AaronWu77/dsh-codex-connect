@@ -1,10 +1,14 @@
-import { spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { runBoundedCommand } from './bounded-command.mjs'
 
-const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
-  cwd: new URL('..', import.meta.url),
-  encoding: 'utf8',
+const result = await runBoundedCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+  cwd: fileURLToPath(new URL('..', import.meta.url)),
+  timeoutMs: 60_000,
 })
+if (result.error !== undefined) throw result.error
+if (result.cleanupError !== undefined) throw result.cleanupError
+if (result.signal !== null) throw new Error(`npm pack was interrupted by ${result.signal}`)
 if (result.status !== 0) {
   process.stderr.write(result.stderr)
   process.exit(result.status ?? 1)

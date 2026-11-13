@@ -11,29 +11,41 @@ afterEach(async () => {
 })
 
 describe('supported DSH search route override', () => {
-  it('selects Codex and restores the previous provider idempotently', async () => {
+  it('selects and restores idempotently, or rejects an unextended Host', async () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(WebRuntime, { searchProvider: 'deepseek-official' })
 
-    const restore = selectOpenAICodexSearchRoute(ctx.web, 'openai-codex')
-    expect(ctx.web.getSearchProvider()).toBe('openai-codex')
+    const web: Parameters<typeof selectOpenAICodexSearchRoute>[0] = ctx.web
+    if (typeof web.getSearchProvider !== 'function' || typeof web.setSearchProvider !== 'function') {
+      expect(() => selectOpenAICodexSearchRoute(web, 'openai-codex'))
+        .toThrow('does not expose the supported search route API')
+      return
+    }
+    const restore = selectOpenAICodexSearchRoute(web, 'openai-codex')
+    expect(web.getSearchProvider()).toBe('openai-codex')
 
     restore()
     restore()
-    expect(ctx.web.getSearchProvider()).toBe('deepseek-official')
+    expect(web.getSearchProvider()).toBe('deepseek-official')
   })
 
-  it('does not overwrite a later route selected by another owner', async () => {
+  it('preserves another owner, or rejects an unextended Host', async () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(WebRuntime, { searchProvider: 'deepseek-official' })
 
-    const restore = selectOpenAICodexSearchRoute(ctx.web, 'openai-codex')
-    ctx.web.setSearchProvider('new-owner')
+    const web: Parameters<typeof selectOpenAICodexSearchRoute>[0] = ctx.web
+    if (typeof web.getSearchProvider !== 'function' || typeof web.setSearchProvider !== 'function') {
+      expect(() => selectOpenAICodexSearchRoute(web, 'openai-codex'))
+        .toThrow('does not expose the supported search route API')
+      return
+    }
+    const restore = selectOpenAICodexSearchRoute(web, 'openai-codex')
+    web.setSearchProvider('new-owner')
     restore()
 
-    expect(ctx.web.getSearchProvider()).toBe('new-owner')
+    expect(web.getSearchProvider()).toBe('new-owner')
   })
 
   it('rejects an unsupported runtime before changing it', () => {

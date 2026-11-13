@@ -10,9 +10,9 @@ const COMPATIBILITY_FILE = join(REPO_ROOT, 'compatibility.json')
 const PACKAGE_FILE = join(REPO_ROOT, 'package.json')
 const JSON_SCHEMA_VERSION = 1
 const REQUIRED_NODE_RANGE = '^22.19.0 || >=24.0.0'
-const REQUIRED_DSH_VERSION = '0.2.1-rc.2'
-const REQUIRED_DSH_VERSIONS = [REQUIRED_DSH_VERSION]
-const REQUIRED_DSH_RANGE = REQUIRED_DSH_VERSIONS.join(' || ')
+const REQUIRED_DSH_VERSION = '0.2.2-rc.1'
+const REQUIRED_DSH_VERSIONS = [REQUIRED_DSH_VERSION, '0.2.1-rc.2']
+const REQUIRED_DSH_RANGE = [...REQUIRED_DSH_VERSIONS].reverse().join(' || ')
 const REQUIRED_PI_AI_RANGE = '1.4.0'
 const REQUIRED_HOST_PI_AI_VERSION = '1.4.0'
 const PI_AI_PACKAGE = '@earendil-works/pi-ai'
@@ -129,7 +129,7 @@ async function main() {
   if (installedPiAi === undefined || piAiStatus(installedPiAi) !== 'compatible') {
     fail(`installed ${PI_AI_PACKAGE} does not match ${REQUIRED_PI_AI_RANGE}`)
   }
-  const pairedPiAi = installedDshVersion === REQUIRED_DSH_VERSION && installedPiAi === REQUIRED_PI_AI_RANGE
+  const pairedPiAi = REQUIRED_DSH_VERSIONS.includes(installedDshVersion) && installedPiAi === REQUIRED_PI_AI_RANGE
   if (!pairedPiAi) {
     fail('installed DSH and pi-ai versions do not form a declared pair')
   }

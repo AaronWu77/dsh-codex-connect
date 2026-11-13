@@ -38,7 +38,7 @@ description: "在 DeepSeek Harness 中使用 ChatGPT OAuth 账号与 Codex 模�
 
 Codex Connect 为标准 Harness agent loop 添加 `openai-codex` 模型提供方。工具、权限、审批、附件、会话持久化、压缩与恢复继续由 Harness 管理。安装插件不会改变默认模型或搜索路由，也不会把 ChatGPT 订阅变成 OpenAI Platform API Key。
 
-本 checkout 是本地适配 DSH `0.2.1-rc.2` 的私有升级候选，不是已发布的版本组合。Codex 请求 PI 与 `pi-ai-host` 事件流 alias 均以精确的 PI `1.4.0` 为目标；带本地补丁的 OAuth 实现仍固定使用 PI `0.84.4` 源码。其他 DSH/PI 组合不在声明范围内。[rc.2 候选证据](rc2-candidate-validation.md)记录的是此前请求 PI `0.87.1` 与 Host alias `1.1.0` 的基线，不能证明本次升级可用。版本相符与无需密钥的本地检查不能证明真实 OAuth、推理、浏览器行为或活动 profile 可用。下方已发布安装指南及验证历史保持不变。
+本 checkout 面向已构建的本地 DSH `0.2.2-rc.1` fork，不是已发布的版本组合。Host 运行时与类型声明都必须具有搜索路由访问器、Agent 模型访问、工具批次执行和 Session 摘要投影 API。包元数据保留既有 npm 版本范围；仅版本相符不能证明这些 npm 版本已通过验证。Codex 请求 PI 与 `pi-ai-host` 事件流 alias 均以精确的 PI `1.4.0` 为目标；带本地补丁的 OAuth 实现仍固定使用 PI `0.84.4` 源码。[rc.2 候选证据](rc2-candidate-validation.md)记录的是此前基线。无需密钥的本地检查不能证明真实 OAuth、推理、浏览器行为或活动 profile 可用。下方已发布安装指南及验证历史保持不变。
 
 此私有 checkout 还包含选择性移植的本地审核、速度/推理默认值和仅原图恢复。应用前请阅读[本地集成与迁移限制](local-feature-update.zh.md)；修改候选并不代表运行中的 profile 已安装这些功能。
 
@@ -167,6 +167,8 @@ pnpm run check:dsh-install
 ```
 
 `check` 包含静态检查、单元测试、构建、兼容性和打包检查。`lint:metadata` 检查包元数据与发布规则；`lint:source` 检查宿主与浏览器 TypeScript 中未处理或误用的 Promise、无效 await、重复 case 和不可达代码。浏览器回归与隔离 DSH 安装是另外两个命令。这些检查不使用真实 OAuth 授权，也不能替代真实账户验收。若不替换 `lib/client.js` 而测试隔离的客户端构建产物，请将 `DSH_CODEX_TEST_CLIENT` 设为其路径，再运行 `pnpm exec vitest run tests/usage-built-client.integration.spec.tsx`；未设置时该测试会跳过。
+
+对于此本地 fork，请先安装本插件的开发工具，并构建目标 Host checkout。在本仓库运行 `pnpm run prepare:local-host <harness-checkout>`。命令会输出唯一且被忽略的 `.tmp` 目录，包含当前源码，并同时为运行时与类型链接该 Host 的包及已安装的第三方工具。在输出目录依次运行 `pnpm run typecheck`、`pnpm test`、`pnpm run build`、`pnpm run lint`、`pnpm run check:compatibility` 和 `pnpm run pack:check`。准备操作不会安装依赖、构建或修改 Host、覆盖本仓库的 `lib` 或 `ws-package-candidate`、修改 profile，也不验证 npm 发布版本。调查失败时请保留该目录及其中的 `local-host-validation.json`。开发基线固定为 npm DSH `0.2.2-rc.1`；本地 Host 验证还会检查 fork 的搜索选择扩展。元数据检查通过不代表已验证任一声明 npm 版本的真实账号兼容性。浏览器布局 fixture 包含固定版本的 Host 主题样式及其 MIT 声明，不依赖相邻的 Harness checkout。CI 会先构建提交 `5414d2bcfab351b228023d4abaccced341a4c33b` 的配套 Host，再准备相同的验证源码。准备快照前请保存全部源码修改和双语记录。
 
 浏览器测试会加载 SDK 的原生客户端 UI 模块；Harness 提供给这些模块的库在本仓库中列为开发依赖。运行前，请用 `pnpm exec playwright install chromium --only-shell` 安装锁文件中 Playwright 所需的 Chromium 构建。
 
