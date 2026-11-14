@@ -3,6 +3,8 @@ import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-w
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { RecentRequestLog } from '../src/recent-requests.ts'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { createOpenAICodexProfile } from '../src/adapter.ts'
 import { OpenAICodexRequestLifecycle } from '../src/request-lifecycle.ts'
@@ -18,27 +20,36 @@ import { createCodexWsFixture } from './support/codex-ws-fixture.ts'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
 
-function fixtureAdapter(url: string, proxy?: OpenAICodexProxyManager, proxyUrl?: () => string | undefined) {
+function fixtureAdapter(url: string, proxy?: OpenAICodexProxyManager, proxyUrl?: () => string | undefined, observed?: {
+  model: string; transport: 'auto' | 'sse'; log: RecentRequestLog; provider?: 'openai-codex' | 'openai-codex-2'
+}) {
   const original = openaiCodexProvider()
-  const model = { ...original.getModels()[0]!, baseUrl: url }
+  const selected = observed === undefined ? original.getModels()[0] : original.getModels().find(model => model.id === observed.model)
+  if (selected === undefined) throw new Error('The offline model must exist in the pinned Codex catalog')
+  const model = { ...selected, baseUrl: url }
   const provider = { ...original, getModels: () => [model] }
-  const requests = new OpenAICodexRequestLifecycle(proxyUrl)
-  const profile = createOpenAICodexProfile(provider, undefined, proxy, proxyUrl, undefined, undefined, undefined, undefined, undefined,
-    { transport: 'auto', requests })
+  const requests = new OpenAICodexRequestLifecycle(proxyUrl, observed?.log)
+  const routeId = observed?.provider ?? 'openai-codex'
+  const profile = createOpenAICodexProfile(provider, undefined, proxy, proxyUrl, undefined, undefined, { routeId, displayName: 'Offline Codex' }, undefined, undefined,
+    { transport: observed?.transport ?? 'auto', requests })
   const token = `offline.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'offline-account' } })).toString('base64url')}.signature`
-  const profiles = new Map([['openai-codex', profile]])
+  const profiles = new Map([[routeId, profile]])
   const adapter = new PiAiAdapter({
     profiles: () => profiles,
     resolveApiKey: async () => token,
     auth: { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() },
   })
   const options: GenerateOptions = {
-    provider: 'openai-codex', model: model.id, messages: [], sessionId: SessionId('ws-fixture-business'),
+    provider: routeId, model: model.id, messages: [], sessionId: SessionId('ws-fixture-business'),
   }
   return {
     requests,
     options,
     stream(request: GenerateOptions = options) { return requests.stream(input => adapter.stream(input), request) },
+    async *preparedStream(request: GenerateOptions = options) {
+      const prepared = await adapter.prepareCall(request.provider, request.model)
+      yield* requests.stream(input => prepared.stream(input), request)
+    },
   }
 }
 
@@ -165,5 +176,66 @@ describe('Codex request-owned native auto transport', () => {
     await server.waitClosed()
     expect(server.httpRequests).toBe(0)
     await expect(chunksOf(adapter.stream())).rejects.toMatchObject({ code: 'ABORTED' })
+  })
+})
+
+describe.each(['websocket', 'sse', 'fallback'] as const)('Codex serialized reasoning through %s', mode => {
+  async function observedFixture(model = 'gpt-6.1-sol', provider: 'openai-codex' | 'openai-codex-2' = 'openai-codex') {
+    const server = await createCodexWsFixture(mode === 'fallback' ? 'reject' : 'success')
+    cleanup.push(() => server.dispose())
+    const log = new RecentRequestLog()
+    const adapter = fixtureAdapter(server.url, undefined, undefined, {
+      model, transport: mode === 'sse' ? 'sse' : 'auto', log, provider,
+    })
+    cleanup.push(() => adapter.requests.dispose())
+    return { server, log, adapter }
+  }
+
+  it.each(['openai-codex', 'openai-codex-2'] as const)('sends explicit xhigh on %s from direct and prepared calls without configuring a fallback', async provider => {
+    const { server, log, adapter } = await observedFixture('gpt-6.1-sol', provider)
+    const request = { ...adapter.options, reasoningEffort: ReasoningEffortId('xhigh') }
+    for (const stream of [adapter.stream(request), adapter.preparedStream(request)]) {
+      expect((await chunksOf(stream)).at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      await server.waitClosed()
+    }
+    expect(server.payloads).toHaveLength(2)
+    for (const payload of server.payloads) {
+      expect(payload['model']).toBe('gpt-6.1-sol')
+      expect(payload['reasoning']).toMatchObject({ effort: 'xhigh' })
+      expect(payload['reasoning_effort']).toBeUndefined()
+      expect(payload['type']).toBe(mode === 'websocket' ? 'response.create' : undefined)
+    }
+    expect(log.snapshot().map(entry => entry.reasoning)).toEqual(['xhigh', 'xhigh'])
+    expect(log.snapshot().map(entry => entry.payloadReasoning)).toEqual(['xhigh', 'xhigh'])
+    expect(server.httpRequests).toBe(mode === 'websocket' ? 0 : 2)
+    expect(server.upgrades).toBe(mode === 'sse' ? 0 : 2)
+  })
+
+  it('leaves effort absent when neither the caller nor this model chooses one', async () => {
+    const { server, log, adapter } = await observedFixture()
+    expect((await chunksOf(adapter.stream())).at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    await server.waitClosed()
+    expect(server.payloads).toHaveLength(1)
+    expect(server.payloads[0]?.['reasoning']).toBeUndefined()
+    expect(log.snapshot()[0]?.reasoning).toBeUndefined()
+    expect(log.snapshot()[0]?.payloadReasoning).toBeNull()
+  })
+
+  it('records the mapped wire effort rather than an untransmitted selection', async () => {
+    const { server, log, adapter } = await observedFixture('gpt-5.6-sol')
+    expect((await chunksOf(adapter.stream({ ...adapter.options, reasoningEffort: ReasoningEffortId('minimal') }))).at(-1))
+      .toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    await server.waitClosed()
+    expect(server.payloads[0]?.['reasoning']).toMatchObject({ effort: 'low' })
+    expect(log.snapshot()[0]?.reasoning).toBe('minimal')
+    expect(log.snapshot()[0]?.payloadReasoning).toBe('low')
+  })
+  it('rejects an unsupported selection before either transport sends a request', async () => {
+    const { server, adapter } = await observedFixture()
+    await expect(chunksOf(adapter.stream({ ...adapter.options, reasoningEffort: ReasoningEffortId('minimal') })))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    expect(server.upgrades).toBe(0)
+    expect(server.httpRequests).toBe(0)
+    expect(server.payloads).toEqual([])
   })
 })

@@ -52,6 +52,22 @@ describe('recent request parsing', () => {
     expect(parsed[0]?.kind).toBe('conversation')
   })
 
+  it.each(['low', null])('preserves prepared effort %s separately from the original request selection', payloadReasoning => {
+    const [parsed] = recentRequestsOf({ requests: [view({ reasoning: 'minimal', payloadReasoning })] })
+    expect(parsed).toMatchObject({ reasoning: 'minimal', payloadReasoning })
+  })
+
+  it('accepts legacy rows without payload metadata and ignores invalid metadata without losing the row', () => {
+    const [legacy] = recentRequestsOf({ requests: [view()] })
+    expect(legacy?.reasoning).toBe('xhigh')
+    expect(legacy).not.toHaveProperty('payloadReasoning')
+    for (const payloadReasoning of [42, false, {}, []]) {
+      const [parsed] = recentRequestsOf({ requests: [{ ...view(), payloadReasoning }] })
+      expect(parsed?.reasoning).toBe('xhigh')
+      expect(parsed).not.toHaveProperty('payloadReasoning')
+    }
+  })
+
   it('recognizes request kinds and defaults unknown values to a conversation', () => {
     expect(recentRequestsOf({ requests: [view({ kind: 'title' })] })[0]?.kind).toBe('title')
     expect(recentRequestsOf({ requests: [{ ...view(), kind: 'unknown' }] })[0]?.kind).toBe('conversation')
@@ -81,6 +97,19 @@ describe('recent request section', () => {
     expect(screen.getByText('274.18K')).toBeDefined()
     expect(screen.getByText('xhigh')).toBeDefined()
     expect(screen.getByText('1.00 MiB')).toBeDefined()
+  })
+
+  it.each([
+    { metadata: { payloadReasoning: 'low' }, display: 'low' },
+    { metadata: { payloadReasoning: null }, display: '—' },
+    { metadata: {}, display: 'minimal' },
+  ])('shows $display for the prepared effort with legacy fallback only when metadata is absent', async ({ metadata, display }) => {
+    const store = new RecentRequestsStore()
+    render(<RecentRequests t={t} store={store} />)
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ requests: [{ ...view({ reasoning: 'minimal' }), ...metadata }] }))
+    await act(async () => { await store.refresh() })
+    expect(screen.getByText(display)).toBeDefined()
+    if (display !== 'minimal') expect(screen.queryByText('minimal')).toBeNull()
   })
 
   it('keeps English compact units and metric labels in the Chinese UI', async () => {

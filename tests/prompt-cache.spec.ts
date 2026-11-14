@@ -8,6 +8,7 @@ import {
   OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH,
 } from '../src/adapter.ts'
 import { FastModeRegistry } from '../src/fast-mode.ts'
+import type { OpenAICodexPayloadMetadata } from '../src/request-lifecycle.ts'
 
 function providerFixture(id = 'openai-codex'): {
   provider: Provider
@@ -90,6 +91,80 @@ describe('normalized system prompt cache identity', () => {
 })
 
 describe('OpenAI Codex payload transform', () => {
+  it('observes only payload metadata even when no additions or field logging are enabled', async () => {
+    const fixture = providerFixture()
+    const observed: OpenAICodexPayloadMetadata[] = []
+    const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, {
+      onPayloadMetadata: metadata => { observed.push(metadata) },
+    })
+    wrapped.streamSimple(model('openai-codex'), normalizeContext({ messages: [] }), {})
+    const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
+    const body = Object.freeze({ model: 'gpt-5', input: [{ text: 'private prompt 正文' }], reasoning: { effort: 'low' } })
+    expect(await options?.onPayload?.(body, model('openai-codex'))).toEqual(body)
+    expect(observed).toEqual([{ bodyBytes: Buffer.byteLength(JSON.stringify(body), 'utf8'), reasoning: 'low' }])
+    expect(JSON.stringify(observed)).not.toContain('private prompt')
+    expect(JSON.stringify(observed)).not.toContain('input')
+  })
+
+  it('observes the preceding replacement after speed and cache additions without retaining its body', async () => {
+    const fixture = providerFixture()
+    const registry = new FastModeRegistry()
+    registry.set('session-a', true)
+    const observed: OpenAICodexPayloadMetadata[] = []
+    const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, {
+      fastMode: registry,
+      derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
+      onPayloadMetadata: metadata => { observed.push(metadata) },
+    })
+    const replacement = Object.freeze({ model: 'gpt-5', input: [{ text: 'replacement private body' }], reasoning: { effort: 'high' } })
+    const previous = vi.fn(() => Promise.resolve(replacement))
+    wrapped.streamSimple(model('openai-codex'), context, { sessionId: 'session-a', onPayload: previous })
+    const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
+    const original = Object.freeze({ model: 'gpt-5', input: [], reasoning: { effort: 'low' } })
+    const result = await options?.onPayload?.(original, model('openai-codex'))
+    expect(previous).toHaveBeenCalledWith(original, model('openai-codex'))
+    expect(result).toEqual({ ...replacement, service_tier: 'priority', prompt_cache_key: 'session-a' })
+    expect(observed).toEqual([{ bodyBytes: Buffer.byteLength(JSON.stringify(result), 'utf8'), reasoning: 'high' }])
+    expect(JSON.stringify(observed)).not.toContain('replacement private body')
+    expect(original.reasoning.effort).toBe('low')
+    expect(replacement).not.toHaveProperty('service_tier')
+    expect(replacement).not.toHaveProperty('prompt_cache_key')
+  })
+
+  it.each([{}, { reasoning: {} }, { reasoning: null }])('observes an absent effort as null for %j', async body => {
+    const fixture = providerFixture()
+    const observed: OpenAICodexPayloadMetadata[] = []
+    const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, { onPayloadMetadata: metadata => { observed.push(metadata) } })
+    wrapped.streamSimple(model('openai-codex'), context, {})
+    const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
+    expect(await options?.onPayload?.(body, model('openai-codex'))).toEqual(body)
+    expect(observed).toEqual([{ bodyBytes: Buffer.byteLength(JSON.stringify(body), 'utf8'), reasoning: null }])
+  })
+
+  it('observes an effort removed by the preceding replacement as null', async () => {
+    const fixture = providerFixture()
+    const observed: OpenAICodexPayloadMetadata[] = []
+    const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, { onPayloadMetadata: metadata => { observed.push(metadata) } })
+    const replacement = Object.freeze({ model: 'gpt-5', input: [] })
+    wrapped.streamSimple(model('openai-codex'), context, { onPayload: () => replacement })
+    const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
+    const original = Object.freeze({ model: 'gpt-5', input: [], reasoning: { effort: 'high' } })
+    expect(await options?.onPayload?.(original, model('openai-codex'))).toEqual(replacement)
+    expect(observed).toEqual([{ bodyBytes: Buffer.byteLength(JSON.stringify(replacement), 'utf8'), reasoning: null }])
+    expect(original.reasoning.effort).toBe('high')
+  })
+
+  it('keeps the prepared payload unchanged when its optional observer throws', async () => {
+    const fixture = providerFixture()
+    const observe = vi.fn((_metadata: OpenAICodexPayloadMetadata) => { throw new Error('optional observer failed') })
+    const wrapped = withOpenAICodexPayloadPolicy(fixture.provider, { onPayloadMetadata: observe })
+    wrapped.streamSimple(model('openai-codex'), context, {})
+    const options = fixture.streamSimple.mock.lastCall?.[2] as SimpleStreamOptions | undefined
+    const body = Object.freeze({ model: 'gpt-5', input: [], reasoning: { effort: 'low' } })
+    await expect(options?.onPayload?.(body, model('openai-codex'))).resolves.toEqual(body)
+    expect(observe).toHaveBeenCalledOnce()
+  })
+
   it('adds the session key to the same payload that carries Fast Mode priority', async () => {
     const fixture = providerFixture()
     const registry = new FastModeRegistry()

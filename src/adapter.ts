@@ -21,6 +21,7 @@ import type { FastModeRegistry } from './fast-mode.ts'
 import { ConversationSpeedRegistry } from './speed-mode-registry.ts'
 import { SpeedModeRequestScope } from './speed-mode-request-scope.ts'
 import { OpenAICodexRequestLifecycle } from './request-lifecycle.ts'
+import type { OpenAICodexPayloadMetadata } from './request-lifecycle.ts'
 import { DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT } from './settings-contract.ts'
 import type { OpenAICodexModelTransport } from './settings-contract.ts'
 import { projectOpenAICodexSpeedPayload } from './speed-mode-contract.ts'
@@ -356,14 +357,14 @@ export interface OpenAICodexPayloadPolicy {
   derivePromptCacheKey?: ((context: PiContext, sessionId: string | undefined) => string | undefined) | undefined
   /** Resolve the field-name logger for each request; undefined disables logging. */
   onPayloadFields?: (() => ((names: readonly string[]) => void) | undefined) | undefined
-  /** Observe the serialized payload byte count for the active request. */
-  onPayloadBytes?: ((bytes: number) => void) | undefined
+  /** Observe content-free final payload metadata; absent disables observation, observer failures do not alter the request. */
+  onPayloadMetadata?: ((metadata: OpenAICodexPayloadMetadata) => void) | undefined
 }
 
 /**
  * Apply the Codex request payload policy in one transform: the Fast Mode
- * priority tier, the prompt-cache key, and optional field-name logging. A
- * request that adds nothing and logs nothing keeps the caller's options object.
+ * priority tier, the prompt-cache key, and optional diagnostics. A request
+ * with no additions or observers keeps the caller's options object.
  * @param provider - provider whose streamSimple is wrapped.
  * @param policy - request-scoped additions; each is skipped when absent.
  * @returns a detached provider applying the policy.
@@ -390,7 +391,7 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
         : undefined
       const logFields = codexRoute ? policy.onPayloadFields?.() : undefined
       if (mode === 'standard' && (scoped === undefined || options?.onPayload === undefined)
-        && cacheKey === undefined && logFields === undefined) {
+        && cacheKey === undefined && logFields === undefined && policy.onPayloadMetadata === undefined) {
         return streamSimple.call(provider, model, context, options)
       }
       const previousOnPayload = options?.onPayload
@@ -406,9 +407,15 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
           const additions: Record<string, unknown> = {}
           if (cacheKey !== undefined) additions['prompt_cache_key'] = cacheKey
           const result = { ...speedPayload, ...additions }
-          if (policy.onPayloadBytes !== undefined) {
-            try { policy.onPayloadBytes(Buffer.byteLength(JSON.stringify(result), 'utf8')) } catch (_error) {
-              // The provider built this payload as JSON; a failed measurement must not alter the request.
+          if (policy.onPayloadMetadata !== undefined) {
+            const reasoning = result['reasoning']
+            try {
+              policy.onPayloadMetadata({
+                bodyBytes: Buffer.byteLength(JSON.stringify(result), 'utf8'),
+                reasoning: isPayloadRecord(reasoning) && typeof reasoning['effort'] === 'string' ? reasoning['effort'] : null,
+              })
+            } catch (_error) {
+              // Optional diagnostics must not alter the provider request.
             }
           }
           logFields?.(Object.keys(result))
@@ -459,7 +466,7 @@ function requestProvider(
   const configured = withOpenAICodexPayloadPolicy(requestOwned, {
     fastMode, requestScope,
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
-    onPayloadBytes: bytes => { requests?.noteBodyBytes(bytes) },
+    ...requests === undefined ? {} : { onPayloadMetadata: (metadata: OpenAICodexPayloadMetadata) => { requests.notePayloadMetadata(metadata) } },
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
   })
   const streamSimple = configured.streamSimple

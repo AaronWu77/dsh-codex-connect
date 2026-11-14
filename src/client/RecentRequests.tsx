@@ -43,6 +43,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequestsProps['t']; locale: string }) {
+  const reasoning = request.payloadReasoning === undefined ? request.reasoning : request.payloadReasoning
   return <article className="cc-recent-row" data-outcome={request.outcome}>
     <div className="cc-recent-lead">
       <span className={`cc-recent-transport cc-recent-transport-${request.transport}`}>
@@ -66,7 +67,7 @@ function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequ
       <Metric label={t('ov.recent.cacheR')} value={formatTokens(request.cacheReadTokens)} />
     </div>
     <div className="cc-recent-meta">
-      <span>{t('ov.recent.reasoning')} <b>{request.reasoning ?? '—'}</b></span>
+      <span>{t('ov.recent.reasoning')} <b>{reasoning ?? '—'}</b></span>
       <span>{t('ov.recent.body')} <b>{request.bodyBytes === undefined ? '—' : formatBytes(request.bodyBytes)}</b></span>
     </div>
   </article>

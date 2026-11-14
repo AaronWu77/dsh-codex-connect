@@ -6,6 +6,14 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { RecentRequestKind, RecentRequestLog, RecentRequestOutcome, RecentRequestTransport } from './recent-requests.ts'
 
+/** Content-free observations of a prepared payload, not confirmation of dispatch or receipt. */
+export interface OpenAICodexPayloadMetadata {
+  /** Serialized JSON bytes before transport compression or framing. */
+  bodyBytes: number
+  /** Effort string in the prepared payload, or null when none is present. */
+  reasoning: string | null
+}
+
 type ConfigTransport = 'auto' | 'sse'
 
 interface UsageTotals {
@@ -28,6 +36,7 @@ interface RequestState {
   routeLabel?: string | undefined
   configuredTransport?: ConfigTransport | undefined
   reasoning?: string | undefined
+  payloadReasoning?: string | null | undefined
   bodyBytes?: number | undefined
   usage?: UsageTotals | undefined
   transport?: RecentRequestTransport | undefined
@@ -80,12 +89,16 @@ export class OpenAICodexRequestLifecycle {
     request.configuredTransport = transport
   }
 
-  /** Record the serialized payload bytes for the active request. */
-  noteBodyBytes(bytes: number): void {
+  /** @param metadata - content-free prepared payload facts; ignored outside an active request and merged into an already recorded row. */
+  notePayloadMetadata(metadata: OpenAICodexPayloadMetadata): void {
     const request = this.scope.getStore()
     if (request === undefined) return
-    request.bodyBytes = bytes
-    if (request.recorded) this.recentRequests?.update(request.entryId, { bodyBytes: bytes })
+    request.bodyBytes = metadata.bodyBytes
+    request.payloadReasoning = metadata.reasoning
+    if (request.recorded) this.recentRequests?.update(request.entryId, {
+      bodyBytes: metadata.bodyBytes,
+      payloadReasoning: metadata.reasoning,
+    })
   }
 
   /** Merge the provider's final usage and transport diagnostics into the active request. */
@@ -252,6 +265,7 @@ export class OpenAICodexRequestLifecycle {
       kind: state.kind,
       routeLabel: state.routeLabel ?? state.provider,
       ...state.reasoning === undefined ? {} : { reasoning: state.reasoning },
+      ...state.payloadReasoning === undefined ? {} : { payloadReasoning: state.payloadReasoning },
       transport: state.transport ?? (state.configuredTransport === 'sse' ? 'sse' : 'ws'),
       inputTokens: usage?.input ?? 0,
       outputTokens: usage?.output ?? 0,

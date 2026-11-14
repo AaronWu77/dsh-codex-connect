@@ -21,7 +21,10 @@ export interface RecentRequestView {
   model: string
   routeLabel: string
   kind: RecentRequestKind
+  /** Original Host request selection, before provider payload mapping. */
   reasoning?: string
+  /** Prepared payload effort; null means no effort was present, absent retains legacy selection display. */
+  payloadReasoning?: string | null
   transport: RecentRequestTransport
   inputTokens: number
   outputTokens: number
@@ -71,6 +74,7 @@ function requestOf(value: unknown): RecentRequestView | undefined {
   const cacheReadTokens = count(entry['cacheReadTokens'])
   const cacheWriteTokens = count(entry['cacheWriteTokens'])
   const reasoning = entry['reasoning']
+  const payloadReasoning = entry['payloadReasoning']
   const bodyBytes = entry['bodyBytes']
   if (id === undefined || provider === undefined || model === undefined || routeLabel === undefined
     || startedAt === undefined || (transport !== 'ws' && transport !== 'sse')
@@ -85,6 +89,7 @@ function requestOf(value: unknown): RecentRequestView | undefined {
     routeLabel,
     kind: kindOf(entry['kind']),
     ...typeof reasoning === 'string' && reasoning.length > 0 ? { reasoning } : {},
+    ...payloadReasoning === null || typeof payloadReasoning === 'string' ? { payloadReasoning } : {},
     transport,
     inputTokens,
     outputTokens,

@@ -17,7 +17,10 @@ export interface RecentRequestEntry {
   model: string
   routeLabel: string
   kind: RecentRequestKind
+  /** Original Host request selection, before provider payload mapping. */
   reasoning?: string
+  /** Prepared payload effort; null means observed without an effort, absent means not observed or an older Host. */
+  payloadReasoning?: string | null
   transport: RecentRequestTransport
   inputTokens: number
   outputTokens: number
@@ -44,7 +47,7 @@ export class RecentRequestLog {
     if (this.entries.length > RECENT_REQUEST_LIMIT) this.entries.length = RECENT_REQUEST_LIMIT
   }
 
-  /** Merge late transport or usage facts into an already recorded request. */
+  /** Merge late payload, transport or usage facts into an already recorded request. */
   update(id: string, patch: Partial<Omit<RecentRequestEntry, 'id'>>): void {
     const index = this.entries.findIndex(entry => entry.id === id)
     const entry = this.entries[index]
