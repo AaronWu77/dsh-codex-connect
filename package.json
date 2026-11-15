@@ -1,5 +1,6 @@
 {
   "name": "dsh-codex-connect",
+  "icon": "./icon.svg",
   "displayName": "Codex Connect",
   "description": "ChatGPT OAuth and Codex models for DeepSeek Harness.",
   "version": "0.1.0-alpha.4.35",
@@ -70,6 +71,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "icon.svg",
     "locale/*.json",
     "lib",
     "compatibility.json",
