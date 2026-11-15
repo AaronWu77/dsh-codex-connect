@@ -39,6 +39,8 @@ import {
 import type { OpenAICodexLiveModel } from './model-catalog.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 import type { RecentRequestLog } from './recent-requests.ts'
+import type { OpenAICodexWebSocketResidency } from './ws-residency.ts'
+import { readOpenAICodexTransportFailure } from './ws-residency.ts'
 
 /** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
 export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
@@ -47,6 +49,8 @@ export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
 export interface OpenAICodexAdapterExtras {
   /** Resolve model transport for new prepared calls; omission retains SSE. */
   resolveTransport?: () => OpenAICodexModelTransport
+  /** Own the resident-connection budget; absent leaves every request on its profile transport. */
+  residency?: OpenAICodexWebSocketResidency
   imageEditingEnabled?: () => boolean
   /** Optional profile fallback; explicit request effort wins in the current Host consumer. */
   resolveReasoningEffort?: () => OpenAICodexReasoningEffort | undefined
@@ -445,21 +449,40 @@ function requestProvider(
   requests?: OpenAICodexRequestLifecycle,
   routeLabel?: string,
   transport: OpenAICodexModelTransport = DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+  residency?: OpenAICodexWebSocketResidency,
 ): Provider {
   const nativeStream = provider.streamSimple
   const requestOwned: Provider = {
     ...provider,
     streamSimple(model, context, options) {
       requests?.noteRoute(routeLabel, transport)
+      const sessionId = options?.sessionId
+      // Continuation is admitted per request: the resident budget only covers
+      // conversation turns, and every other request keeps the finite SSE path.
+      const decision = transport === 'websocket-cached' && residency !== undefined
+        ? residency.admit(sessionId, requests?.current()?.kind)
+        : undefined
       // Keep the business Session id in payload-policy closures, not PI's socket cache.
       const { sessionId: _sessionId, ...uncached } = options ?? {}
-      const stream = nativeStream.call(provider, model, context, options?.transport === 'auto' ? uncached : options)
-      if (requests !== undefined) {
-        requests.trackProducer(stream.result().then(
-          message => { requests.noteResult(message) },
-          () => undefined,
-        ))
+      const requestOptions = decision === undefined
+        ? (options?.transport === 'auto' ? uncached : options)
+        : { ...options, transport: decision.continuation ? 'websocket-cached' as const : 'sse' as const }
+      let stream: ReturnType<typeof nativeStream>
+      try {
+        stream = nativeStream.call(provider, model, context, requestOptions)
+      } catch (error: unknown) {
+        residency?.abort(sessionId)
+        throw error
       }
+      const settlement = stream.result().then(
+        message => {
+          const failure = readOpenAICodexTransportFailure(message)
+          const settled = residency?.settle(sessionId, failure)
+          requests?.noteResult(message, settled)
+        },
+        () => { residency?.settle(sessionId, undefined) },
+      )
+      requests?.trackProducer(settlement)
       return stream
     },
   }
@@ -523,6 +546,7 @@ export function createOpenAICodexProfile(
     reasoningEffort?: OpenAICodexReasoningEffort
     transport?: OpenAICodexModelTransport
     requests?: OpenAICodexRequestLifecycle
+    residency?: OpenAICodexWebSocketResidency
   },
 ): OpenAICodexRouteProfile & { piProvider: ReturnType<typeof bridgePiProvider> } {
   const effectiveLayer: OpenAICodexCatalogLayer = layer ?? { live: [], mode: 'default' }
@@ -550,7 +574,7 @@ export function createOpenAICodexProfile(
     ...requestPolicy?.reasoningEffort === undefined ? {} : { reasoning: requestPolicy.reasoningEffort },
     configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
     modelErrors,
-    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests, route.displayName, requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT)),
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests, route.displayName, requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT, requestPolicy?.residency)),
     ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
   }
   return profile
@@ -707,7 +731,7 @@ export function createOpenAICodexAdapter(
       profiles = new Map(bindings.map((route, index) => [
         route.routeId,
         createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields,
-          { requestScope, requests, transport, ...reasoningEffort === undefined ? {} : { reasoningEffort } }),
+          { requestScope, requests, transport, ...reasoningEffort === undefined ? {} : { reasoningEffort }, ...extras?.residency === undefined ? {} : { residency: extras.residency } }),
       ] as const))
     }
     return profiles

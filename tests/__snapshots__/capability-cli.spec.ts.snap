@@ -11,7 +11,7 @@ oauth: unknown (credential-metadata-only)
 responses: unknown (not-probed)
   Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
 transport: unknown (standalone-sse-not-probed)
-  This standalone probe tests SSE, not the running profile's transport setting or WebSocket support.
+  This standalone probe tests SSE, not the running profile's transport setting, resident budget, or WebSocket support.
 model: unknown (catalog-is-not-entitlement)
   Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
 providerFallback: rejected (no-automatic-provider-failover)
@@ -22,7 +22,7 @@ continuation: unknown (no-continuation-round-trip)
   A stateless probe does not verify continuation, Fork, or restart; retain Harness-owned history.
 nativeCompaction: rejected (no-native-compaction-integration)
   Keep Harness text-summary compaction; track the typed-operation and durable-replay prerequisites in Issue #65.
-websocketReuse: rejected (request-owned-websockets)
-  Model transport auto uses a fresh connection per request; this plugin does not expose cached WebSocket reuse.
+websocketReuse: unknown (resident-budget-not-probed)
+  A positive maxResidentWebSocketSessions keeps one resident connection per conversation; this standalone probe does not exercise it.
 "
 `;

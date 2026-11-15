@@ -92,7 +92,7 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 - **本地用量：**「今日用量」与用量卡片读取每个会话自身记录的 `codexConnectUsage` 投影值——与会话列表同源、不额外轮询，也不依赖 Context 插件。该投影按 `localUsageTimeZone` 的日历、按每次已结算请求汇总输入、缓存读取、缓存写入和输出 Token，并保留最近 `localUsageRetainedDays` 个有数据的日期（默认 400 天）。未报告完整用量的请求只计入已知数值，因此总量可能不完整；缺失用量不会显示为已确认的零值。冷会话（未挂载的已存会话）由一次性预热补齐：客户端首次需要时触发 `POST /api/dsh-codex-connect/local-usage/backfill`，主机通过投影缓存的冷读阶梯读取每个日志一次、写入投影行后即返回；`POST /api/dsh-codex-connect/local-usage/status` 只报告状态、不启动任务。预热只处理 `localUsageRestMs` 分隔的已存会话，跳过活动会话（其自身即时折叠），并在结束后刷新会话列表。整轮只读一次、不写会话日志，也不写入其他插件的投影值。活动投影保留未完成工具调用 ID 的哈希及其是否为提问，不保留工具名称、参数或结果内容。增加 `localUsagePollMs` 可降低状态轮询频率。
 - **管理中心：**设置 → Codex Connect 是独立的一级设置项，直接展示用量概览、账号管理、模型、能力和网络，不再套一层折叠卡。概览复用只读用量弹窗；侧栏小卡保持原有功能。同一个设置表单在切换页签时保留未保存草稿，仅在“保存”或“放弃修改”后处理。账号授权、默认账号切换、移除及连接测试是单独的即时操作；移除账号需要确认。模型预览按已保存账号读取，不切换默认账号，也不发送推理请求。全局模型显示范围和 Token 预算不会选择当前对话的模型。
 - **最近请求：**侧栏用量弹窗分别保留 Host 请求选择的推理档位与已准备 payload 中的 effort。观察到 payload 时显示其中的 effort；观察到的 payload 没有 effort 时显示 `—`；payload 元数据不可用（包括较旧 Host）时才显示原请求选择。观察到已准备 payload 不代表已发送或服务端已收到。摘要不保留请求／响应正文或凭据。
-- **模型传输：**默认仍使用 SSE。可在 profile 配置中选择 `transport: auto`，使用原生 WebSocket 优先／SSE 回退，每次请求建立独立连接；自定义设置卡片暂不提供传输控件。验收要求与清理限制见[模型传输](reference.zh.md#模型传输)。
+- **模型传输：**名额为 0 时仍使用 SSE。`maxResidentWebSocketSessions`（默认 2）为每个活跃会话保留一条续接 WebSocket，可在设置卡片中修改；profile 的 `transport: sse` 是强制关闭，`auto` 只在名额为 0 时保留请求自有 WebSocket。淘汰、重试与清理规则见[模型传输](reference.zh.md#模型传输)。
 - **插件更新：**检查 Codex Connect 新版本，不自动安装，也不建议更改 DSH。宿主兼容性信息通过主动运行的本地诊断查看。
 
 <p align="center">

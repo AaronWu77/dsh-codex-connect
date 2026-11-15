@@ -58,13 +58,15 @@ Edit these options under **Settings → Codex Connect** or **Settings → Models
 
 ### Model transport
 
-`transport` accepts `sse` (the default) or `auto` in the `llm-openai-codex` profile configuration. `auto` uses the pinned PI provider's WebSocket-first behavior and native SSE fallback; it does not add a retry-count policy or switch accounts. The custom settings card has no transport control. Keep `sse` unless the intended Host, proxy, and real account have passed transport acceptance.
+Model requests use finite SSE unless a resident WebSocket budget is configured. `maxResidentWebSocketSessions` (0–8, default 2) is editable under **Network** in the settings card and keeps at most that many continuation connections, one per active conversation; `0` sends every model request as SSE. The budget is authoritative: `transport: sse` in the `llm-openai-codex` profile configuration is a hard off switch, and `transport: auto` keeps the earlier request-owned behavior of one fresh connection per request only while the budget is 0. Title, compaction, Auto-review, and subagent requests always use SSE, so they never consume a slot.
 
-Each `auto` request owns a fresh WebSocket connection. The Harness Session id remains in request attribution and the prompt-cache key, but is not supplied to PI's connection cache; no connection or WebSocket continuation is reused across requests. This adds handshake overhead and does not disable prompt caching. A rejected handshake can fall back to SSE using the same captured proxy and credential; a failed proxy request never falls back to direct traffic.
+A resident connection carries consecutive turns of one conversation through PI's connection-scoped `previous_response_id`; the request body keeps `store: false`, so continuation exists only while that connection stays open. Continuation is best effort: PI sends only the input delta when the rest of the request body matches the previous turn and otherwise resends the full conversation on the same connection. Prompt caching stays keyed by the Harness Session id.
+
+The budget is local bookkeeping, not a server limit. A new conversation evicts the least recently used idle connection; when every slot is busy, the new request uses SSE instead of closing a running stream. A rejected handshake falls back to SSE with the same captured proxy and credential and retries after a cooldown, starting at 15 s for an account connection limit and doubling up to 5 min for repeated failures. Changing the transport, budget, proxy, account, or credential closes resident connections once in-flight requests settle; disposal and Session disposal close them too, which also clears PI's idle timer. A failed proxy request never falls back to direct traffic.
 
 Native fallback stops after the provider stream starts, which can precede the first visible text token. API/protocol errors, cancellation, and partial-stream failures do not authorize concatenating a new SSE response or executing incomplete tool calls. Existing Harness recovery owns any later request retry.
 
-Disposal stops admission, cancels admitted model work, and waits for its producers before releasing shared proxy resources. PI 1.4 initiates WebSocket close but exposes no awaitable close acknowledgement; a completed producer is not proof that a remote close handshake finished. Validate natural Headless exit and unload with the target runtime before enabling `auto`. Set `transport: sse` to revert; no credential or Session migration is needed. This setting does not change the separate HTTP search, image, or Auto-review endpoints.
+Disposal stops admission, cancels admitted model work, and waits for its producers before releasing shared proxy resources. PI 1.4 initiates WebSocket close but exposes no awaitable close acknowledgement; a completed producer is not proof that a remote close handshake finished. Validate natural Headless exit and unload with the target runtime before raising the budget. Set `maxResidentWebSocketSessions` to 0 or `transport: sse` to revert; no credential or Session migration is needed. This setting does not change the separate HTTP search, image, or Auto-review endpoints.
 
 ### Proxy
 
@@ -114,7 +116,8 @@ The main plugin options are:
 
 | Field | Default | Meaning |
 |---|---:|---|
-| `transport` | `sse` | `sse` or opt-in `auto`; model requests only, without cross-request WS reuse |
+| `transport` | omitted | `sse` forces streaming off; `auto` keeps request-owned WebSocket only while the budget is 0 |
+| `maxResidentWebSocketSessions` | `2` | Resident continuation connections, 0–8; `0` keeps model requests on SSE |
 | `models` | full catalog | Visible Codex model ids; an empty array hides all entries |
 | `enableNewSessionFastMode` | `false` | Seed priority only for newly started main conversations |
 | `enableNewSubagentFastMode` | `false` | Seed priority only for newly started subagent conversations |

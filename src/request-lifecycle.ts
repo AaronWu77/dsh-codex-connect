@@ -14,7 +14,7 @@ export interface OpenAICodexPayloadMetadata {
   reasoning: string | null
 }
 
-type ConfigTransport = 'auto' | 'sse'
+type ConfigTransport = 'auto' | 'sse' | 'websocket-cached'
 
 interface UsageTotals {
   input: number
@@ -65,7 +65,7 @@ function requestKindOf(
   return resolveSessionKind?.(options.sessionId) === 'subagent' ? 'subagent' : 'conversation'
 }
 
-/** Own model requests without retaining provider WebSocket sessions between requests. */
+/** Own model requests and their settlement; resident WebSocket reuse belongs to the residency budget. */
 export class OpenAICodexRequestLifecycle {
   private readonly scope = new AsyncLocalStorage<RequestState>()
   private readonly lifetime = new AbortController()
@@ -101,13 +101,18 @@ export class OpenAICodexRequestLifecycle {
     })
   }
 
-  /** Merge the provider's final usage and transport diagnostics into the active request. */
-  noteResult(message: AssistantMessage): void {
+  /**
+   * Merge the provider's final usage and transport diagnostics into the active request.
+   * @param message - final assistant message of this request.
+   * @param observed - transport the residency budget actually used, when it observed one.
+   */
+  noteResult(message: AssistantMessage, observed?: RecentRequestTransport): void {
     const request = this.scope.getStore()
     if (request === undefined) return
     const failure = message.diagnostics?.find(diagnostic => diagnostic.type === 'provider_transport_failure')
     const fallback = failure?.details?.['fallbackTransport'] === 'sse' && failure.details?.['eventsEmitted'] === false
-    const transport: RecentRequestTransport = request.configuredTransport === 'sse' || fallback ? 'sse' : 'ws'
+    const transport: RecentRequestTransport = observed
+      ?? (request.configuredTransport === 'sse' || fallback ? 'sse' : 'ws')
     request.transport = transport
     if (message.usage !== undefined) {
       request.usage = {

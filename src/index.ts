@@ -21,7 +21,7 @@ import z from '@deepseek-ai/schemastery'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-session'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-web'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -143,7 +143,12 @@ import {
   parseOpenAICodexMaxTokensOverrides,
 } from './settings-contract.ts'
 import type { OpenAICodexSettingsInput, OpenAICodexModelTransport } from './settings-contract.ts'
-import { DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT } from './settings-contract.ts'
+import {
+  DEFAULT_OPENAI_CODEX_MAX_RESIDENT_SESSIONS,
+  MAX_OPENAI_CODEX_RESIDENT_SESSIONS,
+  resolveOpenAICodexModelTransport,
+} from './settings-contract.ts'
+import { OpenAICodexWebSocketResidency } from './ws-residency.ts'
 
 export {
   decodeOpenAICodexSettings,
@@ -297,8 +302,18 @@ export const OPENAI_CODEX_SETTINGS_NS = OPENAI_CODEX_SETTINGS_NAMESPACE
 
 /** Composite model and standalone-search configuration. */
 export interface Config {
-  /** Model requests use SSE unless auto explicitly enables WebSocket with native SSE fallback. */
-  transport?: OpenAICodexModelTransport
+  /**
+   * Explicit model transport. Omitted derives it from
+   * {@link maxResidentWebSocketSessions}: `websocket-cached` for a positive
+   * budget, SSE otherwise. `auto` keeps request-owned WebSocket connections.
+   */
+  transport?: OpenAICodexModelTransport | undefined
+  /**
+   * Resident continuation connections kept open for conversation turns;
+   * 0 disables continuation. Title, compaction, Auto-review, and subagent
+   * requests always use SSE, so they never consume a slot.
+   */
+  maxResidentWebSocketSessions?: number
   /** Complete interactive OAuth deadline in milliseconds; applies when the plugin loads. */
   oauthTimeoutMs?: number
   /** Model ids advertised in selectors; omitted to advertise the full catalog. */
@@ -378,7 +393,8 @@ export interface Config {
 
 /** Runtime configuration exposes each editable field through Cordis's public Volatile type. */
 export interface VolatileConfig {
-  transport: Volatile<OpenAICodexModelTransport>
+  transport: Volatile<OpenAICodexModelTransport | undefined>
+  maxResidentWebSocketSessions: Volatile<number>
   oauthTimeoutMs: number
   models: Volatile<string[] | undefined>
   enableProxy: Volatile<boolean>
@@ -463,7 +479,9 @@ function validateLocalUsageTimeZone(value: string): string {
 }
 
 const configSchema = z.object({
-  transport: z.union(['sse', 'auto'] as const).default(DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT).volatile(),
+  transport: z.union([z.const(undefined), z.union(['sse', 'auto', 'websocket-cached'] as const)]).volatile(),
+  maxResidentWebSocketSessions: z.number().step(1).min(0).max(MAX_OPENAI_CODEX_RESIDENT_SESSIONS)
+    .default(DEFAULT_OPENAI_CODEX_MAX_RESIDENT_SESSIONS).volatile(),
   localUsageTimeZone: z.transform(z.string(), validateLocalUsageTimeZone).default(localUsageDefaults.timeZone),
   localUsageRetainedDays: z.number().step(1).min(1).default(localUsageDefaults.retainedDays),
   localUsagePollMs: z.number().step(1).min(100).default(localUsageDefaults.pollMs),
@@ -514,6 +532,7 @@ export const Config: z<Config, VolatileConfig> = configSchema
 export function apply(ctx: Context, config: Config | VolatileConfig): void {
   const current = (): OpenAICodexSettingsInput => Object.fromEntries(Object.entries({
     transport: configValue(config.transport),
+    maxResidentWebSocketSessions: configValue(config.maxResidentWebSocketSessions),
     models: configValue(config.models), enableProxy: configValue(config.enableProxy),
     proxyUrl: configValue(config.proxyUrl), contextWindowOverrides: configValue(config.contextWindowOverrides),
     maxTokensOverrides: configValue(config.maxTokensOverrides), contextWindowMode: configValue(config.contextWindowMode),
@@ -539,6 +558,16 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   watchRecentRequests(ctx, recentRequests)
   const proxyManager = new OpenAICodexProxyManager()
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
+  // The resident budget owns every continuation socket, including its PI cache entry.
+  const residency = new OpenAICodexWebSocketResidency({
+    resolveLimit: () => resolveOpenAICodexSettings(current()).maxResidentWebSocketSessions,
+  })
+  /** Settings that invalidate a resident connection when they change. */
+  const residencySettingsKey = (): string => {
+    const resolved = resolveOpenAICodexSettings(current())
+    return `${resolveOpenAICodexModelTransport(resolved)}|${resolved.maxResidentWebSocketSessions}|${resolveOpenAICodexProxyUrl(resolved) ?? ''}`
+  }
+  let residencyKey = residencySettingsKey()
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
   const credentials = new OpenAICodexCredentialStore()
   const modelCatalog = new OpenAICodexModelCatalog({
@@ -633,7 +662,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     () => routeBindings,
     {
       catalogLayer,
-      resolveTransport: () => resolveOpenAICodexSettings(current()).transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+      resolveTransport: () => resolveOpenAICodexModelTransport(resolveOpenAICodexSettings(current())),
       imageEditingEnabled: () => resolveOpenAICodexSettings(current()).enableImageGeneration,
       resolveReasoningEffort: () => resolveOpenAICodexSettings(current()).reasoningEffort,
       resolveOnPayloadFields: () => resolveOpenAICodexSettings(current()).debugLogPayloadFields
@@ -641,6 +670,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
         ? names => { ctx.logger.info(`dsh-codex-connect: codex payload fields: ${names.join(', ')}`) }
         : undefined,
       recentRequests,
+      residency,
       resolveRequestKind: sessionId => sessionId !== undefined
         && ctx.get('sessions')?.get(sessionId)?.header.origin === 'subagent'
         ? 'subagent'
@@ -834,10 +864,16 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     // Captured refreshes do not emit account-selection commits. Do not coalesce A/B/A choices.
     fastMode.invalidateAccountSelections()
     autoReview.invalidateAccountSelections()
+    // A resident connection pins the credential and proxy it was opened with.
+    residency.requestCloseAll()
     modelCatalog.setClientVersion(resolveOpenAICodexSettings(current()).modelCatalogClientVersion)
     scheduleAccountRoutes()
     scheduleCatalogRefresh()
   }), 'dsh-codex-connect: account route reconciliation')
+
+  ctx.on('session/disposed', (session: Session) => {
+    residency.closeSession(String(session.id))
+  })
 
   ctx.effect(() => async () => {
     stopped = true
@@ -856,6 +892,8 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       image?.dispose() ?? Promise.resolve(),
       imageGeneration?.dispose() ?? Promise.resolve(),
     ])
+    // Close resident sockets before the shared proxy resources they tunnel through.
+    residency.closeAll()
     const proxy = await Promise.allSettled([proxyManager.dispose()])
     const errors = [...consumers, ...reconciliations, ...capabilities, ...proxy]
       .flatMap(result => result.status === 'rejected' ? [result.reason] : [])
@@ -871,6 +909,12 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       })
     }
     proxyWasActive = proxyIsActive
+    const nextResidencyKey = residencySettingsKey()
+    if (nextResidencyKey !== residencyKey) {
+      // Transport, budget, or proxy changed: the old connection belongs to the old settings.
+      residencyKey = nextResidencyKey
+      residency.requestCloseAll()
+    }
     modelCatalog.setClientVersion(resolveOpenAICodexSettings(current()).modelCatalogClientVersion)
     scheduleCatalogRefresh()
     scheduleCapabilities()

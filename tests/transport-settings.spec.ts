@@ -2,8 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Model, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createOpenAICodexAdapter } from '../src/adapter.ts'
+import type { OpenAICodexModelTransport } from '../src/settings-contract.ts'
+import {
+  decodeOpenAICodexSettings,
+  DEFAULT_OPENAI_CODEX_SETTINGS,
+  resolveOpenAICodexModelTransport,
+  resolveOpenAICodexSettings,
+} from '../src/settings-contract.ts'
 import { OpenAICodexCredentialStore } from '../src/store.ts'
-import { decodeOpenAICodexSettings, DEFAULT_OPENAI_CODEX_SETTINGS } from '../src/settings-contract.ts'
 import { Config } from '../src/index.ts'
 
 const observed = vi.hoisted(() => [] as { options: SimpleStreamOptions | undefined; model: Model<'openai-codex-responses'> }[])
@@ -22,14 +28,29 @@ vi.mock('@earendil-works/pi-ai/providers/openai-codex', async original => {
 afterEach(() => { observed.length = 0 })
 
 describe('Codex transport configuration snapshots', () => {
-  it('validates auto, retains omitted SSE, and decodes old settings without a transport field', () => {
-    expect(Config({}).transport.get()).toBe('sse')
+  it('derives continuation from the resident budget and decodes old settings without either field', () => {
+    expect(Config({}).transport.get()).toBeUndefined()
+    expect(Config({}).maxResidentWebSocketSessions.get()).toBe(2)
     expect(Config({ transport: 'auto' }).transport.get()).toBe('auto')
-    expect(() => Reflect.apply(Config, undefined, [{ transport: 'websocket-cached' }])).toThrow()
-    const { transport: _transport, ...old } = DEFAULT_OPENAI_CODEX_SETTINGS
-    expect(decodeOpenAICodexSettings(old)?.transport).toBe('sse')
-    expect(decodeOpenAICodexSettings({ ...old, transport: 'auto' })?.transport).toBe('auto')
+    expect(Config({ transport: 'websocket-cached' }).transport.get()).toBe('websocket-cached')
+    expect(() => Reflect.apply(Config, undefined, [{ transport: 'websocket' }])).toThrow()
+    expect(() => Reflect.apply(Config, undefined, [{ maxResidentWebSocketSessions: 9 }])).toThrow()
+
+    expect(resolveOpenAICodexSettings({})).toMatchObject({ transport: undefined, maxResidentWebSocketSessions: 2 })
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({}))).toBe('websocket-cached')
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 0 }))).toBe('sse')
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 4 }))).toBe('websocket-cached')
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 0 }))).toBe('auto')
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'sse', maxResidentWebSocketSessions: 4 }))).toBe('sse')
+    expect(() => resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 1.5 })).toThrow()
+
+    const { transport: _transport, maxResidentWebSocketSessions: _budget, ...old } = DEFAULT_OPENAI_CODEX_SETTINGS
+    expect(decodeOpenAICodexSettings(old)).toMatchObject({ transport: undefined, maxResidentWebSocketSessions: 2 })
+    expect(decodeOpenAICodexSettings({ ...old, transport: 'auto', maxResidentWebSocketSessions: 0 }))
+      .toMatchObject({ transport: 'auto', maxResidentWebSocketSessions: 0 })
+    expect(decodeOpenAICodexSettings({ ...old, transport: 'websocket-cached' })?.transport).toBe('websocket-cached')
     expect(decodeOpenAICodexSettings({ ...old, transport: 'websocket' })).toBeUndefined()
+    expect(decodeOpenAICodexSettings({ ...old, maxResidentWebSocketSessions: 9 })).toBeUndefined()
   })
 
   it('keeps prepared calls on their captured transport and removes only auto socket-cache identity', async () => {
@@ -40,7 +61,7 @@ describe('Codex transport configuration snapshots', () => {
       override async captureActiveAccount() { return this }
     }
     const credentials = new FixtureCredentials()
-    let transport: 'sse' | 'auto' = 'sse'
+    let transport: OpenAICodexModelTransport = 'sse'
     const adapter = createOpenAICodexAdapter(credentials, () => undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
       { resolveTransport: () => transport })
     try {

@@ -137,7 +137,7 @@ export class CodexCapabilityDiagnostics {
         ? result('unknown', 'credential-metadata-only', 'A private credential file does not prove authorization; use an explicit probe.')
         : result('rejected', 'credential-file-unusable', 'Sign in or repair owner-only credential-file permissions; no credential content was read.'),
       responses: { ...unknownNetwork },
-      transport: result('unknown', 'standalone-sse-not-probed', 'This standalone probe tests SSE, not the running profile\'s transport setting or WebSocket support.'),
+      transport: result('unknown', 'standalone-sse-not-probed', 'This standalone probe tests SSE, not the running profile\'s transport setting, resident budget, or WebSocket support.'),
       model: model === null
         ? result(request.model === undefined ? 'unknown' : 'rejected', 'model-not-selected-from-catalog', 'Select an exact model id from the installed Codex provider catalog; unknown ids are not probed.')
         : result('unknown', 'catalog-is-not-entitlement', unknownNetwork.action),
@@ -145,7 +145,7 @@ export class CodexCapabilityDiagnostics {
       contextManagement: result('unknown', 'no-successful-optional-operation', 'Schema recognition is not capability evidence; keep optional context management disabled.'),
       continuation: result('unknown', 'no-continuation-round-trip', 'A stateless probe does not verify continuation, Fork, or restart; retain Harness-owned history.'),
       nativeCompaction: result('rejected', 'no-native-compaction-integration', 'Keep Harness text-summary compaction; track the typed-operation and durable-replay prerequisites in Issue #65.'),
-      websocketReuse: result('rejected', 'request-owned-websockets', 'Model transport auto uses a fresh connection per request; this plugin does not expose cached WebSocket reuse.'),
+      websocketReuse: result('unknown', 'resident-budget-not-probed', 'A positive maxResidentWebSocketSessions keeps one resident connection per conversation; this standalone probe does not exercise it.'),
     }
     const report: CapabilityReport = {
       schemaVersion: 1, package: 'dsh-codex-connect', version: CODEX_CONNECT_VERSION,

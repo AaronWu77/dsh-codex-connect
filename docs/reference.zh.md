@@ -58,13 +58,15 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 
 ### 模型传输
 
-`llm-openai-codex` 的 profile 配置中，`transport` 接受 `sse`（默认）或 `auto`。`auto` 使用固定版本 PI 提供方内置的 WebSocket 优先及 SSE 回退，不新增重试次数策略，也不切换账号。自定义设置卡片暂不提供传输控件。在目标宿主、代理和真实账号完成传输验收前，请保持 `sse`。
+除非配置了常驻 WebSocket 名额，模型请求都使用有限的 SSE 流。`maxResidentWebSocketSessions`（0–8，默认 2）可在设置卡片的 **网络** 页修改，最多保留同样数量的续接连接，每个活跃会话一条；填 `0` 时所有模型请求都走 SSE。名额是权威开关：`llm-openai-codex` profile 配置里的 `transport: sse` 是强制关闭，`transport: auto` 只在名额为 0 时保留此前"每个请求一条独立连接"的请求自有行为。标题、压缩、自动审查和子代理请求始终使用 SSE，不占用名额。
 
-每次 `auto` 请求使用独立的新 WebSocket 连接。Harness 会话 ID 仍用于请求归属和提示词缓存键，但不传入 PI 的连接缓存；请求间不复用连接或 WebSocket continuation。这会增加握手开销，但不会关闭提示词缓存。握手被拒绝时，可使用同一请求已固定的代理和凭据回退 SSE；代理请求失败绝不改走直连。
+常驻连接通过 PI 的连接级 `previous_response_id` 承载同一会话的连续轮次；请求体保持 `store: false`，因此续接只在这条连接存活期间存在。续接属于尽力而为：当请求体除输入以外的部分与上一轮一致时，PI 只发送输入增量，否则在同一条连接上重发完整对话。提示词缓存仍按 Harness 会话 ID 计算。
+
+名额是本地记账，不是服务端上限。新会话会淘汰最久未使用的空闲连接；名额全被占用时，新请求改用 SSE，而不会掐断正在输出的流。握手被拒绝时，使用同一请求已固定的代理和凭据回退 SSE，并按冷却时间重试：账号连接数上限从 15 秒起，反复失败时逐次翻倍至 5 分钟封顶。修改传输、名额、代理、账号或凭据后，会在活动请求结束后关闭常驻连接；卸载和会话销毁也会关闭连接，并清除 PI 的空闲定时器。代理请求失败绝不改走直连。
 
 提供方流开始后不再允许原生回退，而流开始可能早于首个可见文本 Token。API／协议错误、取消和中途断流都不允许直接拼接一次新的 SSE 响应，或执行不完整的工具调用。后续请求重试仍由 Harness 原有恢复机制负责。
 
-卸载时先停止接纳请求、取消活动模型工作，并等待 producer 结束后再释放共享代理资源。PI 1.4 会发起 WebSocket 关闭，但没有可等待的关闭确认 API；producer 完成并不能证明远端关闭握手已结束。启用 `auto` 前须在目标运行时验证 Headless 自然退出和卸载。设回 `transport: sse` 即可恢复，无需迁移凭据或会话。此设置不改变独立的 HTTP 搜索、图片和自动审查端点。
+卸载时先停止接纳请求、取消活动模型工作，并等待 producer 结束后再释放共享代理资源。PI 1.4 会发起 WebSocket 关闭，但没有可等待的关闭确认 API；producer 完成并不能证明远端关闭握手已结束。提高名额前须在目标运行时验证 Headless 自然退出和卸载。把 `maxResidentWebSocketSessions` 设为 0 或设 `transport: sse` 即可恢复，无需迁移凭据或会话。此设置不改变独立的 HTTP 搜索、图片和自动审查端点。
 
 ### 代理
 
@@ -114,7 +116,8 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 
 | 字段 | 默认值 | 含义 |
 |---|---:|---|
-| `transport` | `sse` | `sse` 或显式启用的 `auto`；仅作用于模型请求，请求间不复用 WS |
+| `transport` | 省略 | `sse` 强制关闭；`auto` 仅在名额为 0 时保留请求自有 WebSocket |
+| `maxResidentWebSocketSessions` | `2` | 常驻续接连接数，0–8；填 0 时模型请求保持 SSE |
 | `models` | 完整目录 | 可见的 Codex model id；空数组隐藏全部条目 |
 | `enableNewSessionFastMode` | `false` | 仅为新启动的主对话设置优先服务 |
 | `enableNewSubagentFastMode` | `false` | 仅为新启动的子 Agent 对话设置优先服务 |

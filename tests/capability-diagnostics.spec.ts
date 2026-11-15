@@ -150,7 +150,7 @@ describe('capability evidence', () => {
     expect(report.checks.contextManagement.status).toBe('unknown')
     expect(report.checks.continuation.status).toBe('unknown')
     expect(report.checks.nativeCompaction.status).toBe('rejected')
-    expect(report.checks.websocketReuse.status).toBe('rejected')
+    expect(report.checks.websocketReuse.status).toBe('unknown')
     expect(report.checks.providerFallback).toMatchObject({ status: 'rejected', reason: 'no-automatic-provider-failover' })
     expect(f.probe).toHaveBeenCalledTimes(1)
     for (const secret of secrets) expect(JSON.stringify(report)).not.toContain(secret)

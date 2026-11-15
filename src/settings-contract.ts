@@ -153,27 +153,87 @@ export const DEFAULT_OPENAI_CODEX_SEARCH_CONTEXT_SIZE: OpenAICodexSearchContextS
 /** Default output budget for the standalone search response. */
 export const DEFAULT_OPENAI_CODEX_SEARCH_MAX_OUTPUT_TOKENS = 10_000
 
-/** Codex model transport; auto tries WebSocket before native SSE fallback without connection reuse. */
-export type OpenAICodexModelTransport = 'sse' | 'auto'
+/**
+ * Codex model transport. `sse` keeps finite response streams, `auto` opens a
+ * request-owned WebSocket per request, and `websocket-cached` keeps one
+ * resident connection per admitted conversation so consecutive turns can
+ * continue through `previous_response_id`.
+ */
+export type OpenAICodexModelTransport = 'sse' | 'auto' | 'websocket-cached'
 
-/** Preserve finite SSE requests unless the profile explicitly opts into WebSocket. */
+/** Transport used when no resident connection is configured. */
 export const DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT: OpenAICodexModelTransport = 'sse'
 
+/** Default resident-connection budget; 0 keeps every model request on SSE. */
+export const DEFAULT_OPENAI_CODEX_MAX_RESIDENT_SESSIONS = 2
+
+/** Largest resident-connection budget this contract accepts. */
+export const MAX_OPENAI_CODEX_RESIDENT_SESSIONS = 8
+
 /**
- * Resolve the model transport without enabling cached or strict-WebSocket modes.
- * @param value - serialized selection; omission preserves the SSE default.
- * @returns the validated model transport.
+ * Parse an explicit transport selection.
+ * @param value - serialized selection; omission leaves the transport to the resident budget.
+ * @returns the validated transport, or undefined when the setting is absent.
  */
-export function parseOpenAICodexModelTransport(value: unknown): OpenAICodexModelTransport {
-  if (value === undefined) return DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
-  if (value !== 'sse' && value !== 'auto') throw new TypeError('OpenAI Codex transport must be "sse" or "auto"')
+export function parseOpenAICodexModelTransport(value: unknown): OpenAICodexModelTransport | undefined {
+  if (value === undefined || value === null) return undefined
+  if (value !== 'sse' && value !== 'auto' && value !== 'websocket-cached') {
+    throw new TypeError('OpenAI Codex transport must be "sse", "auto", or "websocket-cached"')
+  }
   return value
+}
+
+/**
+ * Whether a value is a supported resident-connection budget.
+ * @param value - candidate budget.
+ * @returns true for an integer from 0 through the supported maximum.
+ */
+export function isValidOpenAICodexResidentSessions(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_OPENAI_CODEX_RESIDENT_SESSIONS
+}
+
+/**
+ * Validate one resident-connection budget.
+ * @param value - serialized budget; omission uses the default.
+ * @returns the bounded budget.
+ */
+export function parseOpenAICodexMaxResidentSessions(value: unknown): number {
+  if (value === undefined || value === null) return DEFAULT_OPENAI_CODEX_MAX_RESIDENT_SESSIONS
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_OPENAI_CODEX_RESIDENT_SESSIONS) {
+    throw new TypeError(`OpenAI Codex maxResidentWebSocketSessions must be an integer from 0 to ${MAX_OPENAI_CODEX_RESIDENT_SESSIONS}`)
+  }
+  return value
+}
+
+/**
+ * Resolve the transport one profile should publish. The settings card's budget
+ * is authoritative for continuation; `sse` is the operator's hard off switch,
+ * and `auto` keeps request-owned WebSocket only while the budget is 0.
+ * @param settings - resolved settings with the optional explicit selection.
+ * @returns the transport to publish on the adapter profile.
+ */
+export function resolveOpenAICodexModelTransport(
+  settings: Pick<OpenAICodexSettingsConfig, 'transport' | 'maxResidentWebSocketSessions'>,
+): OpenAICodexModelTransport {
+  if (settings.transport === 'sse') return 'sse'
+  if (settings.maxResidentWebSocketSessions > 0) return 'websocket-cached'
+  return settings.transport === 'auto' ? 'auto' : DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
 }
 
 /** Fully resolved user-editable section presented by Plugin configuration. */
 export interface OpenAICodexSettingsConfig {
-  /** Model transport; auto uses request-owned WebSocket connections with native SSE fallback. */
-  transport?: OpenAICodexModelTransport
+  /**
+   * Explicit model transport; undefined lets {@link maxResidentWebSocketSessions}
+   * decide, and `auto` keeps request-owned WebSocket connections without reuse.
+   */
+  transport?: OpenAICodexModelTransport | undefined
+  /**
+   * Resident continuation connections kept open for conversation turns. Each
+   * admitted conversation holds one connection while it stays active; title,
+   * compaction, Auto-review, and subagent requests always use SSE. 0 disables
+   * continuation entirely.
+   */
+  maxResidentWebSocketSessions: number
   /** Model ids advertised in selectors; undefined advertises the full catalog. */
   models: string[] | undefined
   /** Route Codex Connect requests through the explicitly configured proxy. */
@@ -231,7 +291,8 @@ export interface OpenAICodexSettingsConfig {
 }
 
 export const DEFAULT_OPENAI_CODEX_SETTINGS: Readonly<OpenAICodexSettingsConfig> = Object.freeze({
-  transport: DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+  transport: undefined,
+  maxResidentWebSocketSessions: DEFAULT_OPENAI_CODEX_MAX_RESIDENT_SESSIONS,
   models: undefined,
   enableProxy: false,
   proxyUrl: DEFAULT_OPENAI_CODEX_PROXY_URL,
@@ -284,6 +345,7 @@ export function resolveOpenAICodexSettings(
   return {
     ...resolved,
     transport: parseOpenAICodexModelTransport(resolved.transport),
+    maxResidentWebSocketSessions: parseOpenAICodexMaxResidentSessions(resolved.maxResidentWebSocketSessions),
     newSessionSpeedMode: parseOpenAICodexSpeedDefault(resolved.newSessionSpeedMode) ?? undefined,
     newSubagentSpeedMode: parseOpenAICodexSpeedDefault(resolved.newSubagentSpeedMode) ?? undefined,
     reasoningEffort: parseOpenAICodexReasoningEffort(resolved.reasoningEffort) ?? undefined,
@@ -309,7 +371,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsConfig | undefined {
   if (!isRecord(value)) return undefined
   const transport = value['transport']
-  if (transport !== undefined && transport !== 'sse' && transport !== 'auto') return undefined
+  if (transport !== undefined && transport !== 'sse' && transport !== 'auto' && transport !== 'websocket-cached') return undefined
+  const maxResidentWebSocketSessions = value['maxResidentWebSocketSessions']
   const models = value['models']
   const enableProxy = value['enableProxy']
   const proxyUrl = value['proxyUrl']
@@ -335,6 +398,8 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   const searchContextSize = value['searchContextSize']
   const searchMaxOutputTokens = value['searchMaxOutputTokens']
   if (models !== undefined && (!Array.isArray(models) || models.some(model => typeof model !== 'string'))) return undefined
+  // Older Host snapshots predate the resident budget; absence maps to its safe default.
+  if (maxResidentWebSocketSessions !== undefined && !isValidOpenAICodexResidentSessions(maxResidentWebSocketSessions)) return undefined
   if (enableProxy !== undefined && typeof enableProxy !== 'boolean') return undefined
   if (proxyUrl !== undefined && (typeof proxyUrl !== 'string' || !isValidOpenAICodexProxyUrl(proxyUrl))) return undefined
   if (contextWindowOverrides !== undefined && contextWindowOverrides !== null && !isValidOpenAICodexContextWindowOverrides(contextWindowOverrides)) return undefined
@@ -375,6 +440,7 @@ export function decodeOpenAICodexSettings(value: unknown): OpenAICodexSettingsCo
   const tokenOverrides = resolveOpenAICodexMaxTokensOverrides(maxTokensOverrides)
   return {
     transport: parseOpenAICodexModelTransport(transport),
+    maxResidentWebSocketSessions: parseOpenAICodexMaxResidentSessions(maxResidentWebSocketSessions),
     models: models === undefined ? undefined : [...new Set(models)],
     enableProxy: enableProxy ?? false,
     proxyUrl: proxyUrl === undefined ? DEFAULT_OPENAI_CODEX_PROXY_URL : normalizeOpenAICodexProxyUrl(proxyUrl)!,

@@ -9,7 +9,8 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { createOpenAICodexProfile } from '../src/adapter.ts'
 import { OpenAICodexRequestLifecycle } from '../src/request-lifecycle.ts'
 import { Config } from '../src/index.ts'
-import { parseOpenAICodexModelTransport, resolveOpenAICodexSettings } from '../src/settings-contract.ts'
+import { parseOpenAICodexModelTransport, resolveOpenAICodexModelTransport, resolveOpenAICodexSettings } from '../src/settings-contract.ts'
+import { OpenAICodexWebSocketResidency } from '../src/ws-residency.ts'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
 import type { AddressInfo } from 'node:net'
@@ -86,12 +87,15 @@ async function chunksOf(stream: AsyncIterable<StreamChunk>) {
 }
 
 describe('Codex request-owned native auto transport', () => {
-  it('keeps SSE as the omitted setting and rejects unsupported cached transports', () => {
-    expect(resolveOpenAICodexSettings({}).transport).toBe('sse')
-    expect(Config({}).transport.get()).toBe('sse')
+  it('derives continuation from the resident budget and keeps explicit transports', () => {
+    expect(resolveOpenAICodexSettings({}).transport).toBeUndefined()
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({}))).toBe('websocket-cached')
+    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 0 }))).toBe('sse')
     expect(Config({ transport: 'auto' }).transport.get()).toBe('auto')
-    expect(() => Reflect.apply(Config, undefined, [{ transport: 'websocket-cached' }])).toThrow()
-    expect(() => parseOpenAICodexModelTransport('websocket-cached')).toThrow()
+    expect(Config({ transport: 'websocket-cached' }).transport.get()).toBe('websocket-cached')
+    expect(() => Reflect.apply(Config, undefined, [{ transport: 'websocket' }])).toThrow()
+    expect(parseOpenAICodexModelTransport('websocket-cached')).toBe('websocket-cached')
+    expect(() => parseOpenAICodexModelTransport('websocket')).toThrow()
   })
 
   it('uses WebSocket for each request, closes it, and preserves the business prompt-cache key', async () => {
@@ -237,5 +241,79 @@ describe.each(['websocket', 'sse', 'fallback'] as const)('Codex serialized reaso
     expect(server.upgrades).toBe(0)
     expect(server.httpRequests).toBe(0)
     expect(server.payloads).toEqual([])
+  })
+})
+
+/** One adapter whose provider profile runs the resident continuation transport. */
+function residencyAdapter(url: string, options: { limit?: number; now?: () => number } = {}) {
+  const original = openaiCodexProvider()
+  const selected = original.getModels()[0]
+  if (selected === undefined) throw new Error('The offline model must exist in the pinned Codex catalog')
+  const model = { ...selected, baseUrl: url }
+  const provider = { ...original, getModels: () => [model] }
+  const requests = new OpenAICodexRequestLifecycle()
+  const residency = new OpenAICodexWebSocketResidency({ resolveLimit: () => options.limit ?? 2, now: options.now })
+  const routeId = 'openai-codex'
+  const profile = createOpenAICodexProfile(provider, undefined, undefined, undefined, undefined, undefined,
+    { routeId, displayName: 'Offline Codex' }, undefined, undefined, { transport: 'websocket-cached', requests, residency })
+  const token = `offline.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'offline-account' } })).toString('base64url')}.signature`
+  const profiles = new Map([[routeId, profile]])
+  const adapter = new PiAiAdapter({
+    profiles: () => profiles,
+    resolveApiKey: async () => token,
+    auth: { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() },
+  })
+  const request: GenerateOptions = { provider: routeId, model: model.id, messages: [], sessionId: SessionId('ws-fixture-business') }
+  return {
+    residency,
+    request,
+    requests,
+    stream(input: GenerateOptions = request) { return requests.stream(next => adapter.stream(next), input) },
+  }
+}
+
+describe('Codex resident continuation transport', () => {
+  it('keeps one resident connection across conversation turns and closes it on shutdown', async () => {
+    const server = await createCodexWsFixture()
+    cleanup.push(() => server.dispose())
+    const fixture = residencyAdapter(server.url)
+    cleanup.push(() => fixture.requests.dispose())
+    for (let turn = 0; turn < 2; turn++) {
+      expect((await chunksOf(fixture.stream())).at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    }
+    expect(server.upgrades).toBe(1)
+    expect(server.httpRequests).toBe(0)
+    expect(server.payloads.map(payload => payload['prompt_cache_key'])).toEqual(['ws-fixture-business', 'ws-fixture-business'])
+    fixture.residency.closeAll()
+    await server.waitClosed()
+  })
+
+  it('keeps title, compaction, and auto-review requests on SSE', async () => {
+    const server = await createCodexWsFixture()
+    cleanup.push(() => server.dispose())
+    const fixture = residencyAdapter(server.url)
+    cleanup.push(() => fixture.requests.dispose())
+    for (const purpose of ['session-title', 'compaction', 'auto-review'] as const) {
+      expect((await chunksOf(fixture.stream({ ...fixture.request, purpose }))).at(-1))
+        .toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    }
+    expect(server.upgrades).toBe(0)
+    expect(server.httpRequests).toBe(3)
+    await server.waitClosed()
+  })
+
+  it('evicts the resident connection of another session when the budget is full', async () => {
+    const server = await createCodexWsFixture()
+    cleanup.push(() => server.dispose())
+    const fixture = residencyAdapter(server.url, { limit: 1 })
+    cleanup.push(() => fixture.requests.dispose())
+    await chunksOf(fixture.stream({ ...fixture.request, sessionId: SessionId('session-a') }))
+    expect(server.upgrades).toBe(1)
+    await chunksOf(fixture.stream({ ...fixture.request, sessionId: SessionId('session-b') }))
+    expect(server.upgrades).toBe(2)
+    expect(fixture.residency.sessions()).toEqual(['session-b'])
+    expect(server.payloads.map(payload => payload['prompt_cache_key'])).toEqual(['session-a', 'session-b'])
+    fixture.residency.closeAll()
+    await server.waitClosed()
   })
 })
