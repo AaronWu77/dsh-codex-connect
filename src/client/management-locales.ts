@@ -1,7 +1,6 @@
 /** Copy for the management center and account-scoped catalog preview. */
 export const managementEn = {
   accountReadiness: 'Account readiness',
-  readinessManualOnly: 'Status is diagnostic only. Switching and retries always require your action; requests are never replayed automatically.',
   readinessReauth: 'Sign in again', readinessLimited: 'Temporarily rate-limited (HTTP 429); quota exhaustion is not established',
   readinessUnavailable: 'Current quota read failed', readinessStale: 'Reset time has passed; refresh is needed', readinessUnknown: 'No current quota evidence',
   readinessExhausted: 'A reported quota window has no remaining allowance', readinessObserved: 'Allowance remains in the last reported windows',
@@ -37,7 +36,8 @@ export const managementEn = {
   managementOverview: 'Usage overview',
   managementOverviewDescription: 'Platform balance, this device’s usage, and each account’s Codex limits.',
   managementAccounts: 'Accounts',
-  managementAccountDescription: 'Add, switch, or remove the ChatGPT accounts saved for Codex Connect.',
+  managementAccountsTitle: 'Accounts and limits',
+  managementAccountDescription: 'Switch the active account and review the Codex limits of every saved account.',
   managementModelsDescription: 'Choose which Codex models appear and set their context budgets.',
   managementNetworkDescription: 'Review the current connection and configure automatic detection or a manual proxy.',
   managementCapabilitiesDescription: 'Enable search, image, auto-review, and other optional capabilities.',
@@ -57,7 +57,6 @@ export const managementEn = {
 }
 export const managementZh: Record<keyof typeof managementEn, string> = {
   accountReadiness: '账号就绪状态',
-  readinessManualOnly: '以下仅为诊断状态。切换账号与重试均需你手动操作，不会自动重放请求。',
   readinessReauth: '需要重新登录', readinessLimited: '暂时限流（HTTP 429），不能据此判定额度耗尽',
   readinessUnavailable: '本次额度读取失败', readinessStale: '已过重置时间，需要刷新', readinessUnknown: '暂无当前额度依据',
   readinessExhausted: '最近一次读取中，有额度窗口的余额为零', readinessObserved: '最近一次读取的额度窗口仍有余额',
@@ -93,7 +92,8 @@ export const managementZh: Record<keyof typeof managementEn, string> = {
   managementOverview: '用量概览',
   managementOverviewDescription: '查看平台余额、本机用量，以及每个账号的 Codex 额度。',
   managementAccounts: '账号管理',
-  managementAccountDescription: '添加、切换或移除 Codex Connect 保存的 ChatGPT 账号。',
+  managementAccountsTitle: '账号与额度',
+  managementAccountDescription: '切换当前账号，并查看每个已保存账号的 Codex 额度。',
   managementModelsDescription: '选择要显示的 Codex 模型，并设置上下文预算。',
   managementNetworkDescription: '查看当前连接，并配置自动检测或手动代理。',
   managementCapabilitiesDescription: '按需启用搜索、图片、自动评审等扩展能力。',
@@ -111,3 +111,7 @@ export const managementZh: Record<keyof typeof managementEn, string> = {
   managementModelUnavailable: '不可用',
   managementModelUnavailableReason: '此账号已不再列出该模型。保留最后的模型信息，但推理请求会在本地阻止。请刷新目录，或选择其他模型、账号。',
 }
+
+
+
+

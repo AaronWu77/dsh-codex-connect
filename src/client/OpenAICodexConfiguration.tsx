@@ -14,6 +14,8 @@ import {
   isValidOpenAICodexContextWindowOverrides,
   isValidOpenAICodexImageModelHint,
   isValidOpenAICodexProxyUrl,
+  isValidOpenAICodexResidentSessions,
+  MAX_OPENAI_CODEX_RESIDENT_SESSIONS,
   normalizeOpenAICodexProxyUrl,
 } from '../settings-contract.ts'
 import {
@@ -79,7 +81,8 @@ const statePillStyle: CSSProperties = { ...bodyStyle, display: 'inline-flex', al
 const proxyTabsStyle: CSSProperties = { display: 'inline-flex', alignSelf: 'flex-start', padding: 3, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1))' }
 const proxyTabStyle: CSSProperties = { boxSizing: 'border-box', minHeight: 44, padding: '8px 14px', border: 0, borderRadius: 7, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', font: 'inherit', fontSize: 13, cursor: 'pointer' }
 const activeProxyTabStyle: CSSProperties = { ...proxyTabStyle, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', boxShadow: '0 1px 3px rgb(0 0 0 / 8%)' }
-const pendingStyle: CSSProperties = { ...bodyStyle, padding: '9px 12px', borderRadius: 8, background: 'var(--dsw-alias-state-warning-bg, #fff7df)', color: 'var(--dsw-alias-state-warning-primary, #8a5a00)' }
+const groupStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10 }
+const pendingStyle: CSSProperties = { ...bodyStyle, padding: '9px 12px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent)', color: 'var(--dsw-alias-label-primary)' }
 const moduleTabsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8 }
 const moduleTabStyle: CSSProperties = { ...buttonStyle, minWidth: 0, minHeight: 44, borderRadius: 10, overflowWrap: 'anywhere' }
 const activeModuleTabStyle: CSSProperties = { ...moduleTabStyle, border: '1px solid var(--dsw-alias-button-primary-fill)', background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1))', color: 'var(--dsw-alias-label-primary)' }
@@ -134,6 +137,7 @@ const CONFIG_FIELDS = [
   'debugLogPayloadFields',
   'enableProxy',
   'proxyUrl',
+  'maxResidentWebSocketSessions',
   'enableImageTool',
   'enableImageGeneration',
   'imageModelHint',
@@ -491,6 +495,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     && Number.isInteger(draft.searchMaxOutputTokens)
     && draft.searchMaxOutputTokens > 0
   const validProxy = draft !== undefined && isValidOpenAICodexProxyUrl(draft.proxyUrl)
+  const validResidency = draft !== undefined && isValidOpenAICodexResidentSessions(draft.maxResidentWebSocketSessions)
   const validImageModelHint = draft !== undefined && isValidOpenAICodexImageModelHint(draft.imageModelHint)
   const normalizedManualProxy = normalizeOpenAICodexProxyUrl(manualProxyUrl)
   const manualProxyEntered = manualProxyUrl.trim().length > 0
@@ -514,7 +519,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     })
   const validContexts = draft !== undefined && validOverrides(draft.contextWindowOverrides, snapshot.value?.contextWindowOverrides)
   const validMaxTokens = draft !== undefined && validOverrides(draft.maxTokensOverrides, snapshot.value?.maxTokensOverrides)
-  const valid = validModel && validTokens && validProxy && validImageModelHint && validContexts && validMaxTokens && validProxySelection
+  const valid = validModel && validTokens && validProxy && validImageModelHint && validContexts && validMaxTokens && validProxySelection && validResidency
 
   const save = async (): Promise<void> => {
     if (scope === undefined || draft === undefined || !snapshot.writable || !valid) return
@@ -659,7 +664,7 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
                   update('maxTokensOverrides', { ...draft.maxTokensOverrides, [model.id]: value })
                 }
                 return (
-                  <div key={model.id} role="group" aria-label={model.name} style={{ minWidth: 0, padding: '10px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
+                  <div key={model.id} role="group" aria-label={model.name} style={{ minWidth: 0, padding: '10px 12px', marginBottom: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                       <label style={{ ...modelRowStyle, minWidth: 0, overflowWrap: 'anywhere' }}>
                         <input
@@ -882,12 +887,32 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
             </div>
           </div>
           {proxyDraftChanged ? <p style={pendingStyle} role="status">{draft.enableProxy ? t('pendingProxy', { proxyUrl: draft.proxyUrl }) : t('pendingDirect')}</p> : null}
+          <div style={fieldsetStyle}>
+            <h4 style={headingStyle}>{t('residencyHeading')}</h4>
+            <label style={formFieldStyle}>
+              <span style={labelStyle}>{t('residencyLabel')}</span>
+              <input
+                style={{ ...controlStyle, width: 112, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                type="number"
+                min={0}
+                max={MAX_OPENAI_CODEX_RESIDENT_SESSIONS}
+                step={1}
+                value={draft.maxResidentWebSocketSessions}
+                disabled={!editable}
+                aria-invalid={!validResidency}
+                onChange={event => { update('maxResidentWebSocketSessions', event.currentTarget.valueAsNumber) }}
+              />
+              <span style={bodyStyle}>{t('residencyHelp')}</span>
+            </label>
+            {validResidency ? null : <p style={errorStyle} role="alert">{t('residencyInvalid', { max: MAX_OPENAI_CODEX_RESIDENT_SESSIONS })}</p>}
+          </div>
           </div>
           <div id={`${panelPrefix}-capabilities`} role="tabpanel" aria-labelledby={`${panelPrefix}-capabilities-tab`} hidden={visibleModule !== 'capabilities'} style={{ ...fieldsetStyle, display: visibleModule === 'capabilities' ? fieldsetStyle.display : 'none' }}>
           {flush ? null : <div style={{ paddingTop: 4 }}>
             <h3 style={headingStyle}>{t('capabilitiesHeading')}</h3>
             <p style={{ ...bodyStyle, marginTop: 4 }}>{t('capabilitiesIntro')}</p>
           </div>}
+          <div style={groupStyle}>
           <label style={toggleRowStyle}>
             <input
               type="checkbox"
@@ -950,11 +975,11 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
               />
             </label>
           </div>
+          </div>
           <label style={toggleRowStyle}>
             <input
               type="checkbox"
               checked={draft.enableImageTool}
-              onChange={event => { update('enableImageTool', event.currentTarget.checked) }}
             />
             <span style={toggleCopyStyle}>
               <span style={labelStyle}>{t('enableImageTool')}</span>
@@ -1090,3 +1115,6 @@ export function OpenAICodexConfiguration({ scope, t, activeModule, panelIdPrefix
     </section>
   )
 }
+
+
+

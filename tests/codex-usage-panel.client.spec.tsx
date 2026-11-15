@@ -6,7 +6,6 @@ import type { CodexUsageInjected } from '../src/client/CodexUsagePanel.tsx'
 import type { LocalUsageSnapshot } from '../src/client/usage-ledger.ts'
 import { LocalUsageStore } from '../src/client/usage-warmup.ts'
 import { RecentRequestsStore } from '../src/client/recent-requests.ts'
-import { CodexManagementOverview } from '../src/client/CodexManagementOverview.tsx'
 import { OpenAICodexAccountStore } from '../src/client/account-store.ts'
 import { resetPlatformBalance } from '../src/client/balance.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -127,12 +126,10 @@ describe('Codex-owned quota widget', () => {
     }
     const injected = props()
     injected.panel.show()
-    const { container } = render(<><CodexUsageCapsule {...injected} t={localized} /><CodexUsagePanel {...injected} t={localized} />
-      <CodexManagementOverview t={localized} quota={injected.quota} localUsage={injected.localUsage!} /></>)
+    const { container } = render(<><CodexUsageCapsule {...injected} t={localized} /><CodexUsagePanel {...injected} t={localized} /></>)
     const capsule = within(container).getByRole('button', { name: messages['ov.entry'] })
     const dialog = screen.getByRole('dialog', { name: messages.usagePanelTitle })
-    const management = within(container).getByRole('region', { name: messages['ov.quota.platform'] })
-    for (const view of [capsule, dialog, management]) {
+    for (const view of [capsule, dialog]) {
       expect(within(view).queryByText(scope)).toBeNull()
       expect(within(view).getByText(messages['ov.kpi.tokens'])).toBeDefined()
       expect(within(view).getByText('12.3k')).toBeDefined()
@@ -170,25 +167,23 @@ describe('Codex-owned quota widget', () => {
       const publish = (next: LocalUsageSnapshot): void => { act(() => { snapshot = next; for (const listener of listeners) listener() }) }
       injected.panel.show()
       const { container } = render(<><CodexUsageCapsule {...injected} t={localized} localUsage={localUsage} />
-        <CodexUsagePanel {...injected} t={localized} localUsage={localUsage} />
-        <CodexManagementOverview t={localized} quota={injected.quota} localUsage={localUsage} /></>)
+        <CodexUsagePanel {...injected} t={localized} localUsage={localUsage} /></>)
       const capsule = within(container).getByRole('button', { name: messages['ov.entry'] })
       const dialog = screen.getByRole('dialog', { name: messages.usagePanelTitle })
-      const management = within(container).getByRole('region', { name: messages['ov.quota.platform'] })
       // Loading is the only silent state that shows no figure; every other one keeps them.
       for (const value of [snapshots[1]!, snapshots[2]!]) {
         publish(value)
-        for (const view of [capsule, dialog, management]) {
+        for (const view of [capsule, dialog]) {
           expect(within(view).queryByRole('button', { name: messages['ov.local.retry'] })).toBeNull()
           expect(within(view).getByText('12.3k')).toBeDefined()
         }
       }
       publish(snapshots[0]!)
-      for (const view of [capsule, dialog, management]) expect(within(view).queryByText('12.3k')).toBeNull()
+      for (const view of [capsule, dialog]) expect(within(view).queryByText('12.3k')).toBeNull()
       // Unavailable and failed keep the known days and surface the retry affordance.
       for (const value of [snapshots[3]!, snapshots[4]!]) {
         publish(value)
-        for (const view of [capsule, dialog, management]) expect(within(view).getByText('12.3k')).toBeDefined()
+        for (const view of [capsule, dialog]) expect(within(view).getByText('12.3k')).toBeDefined()
       }
     },
   )
@@ -217,23 +212,20 @@ describe('Codex-owned quota widget', () => {
       const publish = (next: LocalUsageSnapshot): void => { act(() => { snapshot = next; for (const listener of listeners) listener() }) }
       injected.panel.show()
       const { container } = render(<><CodexUsageCapsule {...injected} t={localized} localUsage={localUsage} />
-        <CodexUsagePanel {...injected} t={localized} localUsage={localUsage} />
-        <CodexManagementOverview t={localized} quota={injected.quota} localUsage={localUsage} /></>)
+        <CodexUsagePanel {...injected} t={localized} localUsage={localUsage} /></>)
       const capsule = within(container).getByRole('button', { name: messages['ov.entry'] })
       const dialog = screen.getByRole('dialog', { name: messages.usagePanelTitle })
-      const management = within(container).getByRole('region', { name: messages['ov.quota.platform'] })
       for (const failure of failures) {
         publish(failure.snapshot)
         retry.mockClear()
-        for (const view of [capsule, dialog, management]) {
+        for (const view of [capsule, dialog]) {
           expect(within(view).getByText(failure.message)).toBeDefined()
           if (failure.snapshot.data === null) expect(within(view).queryByText('12.3k')).toBeNull()
           else expect(within(view).getByText('12.3k')).toBeDefined()
         }
         expect(within(capsule).queryByRole('button', { name: messages['ov.local.retry'] })).toBeNull()
         fireEvent.click(within(dialog).getByRole('button', { name: messages['ov.local.retry'] }))
-        fireEvent.click(within(management).getByRole('button', { name: messages['ov.local.retry'] }))
-        expect(retry).toHaveBeenCalledTimes(2)
+        expect(retry).toHaveBeenCalledTimes(1)
         expect(within(dialog).getByText(localized('ov.quota.remaining', { p: 43 }))).toBeDefined()
       }
     },
@@ -248,11 +240,10 @@ describe('Codex-owned quota widget', () => {
       const { localUsage: _omitted, ...injected } = props()
       injected.panel.show()
       const { container } = render(<><CodexUsageCapsule {...injected} t={localized} />
-        <CodexUsagePanel {...injected} t={localized} /><CodexManagementOverview t={localized} quota={injected.quota} /></>)
+        <CodexUsagePanel {...injected} t={localized} /></>)
       const capsule = within(container).getByRole('button', { name: messages['ov.entry'] })
       const dialog = screen.getByRole('dialog', { name: messages.usagePanelTitle })
-      const management = within(container).getByRole('region', { name: messages['ov.quota.platform'] })
-      for (const view of [capsule, dialog, management]) {
+      for (const view of [capsule, dialog]) {
         expect(within(view).queryByText(messages['ov.local.unavailable'])).toBeNull()
         expect(within(view).queryByText(messages['ov.local.failed'])).toBeNull()
         expect(within(view).queryByRole('button', { name: messages['ov.local.retry'] })).toBeNull()
@@ -261,35 +252,6 @@ describe('Codex-owned quota widget', () => {
       expect(within(dialog).getByText(localized('ov.quota.remaining', { p: 43 }))).toBeDefined()
     },
   )
-
-  it('renders a reported zero day but never invents one', () => {
-    const injected = props()
-    const listeners = new Set<() => void>()
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC' }).format(Date.now())
-    let snapshot: LocalUsageSnapshot = { state: 'loading', data: { timeZone: 'UTC', days: {} } }
-    const localUsage = { snapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }, retry: vi.fn() }
-    render(<CodexManagementOverview t={t} quota={injected.quota} localUsage={localUsage} />)
-    const publish = (next: LocalUsageSnapshot): void => {
-      act(() => { snapshot = next; for (const listener of listeners) listener() })
-    }
-    // Loading and an empty ledger both leave the today card out.
-    expect(screen.queryByText('0')).toBeNull()
-    publish({ state: 'ready', data: { timeZone: 'UTC', days: {} } })
-    expect(screen.queryByText('0')).toBeNull()
-    // A day that recorded requests but no tokens is a real zero, so it renders.
-    publish({ state: 'ready', data: { timeZone: 'UTC', days: { [today]: { tokens: 0, requests: 1, sessions: 1 } } } })
-    expect(screen.getByText('0')).toBeDefined()
-    expect(screen.getByText(en['ov.quota.today'])).toBeDefined()
-  })
-
-  it('hides every local notice when no local usage source is supplied', () => {
-    const injected = props()
-    render(<CodexManagementOverview t={t} quota={injected.quota} />)
-    expect(screen.queryByText(en['ov.local.unavailable'])).toBeNull()
-    expect(screen.queryByText(en['ov.local.failed'])).toBeNull()
-    expect(screen.queryByRole('button', { name: en['ov.local.retry'] })).toBeNull()
-    expect(screen.getByText('43% left')).toBeDefined()
-  })
 
   it('reads the merged ledger straight off the Session list without any usage request', async () => {
     const originalFetch = globalThis.fetch

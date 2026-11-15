@@ -1,8 +1,11 @@
-/** Account tab: the saved ChatGPT account list and its immediate actions. */
-import { useState } from 'react'
+/** Account tab: saved ChatGPT accounts with their Codex limits and immediate actions. */
+import { useCallback, useState, useSyncExternalStore } from 'react'
 import type { AccountSnapshot, OpenAICodexAccountStore } from './account-store.ts'
 import { AccountActions, AccountFeedback } from './OpenAICodexSettings.tsx'
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
+import type { CodexQuotaService } from './quota-service.ts'
+import { fmtDuration } from './usage-format.ts'
+import { accountsOf, windowLabel, windowsOf } from './UsageQuotaGrid.tsx'
 
 /** Dependencies for the management account panel. */
 export interface CodexAccountPanelProps {
@@ -12,16 +15,22 @@ export interface CodexAccountPanelProps {
   store: OpenAICodexAccountStore
   /** Current account snapshot. */
   snapshot: AccountSnapshot
+  /** Shared per-account quota service; absent renders accounts without limits. */
+  quota?: CodexQuotaService
 }
 
 /**
- * Render every saved account as one row. The page header owns the active
- * account summary, so this panel starts with the list instead of repeating it.
- * @param props - localized copy, account store, and its current snapshot.
+ * Render every saved account as one row carrying its own Codex limits, so the
+ * account name, active badge, and window progress appear exactly once.
+ * @param props - localized copy, account store, its snapshot, and the quota service.
  * @returns the account management panel.
  */
-export function CodexAccountPanel({ t, store, snapshot }: CodexAccountPanelProps) {
+export function CodexAccountPanel({ t, store, snapshot, quota }: CodexAccountPanelProps) {
   const [removeKey, setRemoveKey] = useState<string>()
+  const subscribeQuota = useCallback((listener: () => void) => quota?.subscribe(listener) ?? (() => undefined), [quota])
+  const getQuota = useCallback(() => quota?.snapshot() ?? null, [quota])
+  const quotaSnapshot = useSyncExternalStore(subscribeQuota, getQuota)
+  const figures = accountsOf(quotaSnapshot)
   const { accounts, busy, operation, status } = snapshot
   const removeAccount = accounts.find(account => account.accountKey === removeKey)
   const replacement = removeAccount?.active === true
@@ -31,6 +40,11 @@ export function CodexAccountPanel({ t, store, snapshot }: CodexAccountPanelProps
     || operation.kind === 'waiting-authorization'
     || operation.kind === 'cancelling-authorization'
     || status.status === 'signing-in'
+  const resetIn = (resetAt: number | undefined): string | undefined => {
+    if (resetAt === undefined) return undefined
+    const left = resetAt * 1000 - Date.now()
+    return left > 0 ? fmtDuration(left) : undefined
+  }
 
   if (accounts.length === 0) {
     return <div className="cc-account-panel">
@@ -57,25 +71,50 @@ export function CodexAccountPanel({ t, store, snapshot }: CodexAccountPanelProps
       <p>{t('addingAccountKeepsCurrent')}</p>
     </div> : null}
     <ul className="cc-account-list">
-      {accounts.map(account => <li key={account.accountKey} className="cc-account-row" data-active={account.active ? 'true' : undefined}>
-        <span className="cc-account-row-avatar" aria-hidden="true">{(account.displayName.trim()[0] ?? 'C').toUpperCase()}</span>
-        <span className="cc-account-row-copy">
-          <strong>{account.displayName}</strong>
-          <span>{account.maskedEmail === undefined ? t('savedAccountDetail') : account.maskedEmail}</span>
-        </span>
-        <span className="cc-account-row-actions">
-          {account.active
-            ? <span className="cc-account-badge">{t('usingAccount')}</span>
-            : <button type="button" className="cc-row-button" disabled={busy}
-              onClick={() => { void store.activate(account.accountKey) }}>
-              {operation.kind === 'activating' && operation.accountKey === account.accountKey ? t('working') : t('useAccount')}
-            </button>}
-          <button type="button" className="cc-row-button cc-row-button-danger" disabled={busy}
-            onClick={() => { setRemoveKey(account.accountKey) }}>
-            {t('removeAccount')}
-          </button>
-        </span>
-      </li>)}
+      {accounts.map(account => {
+        const figure = figures.find(candidate => candidate.accountKey === account.accountKey)
+        const windows = figure === undefined ? [] : windowsOf(figure)
+        return <li key={account.accountKey} className="cc-account-row" data-active={account.active ? 'true' : undefined}>
+          <span className="cc-account-row-avatar" aria-hidden="true">{(account.displayName.trim()[0] ?? 'C').toUpperCase()}</span>
+          <span className="cc-account-row-copy">
+            <strong>{account.displayName}</strong>
+            <span>{account.maskedEmail === undefined ? t('savedAccountDetail') : account.maskedEmail}</span>
+          </span>
+          <span className="cc-account-row-actions">
+            {account.active
+              ? <span className="cc-account-badge">{t('usingAccount')}</span>
+              : <button type="button" className="cc-row-button" disabled={busy}
+                onClick={() => { void store.activate(account.accountKey) }}>
+                {operation.kind === 'activating' && operation.accountKey === account.accountKey ? t('working') : t('useAccount')}
+              </button>}
+            <button type="button" className="cc-row-button cc-row-button-danger" disabled={busy}
+              onClick={() => { setRemoveKey(account.accountKey) }}>
+              {t('removeAccount')}
+            </button>
+          </span>
+          {quota === undefined ? null : <div className="cc-account-quota" aria-label={t('ov.quota.limits')}>
+            {figure?.errorCode === undefined ? null : <p className="cc-codex-empty">{t('ov.quota.readFailed')}</p>}
+            {windows.length === 0
+              ? figure?.errorCode === undefined
+                ? <p className="cc-codex-empty">{figure?.unavailable === true ? t('ov.quota.readFailed') : t('quotaUnavailable')}</p>
+                : null
+              : <div className="cc-codex-windows">
+                {windows.map(win => {
+                  const reset = resetIn(win.resetAt)
+                  const remaining = Math.max(0, Math.min(100, Math.round(win.remainingPercent)))
+                  return <div className="cc-codex-window" key={win.windowSeconds}>
+                    <span className="cc-codex-window-label">{t('ov.quota.window', { w: windowLabel(win.windowSeconds) })}</span>
+                    <span className="cc-codex-window-value">{t('ov.quota.remaining', { p: remaining })}</span>
+                    {reset === undefined ? null : <span className="cc-codex-window-reset">{t('ov.quota.resetIn', { d: reset })}</span>}
+                    <span className="cc-codex-meter" data-low={remaining <= 20 ? 'true' : undefined} aria-hidden="true">
+                      <span style={{ width: remaining + '%' }} />
+                    </span>
+                  </div>
+                })}
+              </div>}
+          </div>}
+        </li>
+      })}
     </ul>
     <div className="cc-account-footer">
       <p>{t('activeAccountHelp')}</p>

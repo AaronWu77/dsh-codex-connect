@@ -7,7 +7,6 @@ import type { AccountSnapshot } from './account-store.ts'
 import { accountStatusLabel, dotStyle } from './OpenAICodexSettings.tsx'
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
 import { CodexAccountPanel } from './CodexAccountPanel.tsx'
-import { CodexManagementOverview } from './CodexManagementOverview.tsx'
 import { OpenAICodexConfiguration } from './OpenAICodexConfiguration.tsx'
 
 /** Dependencies delivered by the settings registration. */
@@ -15,16 +14,20 @@ export type OpenAICodexPluginCardInjected = OpenAICodexSettingsInjected
 /** Root framework seats plus management dependencies. */
 export type OpenAICodexPluginCardProps = PropsRuntime<'settings.section'> & OpenAICodexPluginCardInjected
 
-const MODULES = ['overview', 'account', 'models', 'capabilities', 'network'] as const
+const MODULES = ['account', 'models', 'capabilities', 'network'] as const
 const LABELS = {
-  overview: 'managementOverview',
   account: 'managementAccounts',
   models: 'modelsModule',
   capabilities: 'capabilitiesModule',
   network: 'networkModule',
 } as const
+const TITLES = {
+  account: 'managementAccountsTitle',
+  models: 'modelsModule',
+  capabilities: 'capabilitiesModule',
+  network: 'networkModule',
+} as const
 const DESCRIPTIONS = {
-  overview: 'managementOverviewDescription',
   account: 'managementAccountDescription',
   models: 'managementModelsDescription',
   capabilities: 'managementCapabilitiesDescription',
@@ -37,8 +40,8 @@ const EMPTY_ACCOUNT_SNAPSHOT: AccountSnapshot = { status: { status: 'loading' },
 
 /** Keep one configuration editor mounted so unsaved drafts survive module switches. */
 export function OpenAICodexPluginCard(props: OpenAICodexPluginCardProps) {
-  const { t, account, quota, configScope, localUsage } = props
-  const [selected, setSelected] = useState<Module>('overview')
+  const { t, account, quota, configScope } = props
+  const [selected, setSelected] = useState<Module>('account')
   const prefix = useId()
   const subscribeAccount = useCallback((listener: () => void) => account?.subscribe(listener) ?? (() => undefined), [account])
   const getAccountSnapshot = useCallback(() => account?.getSnapshot() ?? EMPTY_ACCOUNT_SNAPSHOT, [account])
@@ -59,7 +62,6 @@ export function OpenAICodexPluginCard(props: OpenAICodexPluginCardProps) {
     ? 0
     : [config.enableSearch, config.enableImageTool, config.enableImageGeneration, config.enableAutoReview].filter(Boolean).length
   const summary = (module: Module): string => {
-    if (module === 'overview') return statusLabel
     if (module === 'account') return t('savedAccounts') + ' · ' + String(snapshot.accounts.length)
     if (module === 'models') return config?.models === undefined
       ? t('modelsModuleDefault')
@@ -123,21 +125,17 @@ export function OpenAICodexPluginCard(props: OpenAICodexPluginCardProps) {
     </div>
     <main className="cc-content">
       <header className="cc-content-header">
-        <h2 className="cc-content-title">{t(LABELS[selected])}</h2>
+        <h2 className="cc-content-title">{t(TITLES[selected])}</h2>
         <p className="cc-content-subtitle">{t(DESCRIPTIONS[selected])}</p>
       </header>
-      <div id={prefix + '-overview'} role="tabpanel" aria-labelledby={prefix + '-overview-tab'} hidden={selected !== 'overview'}>
-        {selected === 'overview' && account && quota
-          ? <><CodexManagementOverview t={t} quota={quota} {...localUsage === undefined ? {} : { localUsage }} /><details className="cc-manage-diagnostics">
-              <summary>{t('accountReadiness')}</summary><AccountReadiness t={t} account={account} quota={quota} heading={false} navigate={() => { selectModule('account') }} />
-            </details></>
-          : !account || !quota ? <p role="status">{t('usageNoData')}</p> : null}
-      </div>
       <div id={prefix + '-account'} role="tabpanel" aria-labelledby={prefix + '-account-tab'} hidden={selected !== 'account'}>
         {selected === 'account'
           ? account === undefined
             ? <p role="status">{t('usageNoData')}</p>
-            : <CodexAccountPanel t={t} store={account} snapshot={snapshot} />
+            : <>
+              <CodexAccountPanel t={t} store={account} snapshot={snapshot} {...quota === undefined ? {} : { quota }} />
+              {quota === undefined ? null : <AccountReadiness t={t} account={account} quota={quota} />}
+            </>
           : null}
       </div>
       <div className="cc-content-config">
@@ -145,7 +143,7 @@ export function OpenAICodexPluginCard(props: OpenAICodexPluginCardProps) {
           t={t}
           scope={configScope}
           {...account === undefined ? {} : { account }}
-          activeModule={selected === 'overview' || selected === 'account' ? 'account' : selected}
+          activeModule={selected === 'account' ? 'account' : selected}
           panelIdPrefix={prefix}
           management
           flush

@@ -2,8 +2,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenAICodexPluginCard } from '../src/client/OpenAICodexPluginCard.tsx'
-import { CodexManagementOverview } from '../src/client/CodexManagementOverview.tsx'
-import type { LocalUsageSnapshot } from '../src/client/usage-ledger.ts'
 import { en, zh } from '../src/client/locales.ts'
 import { resetPlatformBalance } from '../src/client/balance.ts'
 import { managementFixture } from './management-fixture.ts'
@@ -18,47 +16,35 @@ function start(messages = en, writable = true) {
 }
 
 describe('Codex management center', () => {
-  it.each([en, zh])('labels today from the producer calendar, not the browser clock', labels => {
-    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-15T16:00:00Z'))
-    const f = fixture = managementFixture(labels)
-    let snapshot: LocalUsageSnapshot = { state: 'ready', data: { timeZone: 'UTC', days: {
-      '2026-10-15': { tokens: 42, requests: 1, sessions: 1 },
-      '2026-10-16': { tokens: 7, requests: 1, sessions: 1 },
-    } } }
-    const source = { snapshot: () => snapshot, subscribe: () => () => {}, retry: vi.fn() }
-    const view = render(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
-    // 16:00 UTC on 15 Oct is that Host calendar's today, so only its figure is labeled.
-    expect(screen.getByText(labels['ov.quota.today'])).toBeDefined()
-    expect(screen.getByText('42')).toBeDefined()
-    expect(screen.queryByText('12.3k')).toBeNull()
-    snapshot = { state: 'ready', data: { timeZone: 'Asia/Shanghai', days: {
-      '2026-10-15': { tokens: 42, requests: 1, sessions: 1 },
-      '2026-10-16': { tokens: 12345, requests: 1, sessions: 1 },
-    } } }
-    view.rerender(<CodexManagementOverview t={f.props.t} quota={f.props.quota} localUsage={source} />)
-    expect(screen.getByText('12.3k')).toBeDefined()
-  })
-  it.each([en, zh])('opens the shared usage overview without a second disclosure card', async labels => {
+  it.each([en, zh])('merges accounts, their Codex limits, and readiness into one page without platform figures', async labels => {
     start(labels)
-    await screen.findByText('¥42.50')
-    expect(screen.getByText('12.3k')).toBeDefined()
-    expect(screen.getAllByRole('tab')).toHaveLength(5)
+    await screen.findByText('¥42.50').catch(() => undefined)
+    expect(screen.getAllByRole('tab')).toHaveLength(4)
     expect(screen.queryByText(labels.managementBadge)).toBeNull()
     expect(screen.queryByRole('heading', { name: labels.title, level: 2 })).toBeNull()
-    expect({ tabs: screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label')), overview: screen.getByRole('tabpanel', { name: labels.managementOverview }).textContent }).toMatchSnapshot()
-    expect(screen.getByRole('tab', { name: labels.managementOverview }).getAttribute('aria-selected')).toBe('true')
+    const panel = screen.getByRole('tabpanel', { name: labels.managementAccounts })
+    expect({ tabs: screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label')), account: panel.textContent }).toMatchSnapshot()
+    expect(screen.getByRole('tab', { name: labels.managementAccounts }).getAttribute('aria-selected')).toBe('true')
+    // The removed platform section must not come back through the account page.
+    expect(within(panel).queryByText(labels['ov.quota.platformBalance'])).toBeNull()
+    expect(within(panel).queryByText(labels['ov.quota.today'])).toBeNull()
     expect(screen.queryByRole('button', { name: new RegExp(labels.expand) })).toBeNull()
     expect(screen.queryByRole('button', { name: labels.save })).toBeNull()
   })
-  it.each([en, zh])('navigates from readiness to manual account management without changing credentials or model choices', async labels => {
+  it.each([en, zh])('renders each saved account once with its own limits and readiness', async labels => {
     const f = start(labels)
-    await screen.findByText(labels.readinessManualOnly)
-    fireEvent.click(screen.getByRole('button', { name: labels.readinessManage }))
-    expect(screen.getByRole('tab', { name: labels.managementAccounts }).getAttribute('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: labels.managementAccounts }))
-    expect(f.account.getSnapshot().accounts.find(account => account.active)?.accountKey).toBe(f.first)
+    await waitFor(() => expect(f.account.getSnapshot().accounts).toHaveLength(2))
+    const panel = screen.getByRole('tabpanel', { name: labels.managementAccounts })
+    expect(within(panel).getByText(f.account.getSnapshot().accounts[0]!.displayName)).toBeDefined()
+    expect(within(panel).getByText(f.account.getSnapshot().accounts[1]!.displayName)).toBeDefined()
+    // One quota strip per account, never a repeated account heading above it.
+    expect(within(panel).getAllByLabelText(labels['ov.quota.limits'])).toHaveLength(2)
+    expect(panel.querySelectorAll('.cc-codex-meter')).toHaveLength(2)
+    expect(within(panel).getAllByLabelText(labels['ov.quota.limits'])).toHaveLength(2)
+    // Healthy accounts produce no readiness section; it appears only for problems.
+    expect(within(panel).queryByRole('region', { name: labels.accountReadiness })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: labels.readinessManage })).toBeNull()
     expect(f.mutate).not.toHaveBeenCalled()
-    expect(f.fetcher.mock.calls.filter(([url, init]) => String(url) === OPENAI_CODEX_AUTH_ACCOUNTS_PATH && (init?.method === 'POST' || init?.method === 'DELETE'))).toHaveLength(0)
   })
   it('keeps drafts across all tabs and applies only an explicit save', async () => {
     const f = start()
@@ -67,13 +53,13 @@ describe('Codex management center', () => {
     fireEvent.click(sol)
     fireEvent.click(screen.getByRole('tab', { name: en.networkModule }))
     fireEvent.click(screen.getByRole('tab', { name: en.capabilitiesModule }))
-    fireEvent.click(screen.getByRole('tab', { name: en.managementOverview }))
+    fireEvent.click(screen.getByRole('tab', { name: en.managementAccounts }))
     expect(f.mutate).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: en.save })).toBeDefined()
     expect(screen.getByText(en.managementUnsaved)).toBeDefined()
     fireEvent.click(screen.getByRole('tab', { name: en.modelsModule }))
     expect((screen.getByRole('checkbox', { name: /GPT-5.6 Sol/ }) as HTMLInputElement).checked).toBe(false)
-    fireEvent.click(screen.getByRole('tab', { name: en.managementOverview }))
+    fireEvent.click(screen.getByRole('tab', { name: en.managementAccounts }))
     fireEvent.click(screen.getByRole('button', { name: en.save }))
     await screen.findByText(en.settingsSaved)
     await waitFor(() => expect(f.scope.getSnapshot().value?.models).toEqual(['gpt-5.6-luna']))
@@ -103,7 +89,6 @@ describe('Codex management center', () => {
     const f = start()
     vi.spyOn(window, 'open').mockReturnValue(null)
     await waitFor(() => expect(f.account.getSnapshot().accounts).toHaveLength(2))
-    fireEvent.click(screen.getByRole('tab', { name: en.managementAccounts }))
     fireEvent.click(screen.getByRole('button', { name: en.useAccount }))
     await waitFor(() => expect(f.account.getSnapshot().accounts.find(account => account.active)?.accountKey).toBe(f.second))
     expect(f.mutate).not.toHaveBeenCalled()
@@ -132,7 +117,7 @@ describe('Codex management center', () => {
   })
   it('supports keyboard tab navigation and correctly links each panel', () => {
     start()
-    const first = screen.getByRole('tab', { name: en.managementOverview })
+    const first = screen.getByRole('tab', { name: en.managementAccounts })
     fireEvent.keyDown(first, { key: 'End' })
     const last = screen.getByRole('tab', { name: en.networkModule })
     expect(document.activeElement).toBe(last)

@@ -8,7 +8,7 @@ import { requestJson } from './request-json.ts'
 
 type Translate = (key: OpenAICodexSettingsKey) => string
 const MODES = ['standard', 'fast', 'ultrafast'] as const
-const ACTIVE_COLOR = '#f97316'
+const ACTIVE_COLOR = 'var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--dsw-alias-label-primary))'
 
 /** Render the compact speed menu in the existing Composer control position. */
 export function OpenAICodexSpeedControl({ sessionId, provider, model, t, refreshKey = '', available = true }: {
@@ -95,7 +95,7 @@ export function OpenAICodexSpeedControl({ sessionId, provider, model, t, refresh
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(mode) }
         }}
         style={{ display: 'flex', gap: 8, width: '100%', padding: '6px 8px', border: 0, borderRadius: 6, background: 'transparent',
-          color: !expired && selection?.mode === mode ? ACTIVE_COLOR : 'inherit', fontSize: 12, textAlign: 'left' }}>
+          color: 'var(--dsw-alias-label-primary)', fontSize: 12, textAlign: 'left' }}>
         <span aria-hidden="true" style={{ width: 14 }}>{!expired && selection?.mode === mode ? '✓' : ''}</span>
         {t(mode === 'standard' ? 'speedStandard' : mode === 'fast' ? 'speedFast' : 'speedUltrafast')}
       </button>)}
@@ -108,3 +108,4 @@ export function OpenAICodexSpeedControl({ sessionId, provider, model, t, refresh
     <span role="status" data-openai-codex-speed-status={status} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap' }}>{label}</span>
   </span>
 }
+

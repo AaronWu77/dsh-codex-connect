@@ -79,12 +79,13 @@ describe.skipIf(!existsSync(artifact))('built management client on fixed host ru
       expect(injected.quota).toBe(ctx.get('codexQuota'))
       const Component = settings.component
       render(<Component {...fixture.props} {...injected} />)
-      await screen.findByText('¥42.50')
-      expect(screen.getByRole('tab', { name: en.managementOverview })).toBeDefined()
+      await screen.findByRole('tabpanel', { name: en.managementAccounts })
+      expect(screen.getByRole('tab', { name: en.managementAccounts })).toBeDefined()
+      expect(screen.getByRole('tab', { name: en.managementAccounts }).getAttribute('aria-selected')).toBe('true')
       fireEvent.click(screen.getByRole('tab', { name: en.modelsModule }))
       await screen.findByRole('combobox', { name: en.managementPreviewAccount })
       fireEvent.click(screen.getByRole('tab', { name: en.managementAccounts }))
-      await screen.findByRole('button', { name: en.addAccount })
+      await screen.findByRole('tabpanel', { name: en.managementAccounts })
       cleanup()
       await ctx.fiber.dispose()
       expect(registrations.size).toBe(0)
@@ -96,3 +97,4 @@ describe.skipIf(!existsSync(artifact))('built management client on fixed host ru
     }
   })
 })
+

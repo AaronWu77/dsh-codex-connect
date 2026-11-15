@@ -11,7 +11,7 @@ import { supportsOpenAICodexUltrafast } from '../speed-mode-contract.ts'
 import { OpenAICodexSpeedControl } from './OpenAICodexSpeedControl.tsx'
 import type { OpenAICodexAccountStore } from './account-store.ts'
 
-const FAST_MODE_ACTIVE_COLOR = '#f97316'
+const FAST_MODE_ACTIVE_COLOR = 'var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--dsw-alias-label-primary))'
 
 type Translate = (key: OpenAICodexSettingsKey, params?: Record<string, unknown>) => string
 
@@ -262,3 +262,4 @@ function AccountScopedSpeedControl(props: OpenAICodexFastModeToggleInjected & { 
   return <OpenAICodexSpeedControl sessionId={props.sessionId} provider={props.provider} model={props.model} t={props.t} refreshKey={identity}
     available={account === undefined || !account.busy} />
 }
+

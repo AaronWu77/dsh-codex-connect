@@ -71,7 +71,7 @@ describe('OpenAI Codex browser contribution', () => {
       readFile(new URL('../src/account-routes.ts', import.meta.url), 'utf8'),
     ])
     expect(clientCard).toContain('className="cc-page cc-manage"')
-    expect(clientCard).toContain("['overview', 'account', 'models', 'capabilities', 'network']")
+    expect(clientCard).toContain("['account', 'models', 'capabilities', 'network']")
     expect(clientCard).not.toContain('aria-expanded={open}')
     expect(locales.match(/title: 'Codex Connect'/gu)).toHaveLength(2)
     expect(accountRoutes).toContain("OPENAI_CODEX_PRIMARY_DISPLAY_NAME = 'OpenAI Codex'")
