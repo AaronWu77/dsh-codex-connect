@@ -49,6 +49,7 @@ function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequ
       <span className={`cc-recent-transport cc-recent-transport-${request.transport}`}>
         {t(request.transport === 'ws' ? 'ov.recent.transport.ws' : 'ov.recent.transport.sse')}
       </span>
+      {request.continuation === undefined ? null : <span className="cc-recent-kind" data-kind="continuation" title={request.mismatch}>{t(request.continuation === 'delta' ? 'ov.recent.continuation.delta' : 'ov.recent.continuation.full')}</span>}
       <span className="cc-recent-model" title={request.model}>{request.model}</span>
       <span className="cc-recent-kind" data-kind={request.kind}>{t(KIND_KEYS[request.kind])}</span>
       {request.outcome === 'ok' ? null : <span className="cc-recent-outcome" data-outcome={request.outcome}>
@@ -68,7 +69,7 @@ function Row({ request, t, locale }: { request: RecentRequestView; t: RecentRequ
     </div>
     <div className="cc-recent-meta">
       <span>{t('ov.recent.reasoning')} <b>{reasoning ?? '—'}</b></span>
-      <span>{t('ov.recent.body')} <b>{request.bodyBytes === undefined ? '—' : formatBytes(request.bodyBytes)}</b></span>
+      <span>{t('ov.recent.body')} <b>{request.continuation === 'delta' ? request.deltaBytes === undefined ? t('ov.recent.bodyDelta') : t('ov.recent.bodyDelta') + ' · ' + formatBytes(request.deltaBytes) : request.bodyBytes === undefined ? '—' : formatBytes(request.bodyBytes)}</b></span>
     </div>
   </article>
 }
@@ -116,3 +117,7 @@ export function RecentRequests({ t, store }: RecentRequestsProps) {
     <p className="cc-recent-note">{t('ov.recent.note')}</p>
   </section>
 }
+
+
+
+

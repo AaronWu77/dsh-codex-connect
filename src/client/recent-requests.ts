@@ -25,6 +25,11 @@ export interface RecentRequestView {
   reasoning?: string
   /** Prepared payload effort; null means no effort was present, absent retains legacy selection display. */
   payloadReasoning?: string | null
+  continuation?: 'delta' | 'full'
+  /** First divergence when a full body was resent. */
+  mismatch?: string
+  /** Approximate wire bytes actually sent by a delta continuation. */
+  deltaBytes?: number
   transport: RecentRequestTransport
   inputTokens: number
   outputTokens: number
@@ -76,6 +81,9 @@ function requestOf(value: unknown): RecentRequestView | undefined {
   const reasoning = entry['reasoning']
   const payloadReasoning = entry['payloadReasoning']
   const bodyBytes = entry['bodyBytes']
+  const continuation = entry['continuation']
+  const mismatch = entry['mismatch']
+  const deltaBytes = entry['deltaBytes']
   if (id === undefined || provider === undefined || model === undefined || routeLabel === undefined
     || startedAt === undefined || (transport !== 'ws' && transport !== 'sse')
     || (outcome !== 'ok' && outcome !== 'error' && outcome !== 'aborted')
@@ -96,6 +104,9 @@ function requestOf(value: unknown): RecentRequestView | undefined {
     cacheReadTokens,
     cacheWriteTokens,
     ...count(bodyBytes) === undefined ? {} : { bodyBytes: bodyBytes as number },
+    ...continuation === 'delta' || continuation === 'full' ? { continuation } : {},
+    ...typeof mismatch === 'string' && mismatch.length > 0 ? { mismatch } : {},
+    ...count(deltaBytes) === undefined ? {} : { deltaBytes: deltaBytes as number },
     outcome,
   }
 }
@@ -151,3 +162,7 @@ export class RecentRequestsStore {
     for (const listener of this.listeners) listener()
   }
 }
+
+
+
+

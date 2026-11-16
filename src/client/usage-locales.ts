@@ -23,7 +23,10 @@ export const usageZh = {
   'ov.recent.cacheR': 'Cache R',
   'ov.recent.reasoning': '思考',
   'ov.recent.body': '请求体',
+  'ov.recent.bodyDelta': '仅增量',
   'ov.recent.transport.ws': 'WS',
+  'ov.recent.continuation.delta': '增量',
+  'ov.recent.continuation.full': '全量',
   'ov.recent.transport.sse': 'Stream',
   'ov.recent.outcome.error': '失败',
   'ov.recent.outcome.aborted': '已取消',
@@ -91,7 +94,10 @@ export const usageEn = {
   'ov.recent.cacheR': 'Cache R',
   'ov.recent.reasoning': 'Reasoning',
   'ov.recent.body': 'Request body',
+  'ov.recent.bodyDelta': 'Delta only',
   'ov.recent.transport.ws': 'WS',
+  'ov.recent.continuation.delta': 'Delta',
+  'ov.recent.continuation.full': 'Full',
   'ov.recent.transport.sse': 'Stream',
   'ov.recent.outcome.error': 'Failed',
   'ov.recent.outcome.aborted': 'Cancelled',
@@ -134,3 +140,4 @@ export const usageEn = {
   'ov.quota.detail.ago': 'ago',
   'ov.quota.detail.filterDay': 'Show only today in the list',
 } satisfies Record<keyof typeof usageZh, string>
+

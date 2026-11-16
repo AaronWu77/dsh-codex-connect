@@ -62,6 +62,8 @@ Model requests use finite SSE unless a resident WebSocket budget is configured. 
 
 A resident connection carries consecutive turns of one conversation through PI's connection-scoped `previous_response_id`; the request body keeps `store: false`, so continuation exists only while that connection stays open. Continuation is best effort: PI sends only the input delta when the rest of the request body matches the previous turn and otherwise resends the full conversation on the same connection. Prompt caching stays keyed by the Harness Session id.
 
+The recent-request list marks every WebSocket request as `Delta` (only the new items were sent) or `Full` (the whole conversation was resent on the same connection), and a delta row shows the bytes that actually crossed the wire; a full row shows the prepared body. Hovering a full row names the first divergence as `field:<name>`, `item:<index>`, `item:truncated`, or `response-items`. Switching the speed tier restarts the session's resident connection before the next turn, so the new tier starts from a clean baseline instead of a silently invalidated one.
+
 The budget is local bookkeeping, not a server limit. A new conversation evicts the least recently used idle connection; when every slot is busy, the new request uses SSE instead of closing a running stream. A rejected handshake falls back to SSE with the same captured proxy and credential and retries after a cooldown, starting at 15 s for an account connection limit and doubling up to 5 min for repeated failures. Changing the transport, budget, proxy, account, or credential closes resident connections once in-flight requests settle; disposal and Session disposal close them too, which also clears PI's idle timer. A failed proxy request never falls back to direct traffic.
 
 Native fallback stops after the provider stream starts, which can precede the first visible text token. API/protocol errors, cancellation, and partial-stream failures do not authorize concatenating a new SSE response or executing incomplete tool calls. Existing Harness recovery owns any later request retry.
@@ -209,3 +211,4 @@ The callback must match the pending flow's redirect URI and OAuth state; code-on
 If startup reports an `openai-codex` collision, inspect the effective configuration and remove only the confirmed legacy `dsh-codex` bundle or manual provider row. Do not delete credentials or unrelated providers. See [MIGRATION.md](../MIGRATION.md) for package migration and repair of Alpha 4.10 search histories.
 
 OAuth is stored separately at `$DSH_HOME/.openai-codex-auth.json` (`~/.dsh` by default); `~/.codex/auth.json` is never copied or modified. Removing the package does not remove OAuth state. Run `logout` only when deleting credentials is intentional.
+
