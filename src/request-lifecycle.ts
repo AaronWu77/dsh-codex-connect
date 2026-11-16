@@ -40,6 +40,9 @@ interface RequestState {
   bodyBytes?: number | undefined
   usage?: UsageTotals | undefined
   transport?: RecentRequestTransport | undefined
+  continuation?: 'delta' | 'full' | undefined
+  mismatch?: string | undefined
+  deltaBytes?: number | undefined
 }
 
 interface ActiveRequest {
@@ -106,7 +109,7 @@ export class OpenAICodexRequestLifecycle {
    * @param message - final assistant message of this request.
    * @param observed - transport the residency budget actually used, when it observed one.
    */
-  noteResult(message: AssistantMessage, observed?: RecentRequestTransport): void {
+  noteResult(message: AssistantMessage, observed?: RecentRequestTransport, continuation?: 'delta' | 'full', mismatch?: string, deltaBytes?: number): void {
     const request = this.scope.getStore()
     if (request === undefined) return
     const failure = message.diagnostics?.find(diagnostic => diagnostic.type === 'provider_transport_failure')
@@ -122,9 +125,15 @@ export class OpenAICodexRequestLifecycle {
         cacheWrite: message.usage.cacheWrite,
       }
     }
+    request.continuation = continuation
+    request.mismatch = mismatch
+    request.deltaBytes = deltaBytes
     if (request.recorded) {
       this.recentRequests?.update(request.entryId, {
         transport,
+        ...continuation === undefined ? {} : { continuation },
+        ...mismatch === undefined ? {} : { mismatch },
+        ...deltaBytes === undefined ? {} : { deltaBytes },
         ...request.usage === undefined ? {} : {
           inputTokens: request.usage.input,
           outputTokens: request.usage.output,
@@ -272,6 +281,9 @@ export class OpenAICodexRequestLifecycle {
       ...state.reasoning === undefined ? {} : { reasoning: state.reasoning },
       ...state.payloadReasoning === undefined ? {} : { payloadReasoning: state.payloadReasoning },
       transport: state.transport ?? (state.configuredTransport === 'sse' ? 'sse' : 'ws'),
+      ...state.continuation === undefined ? {} : { continuation: state.continuation },
+      ...state.mismatch === undefined ? {} : { mismatch: state.mismatch },
+      ...state.deltaBytes === undefined ? {} : { deltaBytes: state.deltaBytes },
       inputTokens: usage?.input ?? 0,
       outputTokens: usage?.output ?? 0,
       cacheReadTokens: usage?.cacheRead ?? 0,
@@ -281,3 +293,7 @@ export class OpenAICodexRequestLifecycle {
     })
   }
 }
+
+
+
+

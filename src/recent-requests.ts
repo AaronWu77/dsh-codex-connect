@@ -22,6 +22,12 @@ export interface RecentRequestEntry {
   /** Prepared payload effort; null means observed without an effort, absent means not observed or an older Host. */
   payloadReasoning?: string | null
   transport: RecentRequestTransport
+  /** How a WebSocket request carried the conversation, when observed. */
+  continuation?: 'delta' | 'full'
+  /** First divergence when a full body was resent, as a short reason code. */
+  mismatch?: string
+  /** Approximate wire bytes of a delta continuation. */
+  deltaBytes?: number
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -60,3 +66,6 @@ export class RecentRequestLog {
     return this.entries.map(entry => ({ ...entry }))
   }
 }
+
+
+

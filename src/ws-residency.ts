@@ -35,6 +35,8 @@ export interface OpenAICodexResidencyDecision {
   readonly continuation: boolean
   /** Session id to hand to pi-ai; present only for an admitted request. */
   readonly sessionId?: string
+  /** Counter snapshot for this request, so interleaved requests never borrow another's baseline. */
+  readonly before?: { delta: number; full: number }
 }
 
 /** Transport actually used by one settled request. */
@@ -49,6 +51,18 @@ interface ResidencyEntry {
   cooldownMs: number
   retryAt: number
   retryArmed: boolean
+  /** Counter snapshot taken when the request was admitted, so its delta can be attributed. */
+  /** Whether the settled request sent only the delta or the full conversation. */
+  continuation?: OpenAICodexContinuationKind | undefined
+}
+
+/** How one WebSocket request carried the conversation. */
+export type OpenAICodexContinuationKind = 'delta' | 'full'
+
+/** @param sessionId - session whose counters to read. @returns the current delta/full counters. */
+function readCounters(sessionId: string): { delta: number; full: number } {
+  const stats = getOpenAICodexWebSocketDebugStats(sessionId)
+  return { delta: stats?.deltaRequests ?? 0, full: stats?.fullContextRequests ?? 0 }
 }
 
 /** First retry delay for one degradation reason. */
@@ -108,6 +122,7 @@ export class OpenAICodexWebSocketResidency {
   private readonly entries = new Map<string, ResidencyEntry>()
   private readonly now: () => number
   private closeAllPending = false
+  private readonly deltaItems = new Map<string, number>()
 
   constructor(private readonly options: OpenAICodexResidencyOptions) {
     this.now = options.now ?? Date.now
@@ -148,7 +163,25 @@ export class OpenAICodexWebSocketResidency {
     this.rearmRetry(entry)
     entry.inFlight += 1
     entry.lastUsed = this.now()
-    return { continuation: true, sessionId }
+    // Attribute this request's delta against the counters it starts from. The snapshot
+    // travels with the decision: a concurrent request must not overwrite this baseline.
+    entry.continuation = undefined
+    return { continuation: true, sessionId, before: readCounters(sessionId) }
+  }
+
+  /**
+   * Report how the last settled request on this session carried its conversation.
+   * @param sessionId - admitted session.
+   * @returns the delta/full classification, or undefined when it was not observed.
+   */
+  deltaItemsOf(sessionId: string | undefined): number | undefined {
+    if (sessionId === undefined) return undefined
+    return this.deltaItems.get(sessionId)
+  }
+
+  continuationOf(sessionId: string | undefined): OpenAICodexContinuationKind | undefined {
+    if (sessionId === undefined) return undefined
+    return this.entries.get(sessionId)?.continuation
   }
 
   /**
@@ -173,6 +206,7 @@ export class OpenAICodexWebSocketResidency {
   settle(
     sessionId: string | undefined,
     failure: OpenAICodexTransportFailure | undefined,
+    before?: { delta: number; full: number },
   ): OpenAICodexSettledTransport {
     if (sessionId === undefined) return 'sse'
     const stats = getOpenAICodexWebSocketDebugStats(sessionId)
@@ -180,6 +214,11 @@ export class OpenAICodexWebSocketResidency {
       && stats?.websocketFallbackActive !== true ? 'ws' : 'sse'
     const entry = this.entries.get(sessionId)
     if (entry !== undefined) {
+      if (failure === undefined && transport === 'ws' && before !== undefined) {
+        const after = readCounters(sessionId)
+        if (after.delta > before.delta) { entry.continuation = 'delta'; this.deltaItems.set(sessionId, stats?.lastDeltaInputItems ?? 0) }
+        else if (after.full > before.full) entry.continuation = 'full'
+      }
       if (failure !== undefined) {
         const reason = classifyFailure(failure)
         entry.reason = reason
@@ -271,3 +310,5 @@ export class OpenAICodexWebSocketResidency {
     resetOpenAICodexWebSocketDebugStats()
   }
 }
+
+

@@ -40,6 +40,7 @@ import type { OpenAICodexLiveModel } from './model-catalog.ts'
 import type { OpenAICodexProxyManager } from './provider-proxy.ts'
 import type { RecentRequestLog } from './recent-requests.ts'
 import type { OpenAICodexWebSocketResidency } from './ws-residency.ts'
+import { OpenAICodexBodyIdentity } from './body-identity.ts'
 import { readOpenAICodexTransportFailure } from './ws-residency.ts'
 
 /** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
@@ -363,6 +364,10 @@ export interface OpenAICodexPayloadPolicy {
   onPayloadFields?: (() => ((names: readonly string[]) => void) | undefined) | undefined
   /** Observe content-free final payload metadata; absent disables observation, observer failures do not alter the request. */
   onPayloadMetadata?: ((metadata: OpenAICodexPayloadMetadata) => void) | undefined
+  /** Record prepared bodies so a full resend can name its first divergence. */
+  bodyIdentity?: OpenAICodexBodyIdentity | undefined
+  /** Report the resolved speed tier so a conversation can restart its socket when it changes. */
+  onModeResolved?: ((sessionId: string, mode: string) => void) | undefined
 }
 
 /**
@@ -375,6 +380,7 @@ export interface OpenAICodexPayloadPolicy {
  */
 export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAICodexPayloadPolicy): Provider {
   const streamSimple = provider.streamSimple
+  const lastRequestModes = new Map<string, string>()
   return {
     ...provider,
     streamSimple(model, context, options?: SimpleStreamOptions) {
@@ -389,6 +395,7 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
           workspace: scoped.workspaceFor(sessionId ?? ''), accountKey: request?.accountKey,
           provider: model.provider, model: model.id,
         })
+      if (sessionId !== undefined) policy.onModeResolved?.(sessionId, mode)
       const fastEnabled = mode === 'fast'
       const cacheKey = codexRoute && options?.cacheRetention !== 'none'
         ? policy.derivePromptCacheKey?.(context, sessionId)
@@ -422,6 +429,7 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
               // Optional diagnostics must not alter the provider request.
             }
           }
+          policy.bodyIdentity?.record(sessionId ?? '', result)
           logFields?.(Object.keys(result))
           return result
         },
@@ -452,6 +460,8 @@ function requestProvider(
   residency?: OpenAICodexWebSocketResidency,
 ): Provider {
   const nativeStream = provider.streamSimple
+  const resolvedMode = new Map<string, string>()
+  const lastConversationMode = new Map<string, string>()
   const requestOwned: Provider = {
     ...provider,
     streamSimple(model, context, options) {
@@ -462,10 +472,13 @@ function requestProvider(
       const decision = transport === 'websocket-cached' && residency !== undefined
         ? residency.admit(sessionId, requests?.current()?.kind)
         : undefined
-      // Keep the business Session id in payload-policy closures, not PI's socket cache.
-      const { sessionId: _sessionId, ...uncached } = options ?? {}
+      // `auto` is request-owned by design: it drops the cache key. Every other
+      // transport relies on PI's session-keyed cache, so the business Session id
+      // must reach PI intact.
+      const requestOwned = decision === undefined && transport === 'auto'
+      const { sessionId: _sessionId, ...withoutSession } = options ?? {}
       const requestOptions = decision === undefined
-        ? (options?.transport === 'auto' ? uncached : options)
+        ? (requestOwned ? withoutSession : options)
         : { ...options, transport: decision.continuation ? 'websocket-cached' as const : 'sse' as const }
       let stream: ReturnType<typeof nativeStream>
       try {
@@ -477,17 +490,22 @@ function requestProvider(
       const settlement = stream.result().then(
         message => {
           const failure = readOpenAICodexTransportFailure(message)
-          const settled = residency?.settle(sessionId, failure)
-          requests?.noteResult(message, settled)
+          const settled = residency?.settle(sessionId, failure, decision?.before)
+          const continuation = residency?.continuationOf(sessionId)
+          const deltaItems = continuation === 'delta' ? residency?.deltaItemsOf(sessionId) : undefined
+          const deltaBytes = deltaItems === undefined ? undefined : identity.deltaBytes(sessionId ?? '', deltaItems)
+          requests?.noteResult(message, settled, continuation, continuation === 'full' ? identity.explain(sessionId ?? '') : undefined, deltaBytes)
         },
-        () => { residency?.settle(sessionId, undefined) },
+        () => { residency?.settle(sessionId, undefined, decision?.before) },
       )
       requests?.trackProducer(settlement)
       return stream
     },
   }
+  const identity = new OpenAICodexBodyIdentity()
   const configured = withOpenAICodexPayloadPolicy(requestOwned, {
-    fastMode, requestScope,
+    fastMode, requestScope, bodyIdentity: identity,
+    onModeResolved: (id: string, mode: string) => { resolvedMode.set(id, mode) },
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
     ...requests === undefined ? {} : { onPayloadMetadata: (metadata: OpenAICodexPayloadMetadata) => { requests.notePayloadMetadata(metadata) } },
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
@@ -810,3 +828,14 @@ export function withOpenAICodexImageSelectionHandles(options: GenerateOptions): 
   })
   return changed ? { ...options, messages } : options
 }
+
+
+
+
+
+
+
+
+
+
+

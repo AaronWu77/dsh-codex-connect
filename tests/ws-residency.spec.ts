@@ -27,7 +27,7 @@ function registry(limit: number, clock?: () => number) {
 describe('Codex resident WebSocket budget', () => {
   it('admits only conversation turns that carry a session id', () => {
     const residency = registry(2)
-    expect(residency.admit('session-a', 'conversation')).toEqual({ continuation: true, sessionId: 'session-a' })
+    expect(residency.admit('session-a', 'conversation')).toMatchObject({ continuation: true, sessionId: 'session-a' })
     expect(residency.admit('session-a', 'title').continuation).toBe(false)
     expect(residency.admit('session-a', 'compaction').continuation).toBe(false)
     expect(residency.admit('session-a', 'subagent').continuation).toBe(false)
@@ -126,3 +126,4 @@ describe('Codex resident WebSocket budget', () => {
     residency.closeAll()
   })
 })
+
