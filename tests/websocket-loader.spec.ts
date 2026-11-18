@@ -22,6 +22,33 @@ vi.mock('@earendil-works/pi-ai/providers/openai-codex', async original => {
 })
 
 describe('complete Codex Connect Loader shutdown', () => {
+  it('rejects auto transport with a positive resident budget through the real Loader', async () => {
+    const prefix = fileURLToPath(new URL('../.tmp/ws-loader-', import.meta.url))
+    await mkdir(fileURLToPath(new URL('../.tmp/', import.meta.url)), { recursive: true })
+    const root = await mkdtemp(prefix)
+    const ctx = new Context()
+    vi.stubEnv('DSH_HOME', root)
+    try {
+      await ctx.plugin(LlmRuntime)
+      const model = openaiCodexProvider().getModels()[0]!.id
+      const plugin = process.env['CODEX_TEST_ENTRY'] === undefined
+        ? CodexConnect
+        : await import(pathToFileURL(process.env['CODEX_TEST_ENTRY']).href)
+      const loading = loadSettingsPlugin(ctx, root, 'dsh-codex-connect', plugin, {
+        transport: 'auto', maxResidentWebSocketSessions: 3, models: [model],
+      })
+      // Fiber startup logs the error, but the fixture's fiber.await() rethrows it.
+      await expect(loading).rejects.toThrow(TypeError)
+      await expect(loading).rejects.toThrow('OpenAI Codex transport "auto" is ignored while maxResidentWebSocketSessions is greater than 0; set maxResidentWebSocketSessions to 0 to keep request-owned WebSocket connections, or remove transport "auto" to keep resident continuation connections')
+      expect(ctx.llm.listProviders()).toEqual([])
+    } finally {
+      await ctx.fiber.dispose()
+      vi.unstubAllEnvs()
+      if (!root.startsWith(prefix)) throw new Error('Refusing unexpected Loader fixture cleanup path')
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('cancels an active native WS request before its plugin fiber finishes unloading', async () => {
     const prefix = fileURLToPath(new URL('../.tmp/ws-loader-', import.meta.url))
     await mkdir(fileURLToPath(new URL('../.tmp/', import.meta.url)), { recursive: true })
@@ -46,7 +73,7 @@ describe('complete Codex Connect Loader shutdown', () => {
       const plugin = process.env['CODEX_TEST_ENTRY'] === undefined
         ? CodexConnect
         : await import(pathToFileURL(process.env['CODEX_TEST_ENTRY']).href)
-      const { entry } = await loadSettingsPlugin(ctx, root, 'dsh-codex-connect', plugin, { transport: 'auto', models: [model] })
+      const { entry } = await loadSettingsPlugin(ctx, root, 'dsh-codex-connect', plugin, { transport: 'auto', maxResidentWebSocketSessions: 0, models: [model] })
       if (entry.fiber === undefined) throw new Error('Codex Loader fixture did not activate')
       const chunks: StreamChunk[] = []
       const running = (async () => {

@@ -314,24 +314,29 @@ describe('multi-route adapter', () => {
     })
   })
 
-  it('lists official GPT-6 variants on both account routes when the model whitelist includes them', async () => {
-    const live = parseOpenAICodexModelsPayload({ models: ['gpt-6-sol', 'gpt-6-luna'].map(slug => ({
+  it.each([
+    ['gpt-6-sol', 'gpt-6-luna'],
+    ['gpt-6.2-astra', 'gpt-6.2-sol'],
+  ])('lists official models %s and %s on both allowlisted account routes', async (...visible) => {
+    const live = parseOpenAICodexModelsPayload({ models: visible.map(slug => ({
       slug, display_name: slug, context_window: 272_000, max_context_window: 872_000,
       supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'max' }],
       input_modalities: ['text', 'image'],
     })) })
-    const visible = ['gpt-6-sol', 'gpt-6-luna']
     const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
       undefined, () => visible, undefined, undefined, undefined, undefined,
       () => [
         { routeId: OPENAI_CODEX_PROVIDER, displayName: 'OpenAI Codex' },
         { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct two)', accountKey: 'acct_two' },
       ], { catalogLayer: () => ({ live, mode: 'default' }) })
-    for (const route of [OPENAI_CODEX_PROVIDER, 'openai-codex-2']) {
-      expect((await adapter.listModels(route)).map(model => model.id).sort()).toEqual([...visible].sort())
-      await expect(adapter.resolveModel(route, 'gpt-6-luna')).resolves.toMatchObject({
-        id: 'gpt-6-luna', provider: route,
-      })
-    }
+    try {
+      for (const route of [OPENAI_CODEX_PROVIDER, 'openai-codex-2']) {
+        expect((await adapter.listModels(route)).map(model => model.id).sort()).toEqual([...visible].sort())
+        for (const id of visible) {
+          await expect(adapter.resolveModel(route, id)).resolves.toMatchObject({ id, provider: route })
+          await expect(adapter.prepareCall(route, id)).resolves.toMatchObject({ model: { id, provider: route } })
+        }
+      }
+    } finally { await adapter.dispose() }
   })
 })

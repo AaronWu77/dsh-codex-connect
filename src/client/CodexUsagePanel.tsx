@@ -3,14 +3,13 @@ import { useEffect, useMemo, useState, useSyncExternalStore, type ReactElement }
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CodexSettingsIcon } from './CodexSettingsIcon.tsx'
 import { RecentRequests } from './RecentRequests.tsx'
-import type { RecentRequestsStore } from './recent-requests.ts'
+import type { RecentRequestsSnapshot, RecentRequestsStore } from './recent-requests.ts'
 import { balanceEntryOf, platformBalanceSnapshot, subscribePlatformBalance } from './balance.ts'
 import { fmt } from './usage-format.ts'
-import { symbolOf, windowLabel } from './UsageQuotaGrid.tsx'
+import { symbolOf } from './UsageQuotaGrid.tsx'
 import type { DayTotals } from './usage-ledger.ts'
 import type { OpenAICodexAccountStore } from './account-store.ts'
-import type { AccountSnapshot } from './account-store.ts'
-import type { CodexQuota, CodexQuotaService, CodexQuotaWindow } from './quota-service.ts'
+import type { CodexQuotaService } from './quota-service.ts'
 import { accountStatusLabel, dotStyle } from './OpenAICodexSettings.tsx'
 import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
 import { CompactAccountUsage } from './CompactAccountUsage.tsx'
@@ -114,47 +113,23 @@ export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUs
   )
 }
 
-/** The tightest reported window across every account, for the headline KPI strip. */
-function tightestOf(quota: CodexQuota | null, accounts: AccountSnapshot['accounts'], seconds: number): { name: string; win: CodexQuotaWindow } | undefined {
-  let best: { name: string; win: CodexQuotaWindow } | undefined
-  for (const account of quota?.accounts ?? []) {
-    const name = accounts.find(candidate => candidate.accountKey === account.accountKey)?.displayName ?? account.label
-    for (const win of account.windows) {
-      if (win.windowSeconds !== seconds) continue
-      if (best === undefined || win.remainingPercent < best.win.remainingPercent) best = { name, win }
-    }
-  }
-  if (best !== undefined) return best
-  for (const win of quota?.windows ?? []) {
-    if (win.windowSeconds !== seconds) continue
-    if (best === undefined || win.remainingPercent < best.win.remainingPercent) best = { name: '', win }
-  }
-  return best
-}
-
-/** @param win - one rolling window. @returns its relative reset label, when known. */
-function resetLabel(win: CodexQuotaWindow): string | undefined {
-  if (win.resetAt === undefined) return undefined
-  const left = win.resetAt * 1000 - Date.now()
-  return left > 0 ? fmtDuration(left) : undefined
-}
 
 /** Four compact headline figures with active balance/today drill-down detail. */
-function UsageSummary({ t, days, today, currency, quota, accounts }: {
+function UsageSummary({ t, days, today, currency, recent }: {
   t: OpenAICodexSettingsInjected['t']
   days: Record<string, DayTotals>
   today: string
   currency: 'cny' | 'usd'
-  quota: CodexQuota | null
-  accounts: AccountSnapshot['accounts']
+  recent: RecentRequestsSnapshot
 }) {
   const balance = useSyncExternalStore(subscribePlatformBalance, platformBalanceSnapshot)
   const entry = balanceEntryOf(balance, currency)
   const totals = Object.hasOwn(days, today) ? days[today] : undefined
-  const five = tightestOf(quota, accounts, 18_000)
-  const week = tightestOf(quota, accounts, 604_800)
+  const summary = recent.summary
+  const hitRate = summary !== undefined && summary.totalInputTokens > 0
+    ? new Intl.NumberFormat(t('dateLocale'), { style: 'percent', maximumFractionDigits: 1 }).format(summary.cachedInputTokens / summary.totalInputTokens)
+    : '—'
   const [detail, setDetail] = useState<'balance' | 'today' | null>(null)
-  if (entry === null && totals === undefined && five === undefined && week === undefined) return null
   const title = detail === 'balance' ? t('ov.quota.balance') : detail === 'today' ? t('ov.quota.today') : ''
   const rows: Array<[string, string]> = detail === 'balance' && entry !== null
     ? [
@@ -171,17 +146,6 @@ function UsageSummary({ t, days, today, currency, quota, accounts }: {
       ]
       : []
   const toggle = (next: 'balance' | 'today'): void => { setDetail(current => current === next ? null : next) }
-  const windowTile = (label: string, value: { name: string; win: CodexQuotaWindow } | undefined): ReactElement => {
-    const percent = value === undefined ? undefined : Math.max(0, Math.min(100, Math.round(value.win.remainingPercent)))
-    const reset = value === undefined ? undefined : resetLabel(value.win)
-    return <div className="cc-kpi-tile" data-low={percent !== undefined && percent <= 20 ? 'true' : undefined}>
-      <span className="cc-kpi-label">{label}</span>
-      <span className="cc-kpi-value">{percent === undefined ? '—' : String(percent) + '%'}</span>
-      <span className="cc-kpi-sub">{value === undefined
-        ? t('usageNoData')
-        : [value.name === '' ? t('ov.quota.accountCurrent') : value.name, reset].filter(part => part !== undefined).join(' · ')}</span>
-    </div>
-  }
   return <section className="cc-kpi" aria-label={t('ov.quota.platform')}>
     <div className="cc-kpi-grid">
       {entry === null ? null : <button type="button" className="cc-kpi-tile" aria-expanded={detail === 'balance'}
@@ -196,8 +160,16 @@ function UsageSummary({ t, days, today, currency, quota, accounts }: {
         <span className="cc-kpi-value">{fmt(totals.tokens)}</span>
         <span className="cc-kpi-sub">{t('ov.kpi.tokens')}</span>
       </button>}
-      {windowTile(windowLabel(18_000), five)}
-      {windowTile(windowLabel(604_800), week)}
+      <div className="cc-kpi-tile">
+        <span className="cc-kpi-label">{t('ov.kpi.cacheHit')}</span>
+        <span className="cc-kpi-value">{hitRate}</span>
+        <span className="cc-kpi-sub">{t('ov.kpi.cacheScope')}</span>
+      </div>
+      <div className="cc-kpi-tile">
+        <span className="cc-kpi-label">{t('ov.kpi.concurrency')}</span>
+        <span className="cc-kpi-value">{recent.state === 'ready' && summary !== undefined ? summary.activeRequests.toLocaleString(t('dateLocale')) : '—'}</span>
+        <span className="cc-kpi-sub">{t('ov.kpi.concurrencyScope')}</span>
+      </div>
     </div>
     {rows.length === 0 ? null : <div className="cc-usage-quota-detail" role="group" aria-label={title}>
       <div className="cc-usage-quota-detail-head">
@@ -216,6 +188,7 @@ function UsageSummary({ t, days, today, currency, quota, accounts }: {
 /** Shared read-only usage content for the overview tab and the existing dialog. */
 export function CodexUsageOverview({ t, account, quota, localUsage, recent, includeAccountUsage = true, showStatus = true }: Omit<CodexUsageInjected, 'panel' | 'wide'> & { includeAccountUsage?: boolean; showStatus?: boolean }) {
   const snapshot = useSyncExternalStore(account.subscribe, account.getSnapshot)
+  const recentSnapshot = useSyncExternalStore(recent.subscribe, recent.snapshot)
   const quotaSnapshot = useSyncExternalStore(quota.subscribe, quota.snapshot)
   const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
   const today = usageToday(usage.data?.timeZone)
@@ -227,7 +200,7 @@ export function CodexUsageOverview({ t, account, quota, localUsage, recent, incl
         </div> : null}
         <LocalUsageNotice t={t} usage={usage} source={localUsage} />
         <UsageSummary t={t} days={currentUsageDays(usage.data, today)} today={today}
-          currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} quota={quotaSnapshot} accounts={snapshot.accounts} />
+          currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} recent={recentSnapshot} />
         {includeAccountUsage && quotaSnapshot !== null ? <CompactAccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} /> : null}
         <RecentRequests t={t} store={recent} />
       </div>

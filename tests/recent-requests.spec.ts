@@ -24,6 +24,32 @@ function entry(index: number): RecentRequestEntry {
 }
 
 describe('recent request log', () => {
+  it('sums cache tokens beyond the five visible entries and counts simultaneous streams', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const options = { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [] }
+    const stream = () => lifecycle.stream(async function* () {
+      yield { type: 'usage' as const, usage: { inputTokens: 6, outputTokens: 50, cacheReadTokens: 12, cacheWriteTokens: 2 } }
+      yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+    }, options)
+    try {
+      const first = stream()[Symbol.asyncIterator]()
+      const second = stream()[Symbol.asyncIterator]()
+      expect(log.summary().activeRequests).toBe(0)
+      await Promise.all([first.next(), second.next()])
+      expect(log.summary()).toEqual({ activeRequests: 2, cachedInputTokens: 0, totalInputTokens: 0 })
+      await first.return?.()
+      expect(log.summary()).toEqual({ activeRequests: 1, cachedInputTokens: 0, totalInputTokens: 0 })
+      await second.next()
+      await second.next()
+      for (let index = 0; index < RECENT_REQUEST_LIMIT; index++) {
+        for await (const _chunk of stream()) { /* drain */ }
+      }
+      expect(log.snapshot()).toHaveLength(5)
+      expect(log.summary()).toEqual({ activeRequests: 0, cachedInputTokens: 72, totalInputTokens: 120 })
+    } finally { await lifecycle.dispose() }
+  })
+
   it('records newest first and keeps only the fixed limit', () => {
     const log = new RecentRequestLog()
     for (let index = 0; index < RECENT_REQUEST_LIMIT + 2; index++) log.record(entry(index))
@@ -80,6 +106,28 @@ describe('recent request log', () => {
       outcome: 'ok',
     })
     await lifecycle.dispose()
+  })
+
+  it.each([
+    { forcedSse: true, transport: 'sse' },
+    { forcedSse: undefined, transport: 'ws' },
+  ])('records $transport without a result when forcedSse is $forcedSse', async ({ forcedSse, transport }) => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const iterator = lifecycle.stream(async function* () {
+      if (forcedSse === true) lifecycle.noteRoute('OpenAI Codex', 'websocket-cached', true)
+      else lifecycle.noteRoute('OpenAI Codex', 'websocket-cached')
+      lifecycle.trackProducer(Promise.reject(new Error('Producer rejected before a result')))
+      yield { type: 'text-delta' as const, index: 0, text: 'partial' }
+    }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [] })[Symbol.asyncIterator]()
+    try {
+      await iterator.next()
+      await iterator.return?.()
+      expect(log.snapshot()).toHaveLength(1)
+      expect(log.snapshot()[0]).toMatchObject({ routeLabel: 'OpenAI Codex', transport, outcome: 'aborted' })
+    } finally {
+      await lifecycle.dispose()
+    }
   })
 
   it.each(['minimal', undefined])('keeps request selection %s separate from the prepared effort', async requested => {

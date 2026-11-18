@@ -58,11 +58,11 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 
 ### 模型传输
 
-除非配置了常驻 WebSocket 名额，模型请求都使用有限的 SSE 流。`maxResidentWebSocketSessions`（0–8，默认 2）可在设置卡片的 **网络** 页修改，最多保留同样数量的续接连接，每个活跃会话一条；填 `0` 时所有模型请求都走 SSE。名额是权威开关：`llm-openai-codex` profile 配置里的 `transport: sse` 是强制关闭，`transport: auto` 只在名额为 0 时保留此前"每个请求一条独立连接"的请求自有行为。标题、压缩、自动审查和子代理请求始终使用 SSE，不占用名额。
+除非配置了常驻 WebSocket 名额，模型请求都使用有限的 SSE 流。`maxResidentWebSocketSessions`（0–8，默认 2）可在设置卡片的 **网络** 页修改，最多保留同样数量的续接连接，每个活跃会话一条；填 `0` 时不保留常驻连接，每个请求只按 `transport` 决定。名额是权威开关：`llm-openai-codex` profile 配置里的 `transport: sse` 是强制关闭，`transport: auto` 只在名额为 0 时保留此前"每个请求一条独立连接"的请求自有行为。加载时会拒绝 `transport: auto` 与正数名额的组合：将 `maxResidentWebSocketSessions` 设为 0 以保留请求自有连接，或移除 `transport: auto` 以保留常驻续接连接。在常驻续接模式下，标题、压缩、自动审查和子代理请求使用 SSE，不占用名额。
 
 常驻连接通过 PI 的连接级 `previous_response_id` 承载同一会话的连续轮次；请求体保持 `store: false`，因此续接只在这条连接存活期间存在。续接属于尽力而为：当请求体除输入以外的部分与上一轮一致时，PI 只发送输入增量，否则在同一条连接上重发完整对话。提示词缓存仍按 Harness 会话 ID 计算。
 
-最近请求会把每条 WebSocket 请求标为 `增量`（只发新增内容）或 `全量`（在同一连接上重发整段对话）；增量行显示实际发送的字节，全量行显示准备体大小。把鼠标悬停在全量行上会给出首个分歧点：`field:<字段>`、`item:<序号>`、`item:truncated` 或 `response-items`。切换快慢档会在下一轮之前重启该会话的常驻连接，让新档位从干净基线开始，而不是静默失效一轮。
+最近请求会把每条由会话常驻连接承载、且是该会话唯一在飞请求的请求标为 `增量`（只发新增内容）或 `全量`（发送整段对话而非增量）；重叠的请求不做标注，因为服务端计数器是会话级的；从未使用常驻连接的请求只显示传输方式（`WS` 或 `Stream`）。增量行显示其发送增量的近似字节，全量行显示准备体大小。把鼠标悬停在全量行上会给出首个分歧点：`field:<字段>`、`item:<序号>`、`item:truncated` 或 `response-items`。切换快慢档会改变请求体，因此下一轮会在同一条连接上重发整段对话并标记为 `全量`，而不是继续发送增量。
 
 名额是本地记账，不是服务端上限。新会话会淘汰最久未使用的空闲连接；名额全被占用时，新请求改用 SSE，而不会掐断正在输出的流。握手被拒绝时，使用同一请求已固定的代理和凭据回退 SSE，并按冷却时间重试：账号连接数上限从 15 秒起，反复失败时逐次翻倍至 5 分钟封顶。修改传输、名额、代理、账号或凭据后，会在活动请求结束后关闭常驻连接；卸载和会话销毁也会关闭连接，并清除 PI 的空闲定时器。代理请求失败绝不改走直连。
 
@@ -118,8 +118,8 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 
 | 字段 | 默认值 | 含义 |
 |---|---:|---|
-| `transport` | 省略 | `sse` 强制关闭；`auto` 仅在名额为 0 时保留请求自有 WebSocket |
-| `maxResidentWebSocketSessions` | `2` | 常驻续接连接数，0–8；填 0 时模型请求保持 SSE |
+| `transport` | 省略 | `sse` 关闭 WebSocket 传输；`auto` 仅在名额为 0 时保留请求自有 WebSocket；`transport: auto` 与正数名额会在加载时被拒绝：将名额设为 0 以保留请求自有连接，或移除 `transport: auto` 以保留常驻续接连接 |
+| `maxResidentWebSocketSessions` | `2` | 常驻续接连接数，0–8；填 0 时不保留常驻连接 |
 | `models` | 完整目录 | 可见的 Codex model id；空数组隐藏全部条目 |
 | `enableNewSessionFastMode` | `false` | 仅为新启动的主对话设置优先服务 |
 | `enableNewSubagentFastMode` | `false` | 仅为新启动的子 Agent 对话设置优先服务 |
@@ -140,7 +140,7 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 | `searchContextSize` | `medium` | `low`、`medium` 或 `high` |
 | `searchMaxOutputTokens` | `10000` | 搜索使用的正整数输出预算 |
 
-`contextWindowOverrides` 修改的是客户端预算，不是 OpenAI 服务端容量。未知模型 ID 或超过插件文档配置上限的值会明确失败。将整个字段设为 `null` 可屏蔽继承的全部覆盖值；将单个模型设为 `null` 可恢复其目录默认值，同时保留其他条目。请为输出和协议开销预留空间，并把更大的数值视为特定部署的实验，不能当作账户权限证据。所有权与持久化规则见 [Alpha 设计](design.zh.md)。
+`contextWindowOverrides` 修改的是客户端预算，不是 OpenAI 服务端容量。数字覆盖值必须对应已知模型，且不得超过其文档配置上限。将整个字段设为 `null` 可屏蔽继承的全部覆盖值；将单个模型设为 `null` 可恢复其目录默认值，同时保留其他条目。即使模型已从目录移除，单模型重置仍然有效。请为输出和协议开销预留空间，并把更大的数值视为特定部署的实验，不能当作账户权限证据。所有权与持久化规则见 [Alpha 设计](design.zh.md)。
 
 `maxTokensOverrides` 使用相同的地图结构和相同的逐模型上限。每个值会成为 DSH 为该模型上报的请求默认输出上限，以及该模型解析记录中的 `maxTokens`；它不会改变上下文长度，也不代表账户真的能生成这么多。整字段或单个模型设为 `null` 的语义与上文一致。
 
@@ -157,7 +157,7 @@ Standard / Fast / Ultrafast 请求档位、请求强度回退值，以及未取�
 3. 官方 CLI 缓存 `$CODEX_HOME/models_cache.json`（默认 `~/.codex/models_cache.json`），只读取、不写入。
 4. 已安装 pi-ai 包内置的目录。
 
-任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中；服务端独有的 GPT-6.1 代在 pi-ai 跟上之前按已安装的同类角色记录映射。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。对服务端列出的 `gpt-6-sol`、`gpt-6-luna`，插件使用对应 GPT-5.6 变体的工具与推理设置，而不是借用 Astra；即使本地上限表还没有新 slug，显式上下文覆盖值也会以实时 `max_context_window` 校验。
+任何一层失败时，每条连续失败最多记录一次日志，绝不向插件激活抛错，也不会移除模型或清空选择器。空或格式错误的实时响应按读取失败处理，因为端点对低于校验值的版本会返回空列表。slug 家族不在已安装目录中的实时模型会标记为“已知但未启用”并保留在选择器之外；扩展已知家族的 slug 会加入其中；服务端独有的 GPT-6.1 模型以及 GPT-6.2 Astra、Sol 在 pi-ai 跟上之前按已安装的同类角色记录映射。`contextWindowMode` 选择以 `context_window`（`default`）或 `max_context_window`（`extended`）作为上报预算；显式的 `contextWindowOverrides` 仍然优先，覆盖值校验也接受该扩展上限。设置卡片会显示当前来源与时间，并提供手动 **从 ChatGPT 刷新**。对服务端列出的 `gpt-6-sol`、`gpt-6-luna`，插件使用对应 GPT-5.6 变体的工具与推理设置，而不是借用 Astra；即使本地上限表还没有新 slug，显式上下文覆盖值也会以实时 `max_context_window` 校验。
 
 ### 提示缓存
 

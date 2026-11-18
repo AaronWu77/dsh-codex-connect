@@ -533,7 +533,7 @@ describe('live catalog merge', () => {
     const provider = withOpenAICodexAstra({
       ...installed, getModels: () => installed.getModels().filter(model => model.id !== 'gpt-6.1-sol'),
     })
-    const live = [liveEntry('gpt-6.1-sol', { display_name: 'GPT-6.1-Sol', max_output_tokens: 128_000 }), liveEntry('gpt-6.2-sol')]
+    const live = [liveEntry('gpt-6.1-sol', { display_name: 'GPT-6.1-Sol', max_output_tokens: 128_000 }), liveEntry('gpt-6.3-sol')]
     const before = provider.getModels().map(model => model.id)
     const merged = applyOpenAICodexLiveCatalog(provider, live, 'default')
     const entry = merged.provider.getModels().find(model => model.id === 'gpt-6.1-sol')
@@ -544,7 +544,7 @@ describe('live catalog merge', () => {
       input: ['text', 'image'], compat: previous?.compat,
       thinkingLevelMap: { ...previous?.thinkingLevelMap, off: null, minimal: null },
     })
-    expect(merged.unavailableModels).toEqual(['gpt-6.2-sol'])
+    expect(merged.unavailableModels).toEqual(['gpt-6.3-sol'])
     expect(provider.getModels().map(model => model.id)).toEqual(before)
     expect(openAICodexModelCatalogFrom({ live, mode: 'extended' }).find(model => model.id === 'gpt-6.1-sol'))
       .toMatchObject({ contextWindow: 872_000, maxContextWindow: 872_000, contextLimitSource: 'codex-catalog' })
@@ -554,6 +554,43 @@ describe('live catalog merge', () => {
     expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
       { 'gpt-6.1-sol': 872_001 }, undefined, undefined, { live, mode: 'default' })).toThrow('integer from 1 to 872000')
     expect(before).not.toContain('gpt-6.1-sol')
+  })
+
+  it.each([
+    { slug: 'gpt-6.2-astra', predecessor: 'gpt-6-astra', name: 'GPT-6.2-Astra' },
+    { slug: 'gpt-6.2-sol', predecessor: 'gpt-6.1-sol', name: 'GPT-6.2-Sol' },
+  ])('adds server-advertised $slug with matching tool metadata and live budgets', ({ slug, predecessor, name }) => {
+    const installed = openaiCodexProvider()
+    const provider = withOpenAICodexAstra({
+      ...installed, getModels: () => installed.getModels().filter(model => !model.id.startsWith('gpt-6.2-')),
+    })
+    const before = structuredClone(provider.getModels())
+    const previous = applyOpenAICodexLiveCatalog(provider, [], 'default').provider.getModels()
+      .find(model => model.id === predecessor)!
+    const live = [liveEntry(slug, {
+      display_name: name, context_window: 500_000, max_context_window: 1_000_000, max_output_tokens: 128_000,
+    })]
+    const merged = applyOpenAICodexLiveCatalog(provider, live, 'default')
+    expect(merged.unavailableModels).toEqual([])
+    expect(merged.provider.getModels().find(model => model.id === slug)).toMatchObject({
+      id: slug, name, contextWindow: 500_000, maxTokens: 128_000,
+      input: ['text', 'image'], compat: previous.compat, thinkingLevelMap: previous.thinkingLevelMap,
+    })
+    expect(openAICodexUnavailableModels(live)).toEqual([])
+    expect(openAICodexModelCatalogFrom({ live, mode: 'extended' }).find(model => model.id === slug))
+      .toMatchObject({
+        contextWindow: 1_000_000, maxContextWindow: 1_000_000, contextLimitSource: 'codex-catalog',
+        serviceTiers: [{ id: 'priority', name: 'Fast', description: 'faster' }],
+        reasoningLevels: [{ effort: 'low', description: 'fast' }, { effort: 'high', description: 'deep' }],
+      })
+    expect(createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { [slug]: 1_000_000 }, undefined, undefined, { live, mode: 'default' })
+      .piProvider.getModels().find(model => model.id === slug)?.contextWindow).toBe(1_000_000)
+    expect(() => createOpenAICodexProfile(provider, undefined, undefined, undefined,
+      { [slug]: 1_000_001 }, undefined, undefined, { live, mode: 'default' }))
+      .toThrow('integer from 1 to 1000000')
+    expect(provider.getModels()).toEqual(before)
+    expect(openAICodexModelCatalogFrom().some(model => model.id === slug)).toBe(false)
   })
 
   it('calibrates native GPT-6.1 Sol with and without a live layer without changing native metadata', () => {

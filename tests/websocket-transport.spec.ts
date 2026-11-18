@@ -245,13 +245,13 @@ describe.each(['websocket', 'sse', 'fallback'] as const)('Codex serialized reaso
 })
 
 /** One adapter whose provider profile runs the resident continuation transport. */
-function residencyAdapter(url: string, options: { limit?: number; now?: () => number } = {}) {
+function residencyAdapter(url: string, options: { limit?: number; now?: () => number; log?: RecentRequestLog } = {}) {
   const original = openaiCodexProvider()
   const selected = original.getModels()[0]
   if (selected === undefined) throw new Error('The offline model must exist in the pinned Codex catalog')
   const model = { ...selected, baseUrl: url }
   const provider = { ...original, getModels: () => [model] }
-  const requests = new OpenAICodexRequestLifecycle()
+  const requests = new OpenAICodexRequestLifecycle(undefined, options.log)
   const residency = new OpenAICodexWebSocketResidency({ resolveLimit: () => options.limit ?? 2, now: options.now })
   const routeId = 'openai-codex'
   const profile = createOpenAICodexProfile(provider, undefined, undefined, undefined, undefined, undefined,
@@ -272,6 +272,11 @@ function residencyAdapter(url: string, options: { limit?: number; now?: () => nu
   }
 }
 
+// The fixture supplies purpose identifiers normally contributed by optional producer plugins.
+function withAuxiliaryPurpose(request: GenerateOptions, purpose: 'session-title' | 'compaction' | 'auto-review'): GenerateOptions {
+  return { ...request, purpose } as GenerateOptions
+}
+
 describe('Codex resident continuation transport', () => {
   it('keeps one resident connection across conversation turns and closes it on shutdown', async () => {
     const server = await createCodexWsFixture()
@@ -288,18 +293,67 @@ describe('Codex resident continuation transport', () => {
     await server.waitClosed()
   })
 
-  it('keeps title, compaction, and auto-review requests on SSE', async () => {
+  it('keeps title, compaction, and auto-review requests on SSE and records their transport', async () => {
     const server = await createCodexWsFixture()
     cleanup.push(() => server.dispose())
-    const fixture = residencyAdapter(server.url)
+    const log = new RecentRequestLog()
+    const fixture = residencyAdapter(server.url, { log })
     cleanup.push(() => fixture.requests.dispose())
     for (const purpose of ['session-title', 'compaction', 'auto-review'] as const) {
-      expect((await chunksOf(fixture.stream({ ...fixture.request, purpose }))).at(-1))
+      expect((await chunksOf(fixture.stream(withAuxiliaryPurpose(fixture.request, purpose)))).at(-1))
         .toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(log.snapshot()[0]).toMatchObject({ transport: 'sse' })
+      expect(log.snapshot()[0]?.continuation).toBeUndefined()
     }
+    expect(log.snapshot().map(entry => ({ kind: entry.kind, transport: entry.transport, continuation: entry.continuation })))
+      .toEqual([
+        { kind: 'auto-review', transport: 'sse', continuation: undefined },
+        { kind: 'compaction', transport: 'sse', continuation: undefined },
+        { kind: 'title', transport: 'sse', continuation: undefined },
+      ])
     expect(server.upgrades).toBe(0)
     expect(server.httpRequests).toBe(3)
     await server.waitClosed()
+  })
+
+  it('a completed non-conversation request must not free the busy conversation slot', async () => {
+    const server = await createCodexWsFixture('stall')
+    cleanup.push(() => server.dispose())
+    const log = new RecentRequestLog()
+    const fixture = residencyAdapter(server.url, { limit: 1, log })
+    const controller = new AbortController()
+    const running = chunksOf(fixture.stream({ ...fixture.request, signal: controller.signal }))
+    // Attach a rejection handler immediately, including when an assertion fails before cleanup.
+    const drained = running.then(() => undefined, () => undefined)
+    cleanup.push(async () => {
+      controller.abort()
+      // A stalled cached WS may await input even after cancellation: force the peer closed
+      // before awaiting either consumer settlement or lifecycle disposal.
+      server.drop()
+      await drained
+      await fixture.requests.dispose()
+      fixture.residency.closeAll()
+    })
+    try {
+      await Promise.race([
+        server.requested,
+        running.then(() => { throw new Error('Conversation ended before the stalled WebSocket request was admitted') }),
+      ])
+      expect(fixture.residency.sessions()).toEqual(['ws-fixture-business'])
+      expect((await chunksOf(fixture.stream(withAuxiliaryPurpose(fixture.request, 'session-title')))).at(-1))
+        .toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(log.snapshot().find(entry => entry.kind === 'title')).toMatchObject({ transport: 'sse' })
+
+      expect((await chunksOf(fixture.stream({ ...fixture.request, sessionId: SessionId('ws-fixture-other') }))).at(-1))
+        .toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(server.upgrades).toBe(1)
+      expect(server.httpRequests).toBe(2)
+      expect(fixture.residency.sessions()).toEqual(['ws-fixture-business'])
+    } finally {
+      controller.abort()
+      server.drop()
+      await drained
+    }
   })
 
   it('evicts the resident connection of another session when the budget is full', async () => {

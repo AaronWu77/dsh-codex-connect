@@ -29,18 +29,31 @@ export interface OpenAICodexTransportFailure {
   readonly eventsEmitted: boolean
 }
 
-/** Per-request admission result. */
-export interface OpenAICodexResidencyDecision {
-  /** Whether this request may reuse the session's resident connection. */
-  readonly continuation: boolean
-  /** Session id to hand to pi-ai; present only for an admitted request. */
-  readonly sessionId?: string
-  /** Counter snapshot for this request, so interleaved requests never borrow another's baseline. */
-  readonly before?: { delta: number; full: number }
+/** Opaque ownership of one request admitted into the residency budget. */
+export interface OpenAICodexResidencyLease {
+  /** Session whose residency slot this request owns. */
+  readonly sessionId: string
+  /** Counter snapshot for attributing this request's delta/full classification. */
+  readonly before: { delta: number; full: number }
 }
+
+/** Per-request admission result; only an admitted request owns a lease. */
+export type OpenAICodexResidencyDecision =
+  | { readonly continuation: false }
+  | { readonly continuation: true; readonly lease: OpenAICodexResidencyLease }
 
 /** Transport actually used by one settled request. */
 export type OpenAICodexSettledTransport = 'ws' | 'sse'
+
+/** Facts observed for one settled request, scoped to that request rather than to its session. */
+export interface OpenAICodexSettlement {
+  /** Transport that carried the request, including a handshake fallback to SSE. */
+  readonly transport: OpenAICodexSettledTransport
+  /** How the request carried its conversation; present only when this request was the session's only live lease. */
+  readonly continuation?: OpenAICodexContinuationKind
+  /** Trailing input items a delta request sent; present only with `continuation: 'delta'`. */
+  readonly deltaItems?: number
+}
 
 interface ResidencyEntry {
   readonly sessionId: string
@@ -51,9 +64,7 @@ interface ResidencyEntry {
   cooldownMs: number
   retryAt: number
   retryArmed: boolean
-  /** Counter snapshot taken when the request was admitted, so its delta can be attributed. */
-  /** Whether the settled request sent only the delta or the full conversation. */
-  continuation?: OpenAICodexContinuationKind | undefined
+  closeWhenIdle?: boolean | undefined
 }
 
 /** How one WebSocket request carried the conversation. */
@@ -122,7 +133,7 @@ export class OpenAICodexWebSocketResidency {
   private readonly entries = new Map<string, ResidencyEntry>()
   private readonly now: () => number
   private closeAllPending = false
-  private readonly deltaItems = new Map<string, number>()
+  private readonly leases = new WeakMap<OpenAICodexResidencyLease, ResidencyEntry>()
 
   constructor(private readonly options: OpenAICodexResidencyOptions) {
     this.now = options.now ?? Date.now
@@ -149,11 +160,14 @@ export class OpenAICodexWebSocketResidency {
    * @returns the admission decision; `continuation: false` means SSE.
    */
   admit(sessionId: string | undefined, kind: string | undefined): OpenAICodexResidencyDecision {
+    if (this.closeAllPending) return { continuation: false }
     const limit = this.limit()
     if (sessionId === undefined || sessionId.length === 0 || !eligibleKind(kind) || limit === 0) {
       return { continuation: false }
     }
     let entry = this.entries.get(sessionId)
+    // A deferred close must not be postponed by new work on the same session.
+    if (entry?.closeWhenIdle === true) return { continuation: false }
     if (entry === undefined) {
       // A new resident connection needs a free slot; evict the least recently used idle one.
       if (this.entries.size >= limit && !this.evictIdle(sessionId)) return { continuation: false }
@@ -164,60 +178,67 @@ export class OpenAICodexWebSocketResidency {
     entry.inFlight += 1
     entry.lastUsed = this.now()
     // Attribute this request's delta against the counters it starts from. The snapshot
-    // travels with the decision: a concurrent request must not overwrite this baseline.
-    entry.continuation = undefined
-    return { continuation: true, sessionId, before: readCounters(sessionId) }
+    // travels with the lease, so a concurrent request never borrows it.
+    const lease: OpenAICodexResidencyLease = Object.freeze({ sessionId, before: Object.freeze(readCounters(sessionId)) })
+    this.leases.set(lease, entry)
+    return { continuation: true, lease }
   }
 
   /**
-   * Report how the last settled request on this session carried its conversation.
-   * @param sessionId - admitted session.
-   * @returns the delta/full classification, or undefined when it was not observed.
+   * Consume an admission lease without releasing a different or replacement entry.
+   * @param lease - opaque ownership returned by admit.
+   * @returns the original entry, or undefined when the lease is no longer active.
    */
-  deltaItemsOf(sessionId: string | undefined): number | undefined {
-    if (sessionId === undefined) return undefined
-    return this.deltaItems.get(sessionId)
-  }
-
-  continuationOf(sessionId: string | undefined): OpenAICodexContinuationKind | undefined {
-    if (sessionId === undefined) return undefined
-    return this.entries.get(sessionId)?.continuation
+  private takeLease(lease: OpenAICodexResidencyLease): ResidencyEntry | undefined {
+    const entry = this.leases.get(lease)
+    this.leases.delete(lease)
+    return entry !== undefined && this.entries.get(lease.sessionId) === entry ? entry : undefined
   }
 
   /**
    * Release a request that never produced a stream, so the slot does not leak.
-   * @param sessionId - session admitted for that request.
+   * @param lease - opaque ownership returned by admit for that request.
    */
-  abort(sessionId: string | undefined): void {
-    if (sessionId === undefined) return
-    const entry = this.entries.get(sessionId)
+  abort(lease: OpenAICodexResidencyLease): void {
+    const entry = this.takeLease(lease)
     if (entry === undefined) return
-    entry.inFlight = Math.max(0, entry.inFlight - 1)
+    entry.inFlight -= 1
     entry.lastUsed = this.now()
+    if (entry.closeWhenIdle && entry.inFlight === 0) this.closeEntry(entry.sessionId)
     if (this.closeAllPending && this.inFlight() === 0) this.closeAllNow()
   }
 
   /**
    * Apply one request's outcome and release its slot.
-   * @param sessionId - session admitted for that request.
+   * @param lease - opaque ownership returned by admit for that request.
    * @param failure - transport failure PI reported for it, when any.
-   * @returns the transport the request actually used.
+   * @returns the facts observed for this request; a consumed or stale lease reports SSE with no continuation.
    */
   settle(
-    sessionId: string | undefined,
+    lease: OpenAICodexResidencyLease,
     failure: OpenAICodexTransportFailure | undefined,
-    before?: { delta: number; full: number },
-  ): OpenAICodexSettledTransport {
-    if (sessionId === undefined) return 'sse'
-    const stats = getOpenAICodexWebSocketDebugStats(sessionId)
-    const transport: OpenAICodexSettledTransport = failure === undefined
-      && stats?.websocketFallbackActive !== true ? 'ws' : 'sse'
-    const entry = this.entries.get(sessionId)
-    if (entry !== undefined) {
-      if (failure === undefined && transport === 'ws' && before !== undefined) {
+  ): OpenAICodexSettlement {
+    const entry = this.takeLease(lease)
+    if (entry === undefined) return { transport: 'sse' }
+    const { sessionId, before } = lease
+    try {
+      const stats = getOpenAICodexWebSocketDebugStats(sessionId)
+      // A failure after the stream started was carried by WebSocket; only a failure before
+      // the first event means PI answered this request over SSE instead.
+      const transport: OpenAICodexSettledTransport = failure === undefined
+        ? (stats?.websocketFallbackActive === true ? 'sse' : 'ws')
+        : (failure.eventsEmitted ? 'ws' : 'sse')
+      // Counter windows are session-wide and advance on dispatch, so they only attribute
+      // one request while that request is the session's only live lease.
+      const isolated = entry.inFlight === 1
+      let settlement: OpenAICodexSettlement = { transport }
+      if (failure === undefined && transport === 'ws' && isolated) {
         const after = readCounters(sessionId)
-        if (after.delta > before.delta) { entry.continuation = 'delta'; this.deltaItems.set(sessionId, stats?.lastDeltaInputItems ?? 0) }
-        else if (after.full > before.full) entry.continuation = 'full'
+        if (after.delta > before.delta) {
+          settlement = { transport, continuation: 'delta', deltaItems: stats?.lastDeltaInputItems ?? 0 }
+        } else if (after.full > before.full) {
+          settlement = { transport, continuation: 'full' }
+        }
       }
       if (failure !== undefined) {
         const reason = classifyFailure(failure)
@@ -226,7 +247,7 @@ export class OpenAICodexWebSocketResidency {
         entry.cooldownMs = Math.min(baseCooldownMs(reason) * 2 ** (entry.attempts - 1), MAX_COOLDOWN_MS)
         entry.retryAt = this.now() + entry.cooldownMs
         entry.retryArmed = false
-        // The limit is account-wide, so free every idle slot before the next attempt.
+        // The limit is account-wide, so free an idle slot before the next attempt.
         if (reason === 'connection-limit') this.evictIdle(sessionId)
       } else if (transport === 'ws') {
         entry.reason = undefined
@@ -235,19 +256,27 @@ export class OpenAICodexWebSocketResidency {
         entry.retryAt = 0
         entry.retryArmed = false
       }
-      entry.inFlight = Math.max(0, entry.inFlight - 1)
+      return settlement
+    } finally {
+      entry.inFlight -= 1
       entry.lastUsed = this.now()
+      if (entry.closeWhenIdle && entry.inFlight === 0) this.closeEntry(sessionId)
+      if (this.closeAllPending && this.inFlight() === 0) this.closeAllNow()
     }
-    if (this.closeAllPending && this.inFlight() === 0) this.closeAllNow()
-    return transport
   }
 
   /**
-   * Close one session's resident connection and forget its retry state.
+   * Close one session's resident connection and forget its retry state, deferring the close
+   * while a request on that session is still in flight.
    * @param sessionId - business session that ended.
    */
   closeSession(sessionId: string | undefined): void {
     if (sessionId === undefined) return
+    const entry = this.entries.get(sessionId)
+    if (entry !== undefined && entry.inFlight > 0) {
+      entry.closeWhenIdle = true
+      return
+    }
     this.closeEntry(sessionId)
   }
 

@@ -21,7 +21,9 @@ let account: OpenAICodexAccountStore
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/dsh-codex-connect/balance'
     ? Response.json({ ok: true, value: { isAvailable: true, balances: [{ currency: 'CNY', total: 42.5, granted: 2.5, toppedUp: 40 }] } })
-    : Response.json({ status: 'signed-out' })))
+    : url === '/api/dsh-codex-connect/recent-requests'
+      ? Response.json({ requests: [], summary: { activeRequests: 3, cachedInputTokens: 193, totalInputTokens: 200 } })
+      : Response.json({ status: 'signed-out' })))
   account = new OpenAICodexAccountStore()
 })
 afterEach(() => { cleanup(); account.dispose(); resetPlatformBalance(); vi.unstubAllGlobals() })
@@ -112,6 +114,10 @@ describe('Codex-owned quota widget', () => {
     render(<CodexUsagePanel {...injected} />)
     expect(screen.getByRole('dialog', { name: 'Quota & usage' })).toBeDefined()
     await screen.findByText('¥42.50')
+    expect((await screen.findByText('Overall cache hit rate')).parentElement?.textContent).toContain('96.5%')
+    expect(screen.getByText('Current concurrency').parentElement?.textContent).toBe('Current concurrency3Model requests in progress')
+    expect(screen.getByText('5h', { exact: true })).toBeDefined()
+    expect(screen.getByText('7d', { exact: true })).toBeDefined()
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })

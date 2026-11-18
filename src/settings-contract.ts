@@ -206,9 +206,10 @@ export function parseOpenAICodexMaxResidentSessions(value: unknown): number {
 }
 
 /**
- * Resolve the transport one profile should publish. The settings card's budget
- * is authoritative for continuation; `sse` is the operator's hard off switch,
- * and `auto` keeps request-owned WebSocket only while the budget is 0.
+ * Resolve the transport one profile should publish: explicit `sse` wins,
+ * otherwise a positive budget selects `websocket-cached`, and only at budget 0
+ * can explicit `auto` select request-owned WebSocket connections (SSE otherwise).
+ * Settings loading rejects `auto` with a positive budget instead of silently overriding it.
  * @param settings - resolved settings with the optional explicit selection.
  * @returns the transport to publish on the adapter profile.
  */
@@ -342,7 +343,7 @@ export function resolveOpenAICodexSettings(
   if (resolved.contextWindowMode !== 'default' && resolved.contextWindowMode !== 'extended') {
     throw new TypeError('OpenAI Codex contextWindowMode must be "default" or "extended"')
   }
-  return {
+  const normalized = {
     ...resolved,
     transport: parseOpenAICodexModelTransport(resolved.transport),
     maxResidentWebSocketSessions: parseOpenAICodexMaxResidentSessions(resolved.maxResidentWebSocketSessions),
@@ -353,6 +354,10 @@ export function resolveOpenAICodexSettings(
     contextWindowOverrides: resolveOpenAICodexContextWindowOverrides(resolved.contextWindowOverrides),
     maxTokensOverrides: resolveOpenAICodexMaxTokensOverrides(resolved.maxTokensOverrides),
   }
+  if (normalized.transport === 'auto' && normalized.maxResidentWebSocketSessions > 0) {
+    throw new TypeError('OpenAI Codex transport "auto" is ignored while maxResidentWebSocketSessions is greater than 0; set maxResidentWebSocketSessions to 0 to keep request-owned WebSocket connections, or remove transport "auto" to keep resident continuation connections')
+  }
+  return normalized
 }
 
 /** Resolve the active proxy without treating a disabled value as a route. */

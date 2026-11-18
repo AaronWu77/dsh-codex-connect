@@ -39,7 +39,7 @@ export function watchRecentRequests(ctx: Context, log: RecentRequestLog): void {
       methods: ['GET'],
       requestBody: 'buffered',
       fetch: (): Response => Response.json(
-        { requests: log.snapshot() },
+        { requests: log.snapshot(), summary: log.summary() },
         { headers: { 'cache-control': 'no-store' } },
       ),
     }), 'dsh-codex-connect: recent request route')

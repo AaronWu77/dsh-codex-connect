@@ -167,12 +167,14 @@ export function isOpenAICodexKnownModelFamily(slug: string, knownIds: readonly s
 const OPENAI_CODEX_MODEL_PREDECESSORS: Readonly<Record<string, readonly string[]>> = {
   'gpt-6.1-sol': ['gpt-6-sol', 'gpt-5.6-sol'],
   'gpt-6.1-terra': ['gpt-6-astra', 'gpt-5.6-terra'],
+  'gpt-6.2-astra': ['gpt-6-astra'],
+  'gpt-6.2-sol': ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'],
 }
 
 /**
  * Overlay the live catalog on the installed one. Known slugs keep their
  * bundled record with the selected mode's window and the server output cap;
- * GPT-6.1 models and family-known new slugs use a sibling record. Native and
+ * Explicitly mapped generations and family-known new slugs use a sibling record. Native and
  * synthesized GPT-6.1 Sol records disable Off and Minimal. Unknown slugs are
  * returned so the Host can report them without enabling them.
  * @param provider - installed provider catalog.
@@ -366,8 +368,6 @@ export interface OpenAICodexPayloadPolicy {
   onPayloadMetadata?: ((metadata: OpenAICodexPayloadMetadata) => void) | undefined
   /** Record prepared bodies so a full resend can name its first divergence. */
   bodyIdentity?: OpenAICodexBodyIdentity | undefined
-  /** Report the resolved speed tier so a conversation can restart its socket when it changes. */
-  onModeResolved?: ((sessionId: string, mode: string) => void) | undefined
 }
 
 /**
@@ -380,7 +380,6 @@ export interface OpenAICodexPayloadPolicy {
  */
 export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAICodexPayloadPolicy): Provider {
   const streamSimple = provider.streamSimple
-  const lastRequestModes = new Map<string, string>()
   return {
     ...provider,
     streamSimple(model, context, options?: SimpleStreamOptions) {
@@ -395,7 +394,6 @@ export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAIC
           workspace: scoped.workspaceFor(sessionId ?? ''), accountKey: request?.accountKey,
           provider: model.provider, model: model.id,
         })
-      if (sessionId !== undefined) policy.onModeResolved?.(sessionId, mode)
       const fastEnabled = mode === 'fast'
       const cacheKey = codexRoute && options?.cacheRetention !== 'none'
         ? policy.derivePromptCacheKey?.(context, sessionId)
@@ -460,52 +458,53 @@ function requestProvider(
   residency?: OpenAICodexWebSocketResidency,
 ): Provider {
   const nativeStream = provider.streamSimple
-  const resolvedMode = new Map<string, string>()
-  const lastConversationMode = new Map<string, string>()
-  const requestOwned: Provider = {
+  const requestOwnedProvider: Provider = {
     ...provider,
     streamSimple(model, context, options) {
-      requests?.noteRoute(routeLabel, transport)
       const sessionId = options?.sessionId
       // Continuation is admitted per request: the resident budget only covers
       // conversation turns, and every other request keeps the finite SSE path.
       const decision = transport === 'websocket-cached' && residency !== undefined
         ? residency.admit(sessionId, requests?.current()?.kind)
         : undefined
+      requests?.noteRoute(routeLabel, transport, decision?.continuation === false)
+      const admitted = decision?.continuation === true ? decision : undefined
       // `auto` is request-owned by design: it drops the cache key. Every other
       // transport relies on PI's session-keyed cache, so the business Session id
       // must reach PI intact.
-      const requestOwned = decision === undefined && transport === 'auto'
+      const dropSessionId = decision === undefined && transport === 'auto'
       const { sessionId: _sessionId, ...withoutSession } = options ?? {}
       const requestOptions = decision === undefined
-        ? (requestOwned ? withoutSession : options)
+        ? (dropSessionId ? withoutSession : options)
         : { ...options, transport: decision.continuation ? 'websocket-cached' as const : 'sse' as const }
       let stream: ReturnType<typeof nativeStream>
       try {
         stream = nativeStream.call(provider, model, context, requestOptions)
       } catch (error: unknown) {
-        residency?.abort(sessionId)
+        if (admitted?.lease !== undefined) residency?.abort(admitted.lease)
         throw error
       }
       const settlement = stream.result().then(
         message => {
           const failure = readOpenAICodexTransportFailure(message)
-          const settled = residency?.settle(sessionId, failure, decision?.before)
-          const continuation = residency?.continuationOf(sessionId)
-          const deltaItems = continuation === 'delta' ? residency?.deltaItemsOf(sessionId) : undefined
+          const settlement = admitted === undefined ? undefined : residency?.settle(admitted.lease, failure)
+          const observed = decision === undefined
+            ? (transport === 'sse' ? 'sse' as const : undefined)
+            : settlement?.transport ?? 'sse'
+          const continuation = settlement?.continuation
+          const deltaItems = settlement?.deltaItems
           const deltaBytes = deltaItems === undefined ? undefined : identity.deltaBytes(sessionId ?? '', deltaItems)
-          requests?.noteResult(message, settled, continuation, continuation === 'full' ? identity.explain(sessionId ?? '') : undefined, deltaBytes)
+          requests?.noteResult(message, observed, continuation, continuation === 'full' ? identity.explain(sessionId ?? '') : undefined, deltaBytes)
         },
-        () => { residency?.settle(sessionId, undefined, decision?.before) },
+        () => { if (admitted !== undefined) residency?.settle(admitted.lease, undefined) },
       )
       requests?.trackProducer(settlement)
       return stream
     },
   }
   const identity = new OpenAICodexBodyIdentity()
-  const configured = withOpenAICodexPayloadPolicy(requestOwned, {
+  const configured = withOpenAICodexPayloadPolicy(requestOwnedProvider, {
     fastMode, requestScope, bodyIdentity: identity,
-    onModeResolved: (id: string, mode: string) => { resolvedMode.set(id, mode) },
     derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
     ...requests === undefined ? {} : { onPayloadMetadata: (metadata: OpenAICodexPayloadMetadata) => { requests.notePayloadMetadata(metadata) } },
     ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
@@ -663,7 +662,13 @@ export function withOpenAICodexMaxTokensOverrides(
   return applyOpenAICodexOverrides(provider, undefined, overrides)
 }
 
-/** Reject unknown ids and out-of-range context budgets before accepting settings or requests. */
+/**
+ * Validate numeric context budgets against the catalog. Null resets can mask inherited
+ * values for models that are no longer in the catalog.
+ * @param overrides - per-model budgets or resets.
+ * @param catalog - model ids and their context limits.
+ * @throws {TypeError} If a numeric budget targets an unknown model or exceeds its valid range.
+ */
 export function assertOpenAICodexContextWindowOverrides(
   overrides: Readonly<Record<string, number | null>> | undefined,
   catalog: readonly (Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>
@@ -671,19 +676,22 @@ export function assertOpenAICodexContextWindowOverrides(
 ): void {
   const models = new Map(catalog.map(model => [model.id, model]))
   for (const [id, budget] of Object.entries(overrides ?? {})) {
+    if (budget === null) continue
     const model = models.get(id)
     if (model === undefined) throw new TypeError(`OpenAI Codex contextWindowOverrides contains unknown model id "${id}"`)
     const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
-    if (budget !== null && !isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
+    if (!isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
       throw new TypeError(`OpenAI Codex contextWindowOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
     }
   }
 }
 
 /**
- * Reject unknown model ids and output budgets outside the model's configuration
- * range before accepting settings or requests. The ceiling is the same
- * per-model configuration limit the context budget uses.
+ * Validate numeric output budgets against the same catalog limits as context budgets.
+ * Null resets can mask inherited values for models that are no longer in the catalog.
+ * @param overrides - per-model budgets or resets.
+ * @param catalog - model ids and their context limits.
+ * @throws {TypeError} If a numeric budget targets an unknown model or exceeds its valid range.
  */
 export function assertOpenAICodexMaxTokensOverrides(
   overrides: Readonly<Record<string, number | null>> | undefined,
@@ -692,10 +700,11 @@ export function assertOpenAICodexMaxTokensOverrides(
 ): void {
   const models = new Map(catalog.map(model => [model.id, model]))
   for (const [id, budget] of Object.entries(overrides ?? {})) {
+    if (budget === null) continue
     const model = models.get(id)
     if (model === undefined) throw new TypeError(`OpenAI Codex maxTokensOverrides contains unknown model id "${id}"`)
     const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
-    if (budget !== null && !isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
+    if (!isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
       throw new TypeError(`OpenAI Codex maxTokensOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
     }
   }

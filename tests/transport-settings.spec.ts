@@ -7,6 +7,7 @@ import {
   decodeOpenAICodexSettings,
   DEFAULT_OPENAI_CODEX_SETTINGS,
   resolveOpenAICodexModelTransport,
+  resolveOpenAICodexProxyUrl,
   resolveOpenAICodexSettings,
 } from '../src/settings-contract.ts'
 import { OpenAICodexCredentialStore } from '../src/store.ts'
@@ -39,8 +40,7 @@ describe('Codex transport configuration snapshots', () => {
     expect(resolveOpenAICodexSettings({})).toMatchObject({ transport: undefined, maxResidentWebSocketSessions: 2 })
     expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({}))).toBe('websocket-cached')
     expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 0 }))).toBe('sse')
-    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 4 }))).toBe('websocket-cached')
-    expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 0 }))).toBe('auto')
+    expect(resolveOpenAICodexModelTransport({ transport: 'auto', maxResidentWebSocketSessions: 4 })).toBe('websocket-cached')
     expect(resolveOpenAICodexModelTransport(resolveOpenAICodexSettings({ transport: 'sse', maxResidentWebSocketSessions: 4 }))).toBe('sse')
     expect(() => resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 1.5 })).toThrow()
 
@@ -51,6 +51,39 @@ describe('Codex transport configuration snapshots', () => {
     expect(decodeOpenAICodexSettings({ ...old, transport: 'websocket-cached' })?.transport).toBe('websocket-cached')
     expect(decodeOpenAICodexSettings({ ...old, transport: 'websocket' })).toBeUndefined()
     expect(decodeOpenAICodexSettings({ ...old, maxResidentWebSocketSessions: 9 })).toBeUndefined()
+  })
+
+  it('rejects auto transport with a positive resident budget', () => {
+    const resolve = () => resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 3 })
+    expect(resolve).toThrow(TypeError)
+    expect(resolve).toThrow('OpenAI Codex transport "auto" is ignored while maxResidentWebSocketSessions is greater than 0; set maxResidentWebSocketSessions to 0 to keep request-owned WebSocket connections, or remove transport "auto" to keep resident continuation connections')
+  })
+
+  it('keeps auto transport with a zero resident budget', () => {
+    const settings = resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 0 })
+    expect(settings).toMatchObject({ transport: 'auto', maxResidentWebSocketSessions: 0 })
+    expect(resolveOpenAICodexModelTransport(settings)).toBe('auto')
+  })
+
+  it('resolves proxy settings twice for legal auto and cached transports', () => {
+    expect(() => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 0 })))
+      .not.toThrow()
+    expect(resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings({ transport: 'auto', maxResidentWebSocketSessions: 0 })))
+      .toBeUndefined()
+    expect(() => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 3 })))
+      .not.toThrow()
+    expect(resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 3 })))
+      .toBeUndefined()
+  })
+
+  it('rejects auto transport with the default resident budget', () => {
+    expect(() => resolveOpenAICodexSettings({ transport: 'auto' })).toThrow(TypeError)
+  })
+
+  it('derives cached WebSocket transport from a positive budget when transport is omitted', () => {
+    const settings = resolveOpenAICodexSettings({ maxResidentWebSocketSessions: 3 })
+    expect(settings).toMatchObject({ transport: undefined, maxResidentWebSocketSessions: 3 })
+    expect(resolveOpenAICodexModelTransport(settings)).toBe('websocket-cached')
   })
 
   it('keeps prepared calls on their captured transport and removes only auto socket-cache identity', async () => {

@@ -84,7 +84,7 @@ describe('context windows through the real Host settings and LLM registry', () =
     expect((await runtime.llm.listModels(provider)).map(entry => entry.id)).toEqual([other])
     expect(plugin.decodeOpenAICodexSettings(runtime.settings.describe().find(entry => entry.ns === ns)?.value)?.contextWindowOverrides)
       .toEqual({ [other]: 340_000 })
-    await expect(runtime.settings.update(ns, { contextWindowOverrides: { 'unknown-model': null } })).rejects.toThrow('unknown model id')
+    await expect(runtime.settings.update(ns, { contextWindowOverrides: { 'unknown-model': 300_000 } })).rejects.toThrow('unknown model id')
     await runtime.settings.update(ns, { contextWindowOverrides: { [model]: 320_000 } })
     expect((await runtime.llm.resolveModelInfo(provider, model)).context?.contextWindow).toBe(320_000)
   })
@@ -104,6 +104,25 @@ describe('context windows through the real Host settings and LLM registry', () =
         .toMatchObject({ contextWindowOverrides: { [model]: 300_000 } })
     }
   })
+
+  it.each(['contextWindowOverrides', 'maxTokensOverrides'] as const)(
+    'saves model visibility with a retired-model reset in %s', async (field) => {
+      const retired = 'retired-codex-model'
+      const overrides = { [retired]: null }
+      const runtime = await boot({ models: [model, other], [field]: overrides })
+      const before = runtime.settings.describe().find(entry => entry.ns === ns)!
+
+      await runtime.settings.mutate(ns, [{ op: 'set', path: ['models'], value: [model] }], before.revision)
+      expect(runtime.settings.describe().find(entry => entry.ns === ns)?.value)
+        .toMatchObject({ models: [model], [field]: overrides })
+      expect((await runtime.llm.listModels(provider)).map(entry => entry.id)).toEqual([model])
+
+      await expect(runtime.settings.update(ns, { [field]: { [retired]: 10_000 } }))
+        .rejects.toThrow('unknown model id "retired-codex-model"')
+      expect(runtime.settings.describe().find(entry => entry.ns === ns)?.value)
+        .toMatchObject({ models: [model], [field]: overrides })
+    },
+  )
 
   it('removes one stored model override without changing another model or model visibility', async () => {
     const runtime = await boot({ contextWindowOverrides: { [model]: 350_000, [other]: 340_000 }, models: [other] })

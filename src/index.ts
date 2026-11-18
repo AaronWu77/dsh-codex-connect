@@ -305,7 +305,9 @@ export interface Config {
   /**
    * Explicit model transport. Omitted derives it from
    * {@link maxResidentWebSocketSessions}: `websocket-cached` for a positive
-   * budget, SSE otherwise. `auto` keeps request-owned WebSocket connections.
+   * budget, SSE otherwise. `auto` keeps request-owned WebSocket connections
+   * only at budget 0; a positive budget overrides `auto`, so that combination
+   * is rejected at load.
    */
   transport?: OpenAICodexModelTransport | undefined
   /**

@@ -19,7 +19,7 @@ describe('Quota widget and usage dialog in Chromium', () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async url => String(url) === '/api/dsh-codex-connect/balance'
       ? Response.json({ ok: true, value: { isAvailable: true, balances: [{ currency: 'CNY', total: 42.5, granted: 2.5, toppedUp: 40 }] } })
       : String(url) === '/api/dsh-codex-connect/recent-requests'
-        ? Response.json({ requests: [
+        ? Response.json({ summary: { activeRequests: 2, cachedInputTokens: 193, totalInputTokens: 200 }, requests: [
           { id: 'recent-1', startedAt: Date.now(), provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', kind: 'conversation', reasoning: 'xhigh', transport: 'ws', inputTokens: 3_650, outputTokens: 6_370, cacheReadTokens: 274_180, cacheWriteTokens: 0, bodyBytes: 1_048_576, outcome: 'ok' },
           { id: 'recent-2', startedAt: Date.now() - 60_000, provider: 'openai-codex', model: 'gpt-6.1-sol', routeLabel: 'OpenAI Codex (AaronWu)', kind: 'title', reasoning: 'xhigh', transport: 'sse', inputTokens: 271_440, outputTokens: 2_900, cacheReadTokens: 0, cacheWriteTokens: 0, bodyBytes: 1_003_000, outcome: 'ok' },
         ] })
@@ -53,6 +53,9 @@ describe('Quota widget and usage dialog in Chromium', () => {
       await page.getByText(labels['ov.entry'], { exact: true }).click()
       const dialog = page.getByRole('dialog', { name: labels.usagePanelTitle, exact: true })
       await expect.element(dialog).toBeVisible()
+      await expect.element(dialog.getByText(labels['ov.kpi.cacheHit'], { exact: true })).toBeVisible()
+      await expect.element(dialog.getByText('96.5%', { exact: true })).toBeVisible()
+      await expect.element(dialog.getByText(labels['ov.kpi.concurrency'], { exact: true })).toBeVisible()
       const box = (await dialog.element()).getBoundingClientRect()
       expect(box.left).toBeGreaterThanOrEqual(0)
       expect(box.right).toBeLessThanOrEqual(width)

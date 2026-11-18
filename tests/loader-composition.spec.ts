@@ -37,6 +37,15 @@ describe('OpenAI Codex real composition', () => {
   it('loads through the Loader, exposes the catalog, and unregisters on disposal', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-openai-codex-loader-'))
     vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('CODEX_HOME', root)
+    const newModels = ['gpt-6.2-astra', 'gpt-6.2-sol']
+    await writeFile(join(root, 'models_cache.json'), JSON.stringify({
+      fetched_at: Date.now(), client_version: '0.169.0',
+      models: newModels.map(slug => ({
+        slug, display_name: slug, context_window: 500_000, max_context_window: 1_000_000, max_output_tokens: 128_000,
+        supported_reasoning_levels: [{ effort: 'high' }, { effort: 'max' }], input_modalities: ['text', 'image'],
+      })),
+    }))
     const configPath = join(root, 'cordis.yml')
     await writeFile(configPath, [
       '- id: llm',
@@ -49,6 +58,7 @@ describe('OpenAI Codex real composition', () => {
       '    models:',
       '      - gpt-5.6-luna',
       '      - gpt-5.6-terra',
+      ...newModels.map(id => `      - ${id}`),
       '',
     ].join('\n'))
 
@@ -76,8 +86,15 @@ describe('OpenAI Codex real composition', () => {
     await ctx.loader.await()
 
     expect(ctx.llm.listProviders()).toEqual([{ id: 'openai-codex', name: 'OpenAI Codex' }])
-    const models = await ctx.llm.listModels('openai-codex')
-    expect(models.map(model => model.id)).toEqual(['gpt-5.6-luna', 'gpt-5.6-terra'])
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('openai-codex')).map(model => model.id).sort())
+        .toEqual(['gpt-5.6-luna', 'gpt-5.6-terra', ...newModels].sort())
+    }, { timeout: 20_000 })
+    for (const id of newModels) {
+      await expect(ctx.llm.resolveModelInfo('openai-codex', id)).resolves.toMatchObject({
+        id, context: { contextWindow: 500_000 },
+      })
+    }
 
     await expect(ctx.web.search({ query: 'must stay unconfigured' }))
       .rejects.toMatchObject({ code: 'WEB_PROVIDER_UNAVAILABLE' })

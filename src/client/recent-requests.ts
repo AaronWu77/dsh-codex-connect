@@ -43,6 +43,7 @@ export interface RecentRequestView {
 export interface RecentRequestsSnapshot {
   state: 'idle' | 'loading' | 'ready' | 'failed'
   requests: readonly RecentRequestView[]
+  summary?: { activeRequests: number; cachedInputTokens: number; totalInputTokens: number }
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -121,6 +122,16 @@ export function recentRequestsOf(value: unknown): RecentRequestView[] {
   })
 }
 
+function summaryOf(value: unknown): RecentRequestsSnapshot['summary'] {
+  const summary = record(record(value)?.['summary'])
+  const activeRequests = count(summary?.['activeRequests'])
+  const cachedInputTokens = count(summary?.['cachedInputTokens'])
+  const totalInputTokens = count(summary?.['totalInputTokens'])
+  return activeRequests === undefined || cachedInputTokens === undefined || totalInputTokens === undefined || cachedInputTokens > totalInputTokens
+    ? undefined
+    : { activeRequests, cachedInputTokens, totalInputTokens }
+}
+
 /**
  * Observable recent-request source. Refreshes on demand while the panel is visible;
  * failed refreshes retain the last good rows.
@@ -142,14 +153,15 @@ export class RecentRequestsStore {
   /** Read the Host's current list; concurrent callers share one request. */
   refresh(): Promise<void> {
     if (this.pending !== undefined) return this.pending
-    if (this.current.requests.length === 0) this.publish({ state: 'loading', requests: [] })
+    if (this.current.requests.length === 0 && this.current.summary === undefined) this.publish({ state: 'loading', requests: [] })
     this.pending = (async () => {
       try {
         const { response, value } = await requestJson(RECENT_REQUESTS_ROUTE, { method: 'GET' })
         if (!response.ok) throw new Error(`recent requests returned HTTP ${response.status}`)
-        this.publish({ state: 'ready', requests: recentRequestsOf(value) })
+        const summary = summaryOf(value)
+        this.publish({ state: 'ready', requests: recentRequestsOf(value), ...summary === undefined ? {} : { summary } })
       } catch (_error) {
-        this.publish({ state: 'failed', requests: this.current.requests })
+        this.publish({ ...this.current, state: 'failed' })
       } finally {
         this.pending = undefined
       }
@@ -158,7 +170,7 @@ export class RecentRequestsStore {
   }
 
   private publish(next: RecentRequestsSnapshot): void {
-    this.current = Object.freeze({ state: next.state, requests: Object.freeze([...next.requests]) })
+    this.current = Object.freeze({ ...next, requests: Object.freeze([...next.requests]) })
     for (const listener of this.listeners) listener()
   }
 }

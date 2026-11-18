@@ -33,8 +33,10 @@ interface RequestState {
   kind: RecentRequestKind
   entryId: string
   recorded: boolean
+  outcome?: RecentRequestOutcome
   routeLabel?: string | undefined
   configuredTransport?: ConfigTransport | undefined
+  forcedSse?: boolean | undefined
   reasoning?: string | undefined
   payloadReasoning?: string | null | undefined
   bodyBytes?: number | undefined
@@ -84,12 +86,18 @@ export class OpenAICodexRequestLifecycle {
   /** The request's captured proxy and cancellation, including authentication. */
   current(): Readonly<RequestState> | undefined { return this.scope.getStore() }
 
-  /** Record the route label and configured transport for the active request. */
-  noteRoute(routeLabel: string | undefined, transport: ConfigTransport): void {
+  /**
+   * Record route selection so a residency refusal remains SSE even when the producer rejects before a result.
+   * @param routeLabel - selected account's display label.
+   * @param transport - configured transport before request-specific residency admission.
+   * @param forcedSse - whether this request was refused WebSocket residency.
+   */
+  noteRoute(routeLabel: string | undefined, transport: ConfigTransport, forcedSse?: boolean): void {
     const request = this.scope.getStore()
     if (request === undefined) return
     request.routeLabel = routeLabel
     request.configuredTransport = transport
+    request.forcedSse = forcedSse
   }
 
   /** @param metadata - content-free prepared payload facts; ignored outside an active request and merged into an already recorded row. */
@@ -183,11 +191,13 @@ export class OpenAICodexRequestLifecycle {
         let consumerReturned = false
         let closing: Promise<IteratorResult<StreamChunk>> | undefined
         let settlement: Promise<void> | undefined
+        let settleSummary: ReturnType<RecentRequestLog['begin']> | undefined
         const settle = (): Promise<void> => {
           settlement ??= (async () => {
             finished = true
             await Promise.all(state.producers)
             owner.active.delete(request)
+            settleSummary?.(state.outcome === 'ok' ? state.usage : undefined)
           })()
           return settlement
         }
@@ -223,6 +233,7 @@ export class OpenAICodexRequestLifecycle {
             }
             if (finished || closing !== undefined) return { done: true as const, value: undefined }
             try {
+              settleSummary ??= owner.recentRequests?.begin()
               const result = await owner.scope.run(state, () => source.next())
               if (!result.done && result.value.type === 'finish') terminalDelivered = true
               if (!result.done && result.value.type === 'usage') {
@@ -269,6 +280,7 @@ export class OpenAICodexRequestLifecycle {
   private record(state: RequestState, outcome: RecentRequestOutcome): void {
     if (state.recorded) return
     state.recorded = true
+    state.outcome = outcome
     if (this.recentRequests === undefined) return
     const usage = state.usage
     this.recentRequests.record({
@@ -280,7 +292,7 @@ export class OpenAICodexRequestLifecycle {
       routeLabel: state.routeLabel ?? state.provider,
       ...state.reasoning === undefined ? {} : { reasoning: state.reasoning },
       ...state.payloadReasoning === undefined ? {} : { payloadReasoning: state.payloadReasoning },
-      transport: state.transport ?? (state.configuredTransport === 'sse' ? 'sse' : 'ws'),
+      transport: state.transport ?? (state.forcedSse === true || state.configuredTransport === 'sse' ? 'sse' : 'ws'),
       ...state.continuation === undefined ? {} : { continuation: state.continuation },
       ...state.mismatch === undefined ? {} : { mismatch: state.mismatch },
       ...state.deltaBytes === undefined ? {} : { deltaBytes: state.deltaBytes },

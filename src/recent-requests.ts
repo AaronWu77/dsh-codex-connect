@@ -46,6 +46,28 @@ export const RECENT_REQUEST_LIMIT = 5
  */
 export class RecentRequestLog {
   private readonly entries: RecentRequestEntry[] = []
+  private activeRequests = 0
+  private cachedInputTokens = 0
+  private totalInputTokens = 0
+
+  /** @returns a once-only settlement callback for a started model request. */
+  begin(): (usage?: { input: number; cacheRead: number; cacheWrite: number }) => void {
+    this.activeRequests++
+    let settled = false
+    return usage => {
+      if (settled) return
+      settled = true
+      this.activeRequests--
+      if (usage === undefined) return
+      this.cachedInputTokens += usage.cacheRead
+      this.totalInputTokens += usage.input + usage.cacheRead + usage.cacheWrite
+    }
+  }
+
+  /** @returns current model request count and cumulative successful input usage for this plugin instance. */
+  summary() {
+    return { activeRequests: this.activeRequests, cachedInputTokens: this.cachedInputTokens, totalInputTokens: this.totalInputTokens }
+  }
 
   /** Add one completed request, evicting the oldest beyond the limit. */
   record(entry: RecentRequestEntry): void {
