@@ -1,9 +1,9 @@
 import { AuthInteraction, Credential, CredentialInfo, CredentialStore, OAuthCredential } from "@earendil-works/pi-ai";
 import z from "@deepseek-ai/schemastery";
 import { ContextFormed } from "@deepseek-ai/dsh-llm";
+import "@deepseek-ai/dsh-tools";
 import { Context, Service, Volatile } from "@deepseek-ai/cordis";
 import { WebSearchProvider, WebSearchRequest, WebSearchResult } from "@deepseek-ai/dsh-web";
-
 //#region src/message-source.d.ts
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
