@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`shared codexQuota service > publishes secondary read failures even before any account returns usable figures 1`] = `
+{
+  "accounts": [
+    {
+      "accountKey": "acct_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "active": true,
+      "label": "work@example.com",
+      "maskedEmail": "wo••@example.com",
+      "windows": [],
+    },
+    {
+      "accountKey": "acct_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "active": false,
+      "errorCode": "unavailable",
+      "label": "work@example.com",
+      "maskedEmail": "wo••@example.com",
+      "unavailable": true,
+      "windows": [],
+    },
+  ],
+  "windows": [],
+}
+`;

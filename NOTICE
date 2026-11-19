@@ -1,0 +1,20 @@
+dsh-codex-connect
+Copyright 2026 Frank Song
+
+This product includes software derived from Yan-Zero/dsh-codex:
+https://github.com/Yan-Zero/dsh-codex
+Copyright 2026 Yan-Zero
+
+Modifications and additional work for Codex Connect are Copyright 2026
+Frank Song. They include a distinct package identity, opt-in routing and
+capabilities, secret-free diagnostics, provider-conflict guidance, migration
+documentation, security hardening, live plugin configuration, and Alpha
+release validation.
+
+The upstream material and the Codex Connect modifications are distributed
+under the Apache License, Version 2.0 included in LICENSE.
+
+This product also includes OAuth login and refresh code from earendil-works/pi
+(@earendil-works/pi-ai 0.84.4), under the MIT license reproduced in
+docs/licenses/pi-ai-oauth.txt. JWT payload decoding, callback connection cleanup
+and structured refresh rejection handling are modified.

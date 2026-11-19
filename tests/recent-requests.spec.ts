@@ -1,0 +1,223 @@
+/** Bounded recent-request log: newest first, cap, and late-fact updates. */
+import { describe, expect, it } from 'vitest'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { RecentRequestLog, RECENT_REQUEST_LIMIT } from '../src/recent-requests.ts'
+import type { RecentRequestEntry } from '../src/recent-requests.ts'
+import { OpenAICodexRequestLifecycle } from '../src/request-lifecycle.ts'
+
+function entry(index: number): RecentRequestEntry {
+  return {
+    id: `request-${index}`,
+    startedAt: 1_000 + index,
+    provider: 'openai-codex',
+    model: 'gpt-6.1-sol',
+    routeLabel: 'OpenAI Codex (AaronWu)',
+    kind: 'conversation',
+    transport: 'ws',
+    inputTokens: index,
+    outputTokens: index * 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outcome: 'ok',
+  }
+}
+
+describe('recent request log', () => {
+  it('sums cache tokens beyond the five visible entries and counts simultaneous streams', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const options = { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [] }
+    const stream = () => lifecycle.stream(async function* () {
+      yield { type: 'usage' as const, usage: { inputTokens: 6, outputTokens: 50, cacheReadTokens: 12, cacheWriteTokens: 2 } }
+      yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+    }, options)
+    try {
+      const first = stream()[Symbol.asyncIterator]()
+      const second = stream()[Symbol.asyncIterator]()
+      expect(log.summary().activeRequests).toBe(0)
+      await Promise.all([first.next(), second.next()])
+      expect(log.summary()).toEqual({ activeRequests: 2, cachedInputTokens: 0, totalInputTokens: 0 })
+      await first.return?.()
+      expect(log.summary()).toEqual({ activeRequests: 1, cachedInputTokens: 0, totalInputTokens: 0 })
+      await second.next()
+      await second.next()
+      for (let index = 0; index < RECENT_REQUEST_LIMIT; index++) {
+        for await (const _chunk of stream()) { /* drain */ }
+      }
+      expect(log.snapshot()).toHaveLength(5)
+      expect(log.summary()).toEqual({ activeRequests: 0, cachedInputTokens: 72, totalInputTokens: 120 })
+    } finally { await lifecycle.dispose() }
+  })
+
+  it('records newest first and keeps only the fixed limit', () => {
+    const log = new RecentRequestLog()
+    for (let index = 0; index < RECENT_REQUEST_LIMIT + 2; index++) log.record(entry(index))
+    expect(log.snapshot().map(item => item.id)).toEqual([
+      'request-6', 'request-5', 'request-4', 'request-3', 'request-2',
+    ])
+  })
+
+  it('late transport, usage and body facts update the recorded row without reordering', () => {
+    const log = new RecentRequestLog()
+    log.record(entry(1))
+    log.update('request-1', { transport: 'sse', inputTokens: 42, bodyBytes: 1_048_576 })
+    const [recorded] = log.snapshot()
+    expect(recorded?.transport).toBe('sse')
+    expect(recorded?.inputTokens).toBe(42)
+    expect(recorded?.bodyBytes).toBe(1_048_576)
+    expect(recorded?.model).toBe('gpt-6.1-sol')
+  })
+
+  it('snapshots are detached and an unknown update is ignored', () => {
+    const log = new RecentRequestLog()
+    log.record(entry(0))
+    log.update('missing', { inputTokens: 9 })
+    const snapshot = log.snapshot()
+    expect(snapshot[0]?.inputTokens).toBe(0)
+    expect(snapshot[0]).not.toBe(log.snapshot()[0])
+  })
+
+  it('records usage and a successful finish from the real request lifecycle', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const chunks = []
+    for await (const chunk of lifecycle.stream(async function* () {
+      lifecycle.noteRoute('OpenAI Codex (AaronWu)', 'auto')
+      lifecycle.notePayloadMetadata({ bodyBytes: 2_048, reasoning: 'xhigh' })
+      yield { type: 'usage' as const, usage: { inputTokens: 11, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 } }
+      yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+    }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [], reasoningEffort: ReasoningEffortId('xhigh') })) chunks.push(chunk)
+    expect(chunks).toHaveLength(2)
+    const [recorded] = log.snapshot()
+    expect(recorded).toMatchObject({
+      provider: 'openai-codex',
+      model: 'gpt-6.1-sol',
+      routeLabel: 'OpenAI Codex (AaronWu)',
+      kind: 'conversation',
+      reasoning: 'xhigh',
+      payloadReasoning: 'xhigh',
+      transport: 'ws',
+      inputTokens: 11,
+      outputTokens: 5,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 2,
+      bodyBytes: 2_048,
+      outcome: 'ok',
+    })
+    await lifecycle.dispose()
+  })
+
+  it.each([
+    { forcedSse: true, transport: 'sse' },
+    { forcedSse: undefined, transport: 'ws' },
+  ])('records $transport without a result when forcedSse is $forcedSse', async ({ forcedSse, transport }) => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const iterator = lifecycle.stream(async function* () {
+      if (forcedSse === true) lifecycle.noteRoute('OpenAI Codex', 'websocket-cached', true)
+      else lifecycle.noteRoute('OpenAI Codex', 'websocket-cached')
+      lifecycle.trackProducer(Promise.reject(new Error('Producer rejected before a result')))
+      yield { type: 'text-delta' as const, index: 0, text: 'partial' }
+    }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [] })[Symbol.asyncIterator]()
+    try {
+      await iterator.next()
+      await iterator.return?.()
+      expect(log.snapshot()).toHaveLength(1)
+      expect(log.snapshot()[0]).toMatchObject({ routeLabel: 'OpenAI Codex', transport, outcome: 'aborted' })
+    } finally {
+      await lifecycle.dispose()
+    }
+  })
+
+  it.each(['minimal', undefined])('keeps request selection %s separate from the prepared effort', async requested => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    const prepared = requested === undefined ? 'high' : 'low'
+    try {
+      for await (const _chunk of lifecycle.stream(async function* () {
+        lifecycle.notePayloadMetadata({ bodyBytes: 42, reasoning: prepared })
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      }, { provider: 'openai-codex', model: 'gpt-5.6-sol', messages: [],
+        ...requested === undefined ? {} : { reasoningEffort: ReasoningEffortId(requested) } })) { /* drain */ }
+      expect(log.snapshot()[0]?.reasoning).toBe(requested)
+      expect(log.snapshot()[0]?.payloadReasoning).toBe(prepared)
+    } finally {
+      await lifecycle.dispose()
+    }
+  })
+
+  it('leaves payload metadata absent when no payload was observed and ignores out-of-scope observations', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    lifecycle.notePayloadMetadata({ bodyBytes: 42, reasoning: 'high' })
+    try {
+      for await (const _chunk of lifecycle.stream(async function* () {
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [], reasoningEffort: ReasoningEffortId('xhigh') })) { /* drain */ }
+      expect(log.snapshot()[0]?.reasoning).toBe('xhigh')
+      expect(log.snapshot()[0]).not.toHaveProperty('payloadReasoning')
+      expect(log.snapshot()[0]).not.toHaveProperty('bodyBytes')
+    } finally {
+      await lifecycle.dispose()
+    }
+  })
+
+  it('records a cleared prepared effort as null without clearing the original request selection', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    try {
+      for await (const _chunk of lifecycle.stream(async function* () {
+        lifecycle.notePayloadMetadata({ bodyBytes: 100, reasoning: 'high' })
+        lifecycle.notePayloadMetadata({ bodyBytes: 80, reasoning: null })
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [], reasoningEffort: ReasoningEffortId('high') })) { /* drain */ }
+      expect(log.snapshot()[0]).toMatchObject({ reasoning: 'high', payloadReasoning: null, bodyBytes: 80 })
+    } finally {
+      await lifecycle.dispose()
+    }
+  })
+
+  it.each(['finish', 'return', 'dispose'] as const)('merges late payload metadata after %s without replacing the recorded outcome or reordering rows', async terminal => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log)
+    let release!: () => void
+    const late = new Promise<void>(resolve => { release = resolve })
+    const iterator = lifecycle.stream(async function* () {
+      lifecycle.notePayloadMetadata({ bodyBytes: 100, reasoning: 'low' })
+      lifecycle.trackProducer(late.then(() => { lifecycle.notePayloadMetadata({ bodyBytes: 80, reasoning: null }) }))
+      if (terminal === 'finish') yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      else yield { type: 'text-delta' as const, index: 0, text: 'partial' }
+    }, { provider: 'openai-codex', model: 'gpt-5.6-sol', messages: [], reasoningEffort: ReasoningEffortId('minimal') })[Symbol.asyncIterator]()
+    try {
+      await iterator.next()
+      const completion = terminal === 'dispose' ? lifecycle.dispose() : terminal === 'return' ? iterator.return?.() : iterator.next()
+      const recorded = log.snapshot()[0]!
+      expect(recorded).toMatchObject({ reasoning: 'minimal', payloadReasoning: 'low', bodyBytes: 100,
+        outcome: terminal === 'finish' ? 'ok' : 'aborted' })
+      log.record(entry(9))
+      release()
+      await completion
+      const rows = log.snapshot()
+      expect(rows.map(row => row.id)).toEqual(['request-9', recorded.id])
+      expect(rows[1]).toMatchObject({ reasoning: 'minimal', payloadReasoning: null, bodyBytes: 80, outcome: recorded.outcome })
+    } finally {
+      release()
+      await lifecycle.dispose()
+    }
+  })
+
+  it('labels compaction by purpose and other requests from a subagent Session', async () => {
+    const log = new RecentRequestLog()
+    const lifecycle = new OpenAICodexRequestLifecycle(undefined, log, () => 'subagent')
+    const run = async (purpose?: GenerateOptions['purpose']): Promise<void> => {
+      for await (const _chunk of lifecycle.stream(async function* () {
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      }, { provider: 'openai-codex', model: 'gpt-6.1-sol', messages: [], ...purpose === undefined ? {} : { purpose } })) { /* drain */ }
+    }
+    await run('compaction')
+    await run()
+    expect(log.snapshot().map(item => item.kind)).toEqual(['subagent', 'compaction'])
+    await lifecycle.dispose()
+  })
+})

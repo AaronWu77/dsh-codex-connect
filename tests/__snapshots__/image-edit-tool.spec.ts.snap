@@ -1,0 +1,16 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`replays a recorded original-only result after serialization without admitting a later original 1`] = `
+{
+  "images": [
+    {
+      "originalSaved": true,
+      "previewSaved": false,
+      "previewStatus": "unavailable",
+    },
+  ],
+  "kind": "codex-connect-images",
+  "prompt": "record this original-only image",
+  "schemaVersion": 3,
+}
+`;

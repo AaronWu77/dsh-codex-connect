@@ -1,0 +1,226 @@
+/** Sidebar quota widget and its account usage dialog. */
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react'
+import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { CodexSettingsIcon } from './CodexSettingsIcon.tsx'
+import { RecentRequests } from './RecentRequests.tsx'
+import type { RecentRequestsSnapshot, RecentRequestsStore } from './recent-requests.ts'
+import { balanceEntryOf, platformBalanceSnapshot, subscribePlatformBalance } from './balance.ts'
+import { fmt } from './usage-format.ts'
+import { symbolOf } from './UsageQuotaGrid.tsx'
+import type { DayTotals } from './usage-ledger.ts'
+import type { OpenAICodexAccountStore } from './account-store.ts'
+import type { CodexQuotaService } from './quota-service.ts'
+import { accountStatusLabel, dotStyle } from './OpenAICodexSettings.tsx'
+import type { OpenAICodexSettingsInjected } from './OpenAICodexSettings.tsx'
+import { CompactAccountUsage } from './CompactAccountUsage.tsx'
+import { makeQuotaGrid } from './UsageQuotaGrid.tsx'
+import { fmtDuration } from './usage-format.ts'
+import { subscribeUnavailableUsage, unavailableUsageSnapshot, usageToday } from './usage-ledger.ts'
+import type { LocalUsageSnapshot, LocalUsageSource } from './usage-ledger.ts'
+
+/** Whether a panel is currently open; the capsule and the panel share this store. */
+export class CodexUsagePanelStore {
+  private open = false
+  private readonly listeners = new Set<() => void>()
+
+  /** @param listener - notified whenever the open flag changes. @returns its disposer. */
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /** @returns whether the usage panel is open. */
+  readonly snapshot = (): boolean => this.open
+
+  /** Open the panel. */
+  show(): void {
+    this.setOpen(true)
+  }
+
+  /** Close the panel. */
+  close(): void {
+    this.setOpen(false)
+  }
+
+  private setOpen(next: boolean): void {
+    if (this.open === next) return
+    this.open = next
+    for (const listener of this.listeners) listener()
+  }
+}
+
+
+/** Services shared by the sidebar entry and the overlay. */
+export interface CodexUsageInjected {
+  t: OpenAICodexSettingsInjected['t']
+  account: OpenAICodexAccountStore
+  quota: CodexQuotaService
+  panel: CodexUsagePanelStore
+  localUsage?: LocalUsageSource
+  recent: RecentRequestsStore
+  wide?: boolean
+}
+
+/** Actionable local usage failures; ordinary loading stays silent. */
+export function LocalUsageNotice({ t, usage, source, compact = false }: {
+  t: OpenAICodexSettingsInjected['t']; usage: LocalUsageSnapshot; source: LocalUsageSource | undefined; compact?: boolean
+}) {
+  if (source === undefined) return null
+  const message = usage.state === 'unavailable' ? t('ov.local.unavailable')
+    : usage.state === 'failed' || usage.failure === 'request' ? t('ov.local.failed') : undefined
+  if (message === undefined) return null
+  return <div className="cc-codex-empty">
+    <div role="status">{message}</div>
+    {compact ? null : <button type="button" className="cc-usage-quota-detail-action" onClick={() => { source.retry() }}>{t('ov.local.retry')}</button>}
+  </div>
+}
+
+/** Present only the established daily figure for the current calendar. */
+function currentUsageDays(data: LocalUsageSnapshot['data'], day: string): NonNullable<LocalUsageSnapshot['data']>['days'] {
+  const value = data?.days[day]
+  return value === undefined ? {} : { [day]: value }
+}
+
+/** Original compact quota card; the collapsed rail retains the same gauge entry. */
+export function CodexUsageCapsule({ t, quota, panel, wide, localUsage }: CodexUsageInjected) {
+  const open = useSyncExternalStore(panel.subscribe, panel.snapshot)
+  const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
+  const locale = t('dateLocale')
+  const Grid = useMemo(() => makeQuotaGrid(quota, { t, fmtDuration, locale }), [quota, t, locale])
+  const today = usageToday(usage.data?.timeZone)
+  const show = (): void => { panel.show() }
+  if (wide !== true) return (
+    <button type="button" className="cc-usage-entry cc-usage-entry-rail" title={t('ov.entry')}
+      aria-label={t('ov.entry')} aria-haspopup="dialog" aria-expanded={open} onClick={show}>
+      <span className="cc-usage-entry-icon" aria-hidden="true"><CodexSettingsIcon size={18} /></span>
+    </button>
+  )
+  return (
+    <div className="cc-usage-widget" role="button" tabIndex={0} title={t('ov.entry')}
+      aria-label={t('ov.entry')} aria-haspopup="dialog" aria-expanded={open} onClick={show}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show() }
+      }}>
+      <div className="cc-usage-widget-head">
+        <span className="cc-usage-entry-icon" aria-hidden="true"><CodexSettingsIcon size={14} /></span>
+        <span className="cc-usage-widget-title">{t('ov.entry')}</span>
+        <span className="cc-usage-widget-more" aria-hidden="true">{String.fromCharCode(0x203a)}</span>
+      </div>
+      <LocalUsageNotice t={t} usage={usage} source={localUsage} compact />
+      <Grid days={currentUsageDays(usage.data, today)} today={today} compact onSelectDay={show} />
+    </div>
+  )
+}
+
+
+/** Four compact headline figures with active balance/today drill-down detail. */
+function UsageSummary({ t, days, today, currency, recent }: {
+  t: OpenAICodexSettingsInjected['t']
+  days: Record<string, DayTotals>
+  today: string
+  currency: 'cny' | 'usd'
+  recent: RecentRequestsSnapshot
+}) {
+  const balance = useSyncExternalStore(subscribePlatformBalance, platformBalanceSnapshot)
+  const entry = balanceEntryOf(balance, currency)
+  const totals = Object.hasOwn(days, today) ? days[today] : undefined
+  const summary = recent.summary
+  const hitRate = summary !== undefined && summary.totalInputTokens > 0
+    ? new Intl.NumberFormat(t('dateLocale'), { style: 'percent', maximumFractionDigits: 1 }).format(summary.cachedInputTokens / summary.totalInputTokens)
+    : '—'
+  const [detail, setDetail] = useState<'balance' | 'today' | null>(null)
+  const title = detail === 'balance' ? t('ov.quota.balance') : detail === 'today' ? t('ov.quota.today') : ''
+  const rows: Array<[string, string]> = detail === 'balance' && entry !== null
+    ? [
+      [t('ov.quota.detail.total'), symbolOf(entry.currency) + entry.total.toFixed(2)],
+      [t('ov.quota.detail.granted'), symbolOf(entry.currency) + entry.granted.toFixed(2)],
+      [t('ov.quota.detail.topped'), symbolOf(entry.currency) + entry.toppedUp.toFixed(2)],
+      [t('ov.quota.detail.currency'), entry.currency],
+    ]
+    : detail === 'today' && totals !== undefined
+      ? [
+        [t('ov.kpi.tokens'), fmt(totals.tokens)],
+        [t('ov.quota.detail.sessions'), String(totals.sessions)],
+        [t('ov.quota.detail.requests'), fmt(totals.requests)],
+      ]
+      : []
+  const toggle = (next: 'balance' | 'today'): void => { setDetail(current => current === next ? null : next) }
+  return <section className="cc-kpi" aria-label={t('ov.quota.platform')}>
+    <div className="cc-kpi-grid">
+      {entry === null ? null : <button type="button" className="cc-kpi-tile" aria-expanded={detail === 'balance'}
+        onClick={() => { toggle('balance') }}>
+        <span className="cc-kpi-label">{t('ov.quota.balance')}</span>
+        <span className="cc-kpi-value">{symbolOf(entry.currency) + entry.total.toFixed(2)}</span>
+        <span className="cc-kpi-sub">{t('ov.quota.balanceSub', { granted: entry.granted.toFixed(2), topped: entry.toppedUp.toFixed(2) })}</span>
+      </button>}
+      {totals === undefined ? null : <button type="button" className="cc-kpi-tile" aria-expanded={detail === 'today'}
+        onClick={() => { toggle('today') }}>
+        <span className="cc-kpi-label">{t('ov.quota.today')}</span>
+        <span className="cc-kpi-value">{fmt(totals.tokens)}</span>
+        <span className="cc-kpi-sub">{t('ov.kpi.tokens')}</span>
+      </button>}
+      <div className="cc-kpi-tile">
+        <span className="cc-kpi-label">{t('ov.kpi.cacheHit')}</span>
+        <span className="cc-kpi-value">{hitRate}</span>
+        <span className="cc-kpi-sub">{t('ov.kpi.cacheScope')}</span>
+      </div>
+      <div className="cc-kpi-tile">
+        <span className="cc-kpi-label">{t('ov.kpi.concurrency')}</span>
+        <span className="cc-kpi-value">{recent.state === 'ready' && summary !== undefined ? summary.activeRequests.toLocaleString(t('dateLocale')) : '—'}</span>
+        <span className="cc-kpi-sub">{t('ov.kpi.concurrencyScope')}</span>
+      </div>
+    </div>
+    {rows.length === 0 ? null : <div className="cc-usage-quota-detail" role="group" aria-label={title}>
+      <div className="cc-usage-quota-detail-head">
+        <span className="cc-usage-quota-detail-title">{title}</span>
+        <button type="button" className="cc-usage-quota-detail-close" aria-label={t('cmd.close')}
+          onClick={() => { setDetail(null) }}>{String.fromCharCode(0x00d7)}</button>
+      </div>
+      {rows.map(([label, value]) => <div className="cc-usage-quota-detail-row" key={label}>
+        <span className="cc-usage-quota-detail-label">{label}</span>
+        <span className="cc-usage-quota-detail-value">{value}</span>
+      </div>)}
+    </div>}
+  </section>
+}
+
+/** Shared read-only usage content for the overview tab and the existing dialog. */
+export function CodexUsageOverview({ t, account, quota, localUsage, recent, includeAccountUsage = true, showStatus = true }: Omit<CodexUsageInjected, 'panel' | 'wide'> & { includeAccountUsage?: boolean; showStatus?: boolean }) {
+  const snapshot = useSyncExternalStore(account.subscribe, account.getSnapshot)
+  const recentSnapshot = useSyncExternalStore(recent.subscribe, recent.snapshot)
+  const quotaSnapshot = useSyncExternalStore(quota.subscribe, quota.snapshot)
+  const usage = useSyncExternalStore(localUsage?.subscribe ?? subscribeUnavailableUsage, localUsage?.snapshot ?? unavailableUsageSnapshot)
+  const today = usageToday(usage.data?.timeZone)
+  return (
+    <div className="cc-usage-panel">
+        {showStatus ? <div className="cc-usage-status" role="status">
+          <span aria-hidden="true" style={dotStyle(snapshot.status.status)} />
+          <span>{accountStatusLabel(snapshot.status.status, t)}</span>
+        </div> : null}
+        <LocalUsageNotice t={t} usage={usage} source={localUsage} />
+        <UsageSummary t={t} days={currentUsageDays(usage.data, today)} today={today}
+          currency={t('dateLocale') === 'zh-CN' ? 'cny' : 'usd'} recent={recentSnapshot} />
+        {includeAccountUsage && quotaSnapshot !== null ? <CompactAccountUsage accounts={snapshot.accounts} quota={quotaSnapshot} t={t} /> : null}
+        <RecentRequests t={t} store={recent} />
+      </div>
+  )
+}
+
+/** Account usage dialog; its entry and read-only interactions remain unchanged. */
+export function CodexUsagePanel(props: CodexUsageInjected) {
+  const { t, panel, recent } = props
+  const open = useSyncExternalStore(panel.subscribe, panel.snapshot)
+  useEffect(() => {
+    if (!open) return
+    void recent.refresh()
+    const timer = setInterval(() => { void recent.refresh() }, 5_000)
+    return () => { clearInterval(timer) }
+  }, [open, recent])
+  return (
+    <Modal open={open} onClose={() => { panel.close() }} title={t('usagePanelTitle')} closeLabel={t('close')}
+      className="cc-usage-dialog" contentClassName="cc-usage-dialog-content">
+      <CodexUsageOverview {...props} />
+    </Modal>
+  )
+}

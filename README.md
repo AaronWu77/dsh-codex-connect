@@ -1,0 +1,178 @@
+---
+kind: "package-bundle"
+description: "Use ChatGPT OAuth accounts and Codex models in DeepSeek Harness."
+---
+
+# Codex Connect
+
+<a id="plugin-information"></a>
+## Plugin information
+
+Use ChatGPT OAuth accounts and Codex models in DeepSeek Harness.
+
+| Field | Value |
+|---|---|
+| Package | `dsh-codex-connect` |
+| Checkout version | `0.1.0-alpha.4.35` |
+| Maintained repository | [AaronWu77/dsh-codex-connect](https://github.com/AaronWu77/dsh-codex-connect) |
+| Package license | Apache-2.0 |
+
+Package identity, license and upstream declarations are maintained in [package.json](package.json). A checkout version does not establish a published release or verified compatibility; retain the existing qualification and deployment limits below.
+
+<a id="source-and-attribution"></a>
+## Source and attribution
+
+- [Codex Connect](https://github.com/franksong2702/dsh-codex-connect) — adapted implementation; Apache-2.0; exact upstream baseline not recorded. Local DSH compatibility and account and usage management integration.
+- [dsh-codex](https://github.com/Yan-Zero/dsh-codex) — adapted implementation; Apache-2.0; exact upstream baseline not recorded. Inherited through Codex Connect; original author attribution is preserved in NOTICE. [Detailed record](https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE).
+- [pi-ai OAuth](https://github.com/earendil-works/pi) — adapted implementation; MIT; @earendil-works/pi-ai 0.84.4. OAuth login and refresh code with modified JWT decoding, callback cleanup, and refresh rejection handling, as recorded in NOTICE. [Detailed record](https://github.com/AaronWu77/dsh-codex-connect/blob/HEAD/NOTICE).
+
+The maintained fork and the upstream project are different repositories. Original author, copyright, license and notice statements remain in force. A missing upstream baseline is left unrecorded rather than inferred from the local version.
+
+[![npm version](https://img.shields.io/npm/v/dsh-codex-connect/alpha?label=npm%20alpha&color=cb3837)](https://www.npmjs.com/package/dsh-codex-connect)
+
+English | [中文](docs/README.zh.md)
+
+Connect your ChatGPT subscription to DeepSeek Harness with OAuth, optional GPT Image generation, user-controlled defaults, Harness-native approvals, diagnostics, and reliable session recovery.
+
+Community Alpha — not affiliated with or endorsed by OpenAI, ChatGPT, Codex, DeepSeek, or DeepSeek Harness.
+
+Codex Connect adds the `openai-codex` model provider to the normal Harness agent loop. Harness continues to manage tools, permissions, approvals, attachments, session persistence, compaction, and recovery. Installing the plugin does not change your default model or search route, and it does not turn a ChatGPT subscription into an OpenAI Platform API key.
+
+This private candidate targets the official DSH `0.2.2-rc.4` lab Host. It keeps the local plugin’s provider and transport work, and the Web Search settings own search provider selection. Codex request PI and the `pi-ai-host` stream alias still use exact PI `1.4.0`; the patched OAuth implementation still uses PI `0.84.4` source. The published installation guide and verification history below refer to upstream releases, not this candidate.
+
+This private checkout also includes selective local review, speed/effort defaults and original-only image recovery. Read the [local integration and migration limits](docs/local-feature-update.md) before applying it; it is not installed into the running profile by editing this candidate.
+
+## Quick start
+
+This guide describes the published pairing below. Check `dsh --version` first; for another DSH version, use [Installation and upgrades](INSTALL.md). A moving npm tag such as `alpha` is not a compatibility guarantee.
+
+| Requirement | Verified pairing |
+|---|---|
+| Codex Connect | `0.1.0-alpha.4.33` |
+| DeepSeek Harness | `0.1.2-rc.1` or `0.1.5-alpha.1` |
+| Node.js | `^22.19.0 \|\| >=24.0.0` |
+| Account | ChatGPT OAuth with access to the requested Codex model; availability is decided by OpenAI |
+
+### 1. Install
+
+```sh
+dsh plugin --profile web add dsh-codex-connect@0.1.0-alpha.4.33
+dsh web
+```
+
+Replace `web` with your existing profile name; use that same profile when starting Harness. From a DSH source checkout, prefix commands with `pnpm`. See [INSTALL.md](INSTALL.md) for other profiles and installation checks.
+
+### 2. Authorize and select a model
+
+Open **Settings → Models → Openai-Codex → Authorize**, then complete approval yourself in the browser. If an embedded window is blocked, select **Open ChatGPT sign-in page**. Choose an `openai-codex` model in the normal Harness model picker.
+
+Never paste an authorization URL, code, token, or account identifier into an issue, log, chat, or configuration file. For a browser on another device, the optional manual callback form can complete the pending login without forwarding the localhost callback port; follow [Remote browser authorization](docs/reference.md#remote-browser-authorization).
+
+### 3. Check the installation
+
+```sh
+dsh plugin --profile web exec dsh-codex-connect status --json
+dsh plugin --profile web exec dsh-codex-connect doctor --json
+```
+
+`status --json` exits `0` when signed in and `1` when signed out, without starting OAuth. `doctor --json` reports local installation diagnostics without a network request or raw credentials. A passing diagnostic is not proof of model access; verify that with an actual request.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/en/hero.jpg" alt="Codex Connect — ChatGPT OAuth for DeepSeek Harness" width="100%">
+</p>
+
+## Core capabilities
+
+- **Accounts:** save up to 16 accounts on the DSH host and manually select the active account for subsequent requests. Account selection is not a per-session binding. Requests keep their captured account; the plugin does not rotate accounts or silently fail over. Each stored account also appears in the model picker as its own route — `openai-codex` for the current account, `openai-codex-2`, `openai-codex-3`, ... for the others — so another signed-in account's models stay selectable without switching first.
+- **Models and GPT-6:** the plugin supplies `gpt-6-astra` when pi-ai lacks it, with calibrated reasoning choices; saved Off/Minimal selections require an [explicit update](MIGRATION.md#astra-reasoning-selections). `gpt-6-sol`, `gpt-6-luna`, `gpt-6.2-astra`, and `gpt-6.2-sol` join each account route when the live or cached official catalog advertises them. A configured `models` list must include their ids to show them in the picker. Listing a model is not proof of inference access; OpenAI controls entitlements and quotas.
+- **Live model catalog:** model names, context windows, output caps, reasoning levels, and service tiers come from `chatgpt.com` and are cached for six hours. Fallback order: the live read, this plugin's cache under `$DSH_HOME`, the official CLI cache at `~/.codex/models_cache.json` (read only), then the bundled catalog. A failed layer never shrinks or empties the picker. `contextWindowMode` picks the server default or its extended maximum, and `modelCatalogClientVersion` sets the version gate the endpoint requires. See [Model catalog](docs/reference.md#model-catalog). Each stored account owns its catalog and refresh TTL. A model removed from an accepted catalog keeps its last metadata and is rejected locally before credentials or inference traffic; a later catalog can restore it.
+- **Fast Mode:** request priority service for one conversation, off by default. The control is available for GPT models on the primary and numbered Codex account routes; its state remains conversation-scoped when switching accounts. Actual speed and quota consumption depend on the service; no fixed speed multiplier is guaranteed.
+- **Quota:** show the server-returned `5h` and `7d` windows and reset times, normally refreshed every 60 seconds while signed in. Missing windows are not invented; Spark uses its separate quota bucket. Other plugins read the same figures through the `codexQuota` client service, which reports every signed-in account — the active account from the settings poll, and each other stored account read on the DSH host — so a dashboard can show two accounts side by side.
+- **Quota & usage widget:** Codex Connect owns the sidebar quota card and detail dialog, retaining its compact layout, all-account windows, reset times and cell drill-downs. The dialog summarizes successful model requests across this plugin instance: the cache hit rate is cached input divided by total input, and current concurrency counts model requests in progress. The account table still shows `5h` and `7d`. The account balance is the **DeepSeek platform balance**, including granted and topped-up funds, never Codex credits. Daily tokens use the same calculation the Context plugin used: count each Session settled requests on the settlement day and sum input, cache-read, cache-write, and output tokens. The figures cover local Sessions across model providers, not a Codex account bill; no quota percentage is converted into tokens. Context is not required and no Context route is ever called: this plugin registers its own codexConnectUsage projection and reads it from the Session list.
+- **Local usage:** the today cell (ov.quota.today), the usage dialog and the management overview all merge the per-Session codexConnectUsage projection values the Session list already carries: the same read path as any other summary column, with no dedicated polling and no dependency on the Context plugin. The projection buckets each settled request by the localUsageTimeZone calendar and keeps the last localUsageRetainedDays populated days (400 by default). Requests without complete reported usage contribute only known values, so totals can be incomplete; missing usage is never presented as a confirmed zero. Cold Sessions (stored, not attached) get their row from a one-pass warm-up: the client triggers POST /api/dsh-codex-connect/local-usage/backfill when it first needs it, and the Host reads each log once through the projection cache cold-read ladder and writes the projection row back. POST /api/dsh-codex-connect/local-usage/status reports progress only and never starts a pass. The pass skips live Sessions (they fold for themselves), paces stored reads by localUsageRestMs, runs once per process, and refreshes the Session list when it settles. It reads Session logs and writes only this plugin own projection row. The live projection retains hashes of unfinished tool-call IDs and whether each is a question, but no tool names, arguments, or result contents. Increase localUsagePollMs to reduce the status polling cadence.
+- **Management center:** Settings → Codex Connect is its own settings section, opening Usage overview, Accounts, Models, Capabilities and Network directly, without a second disclosure card. The overview reuses the read-only usage dialog; the sidebar widget keeps its existing behavior. One staged form retains unsaved settings across tabs and applies only Save or Discard. Account authorization, default-account selection, removal and connection probes remain separate immediate operations; account removal requires confirmation. Model preview reads each stored account without activating it or sending inference requests. Global model visibility and token budgets do not select the current conversation model.
+- **Recent requests:** the sidebar usage dialog keeps the Host request’s reasoning selection separate from the prepared payload effort. It shows the payload effort when observed, `—` when the observed payload has no effort, and the original selection when payload metadata is unavailable, including older Hosts. Observing a prepared payload does not confirm dispatch or server receipt. Summaries retain neither request/response bodies nor credentials.
+- **Model transport:** SSE remains the default when the resident budget is 0. `maxResidentWebSocketSessions` (default 2) keeps one continuation WebSocket per active conversation and is editable in the settings card; profile `transport: sse` is a hard off switch, and `auto` keeps request-owned WebSocket only while the budget is 0. Loading `transport: auto` with a positive budget is rejected: set `maxResidentWebSocketSessions` to 0 to keep request-owned connections, or remove `transport: auto` to keep resident continuation connections. The recent-request list marks each request served by the resident connection as Delta or Full (the whole conversation was sent instead of a delta) when it ran alone (a request that never used one shows only its transport), shows the approximate bytes of a delta, and resends the full conversation after a speed-tier change. See [Model transport](docs/reference.md#model-transport) for eviction, retry, and cleanup rules.
+- **Plugin updates:** check for newer Codex Connect releases without installing anything or recommending changes to DSH. Host compatibility is available through explicit local diagnostics.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/franksong2702/dsh-codex-connect/main/docs/assets/composer-capabilities.jpg" alt="Fast Mode and quota controls in the DeepSeek Harness Composer" width="820">
+</p>
+
+## Optional capabilities
+
+All options below are off on a fresh installation. Edit them in **Settings → Codex Connect** or **Settings → Models → Openai-Codex → More settings**, then select **Save changes**. A conflict or failed save preserves your draft.
+
+| Capability | Enable with | Important behavior |
+|---|---|---|
+| Proxy | `enableProxy` | Credential-free HTTP(S), scoped to this plugin's traffic. A failed proxy request does not silently retry directly. |
+| Codex Search | `enableSearch` | Registers Codex as a search provider. Choose it in **Settings → Web search and fetch**. |
+| Image viewing | `enableImageTool` | Adds `view_image` to vision-capable models for local files and validated public HTTP(S) images. |
+| GPT Image generation and editing | `enableImageGeneration` | Explicit generation or session-owned image editing; no silent fallback between operations. |
+| Auto-review | `enableAutoReview` | Sends bounded approval context, tool arguments, working directory, and the planned action to `chatgpt.com`, with confirmation on first enablement. Failures return to human approval. |
+
+Use the image generation capability included with your current GPT subscription. Generated originals are stored separately from attachment previews; disabling the capability or uninstalling the plugin does not delete them. See [Configuration and recovery](docs/reference.md#search-and-image-tools) for storage and access rules.
+
+Auto-review operates after Harness policy requires approval; it does not bypass that policy. See [Auto-review behavior](docs/auto-review.md) before enabling it.
+
+## Model Experience
+
+Image editing adds bounded, versioned selection handles derived from logged image metadata. Original image blocks remain in order; handles also survive non-Codex tool results and session replay. Explicit edits send one target and up to four reference images, increasing request input size; the plugin does not infer a KV-cache saving.
+
+## Known Limitations and Deferred Work
+
+Live OAuth, model entitlements and the image-edit endpoint require real-account acceptance after deployment. There is no automatic account switching or request replay.
+
+## FAQ and important limits
+
+### Where are my credentials stored?
+
+OAuth credentials are stored on the host running DSH and used there to authenticate and send requests to OpenAI. Normal browser account responses return account summaries, not raw tokens. A remote browser device is not necessarily the DSH host.
+
+### Does uninstalling sign me out?
+
+No. OAuth state is stored separately at `$DSH_HOME/.openai-codex-auth.json` (`~/.dsh` by default). The plugin does not copy or modify `~/.codex/auth.json`. Use **Sign out all accounts**, or `logout` before uninstalling, only when deleting credentials is intentional.
+
+### Can I switch accounts for different conversations?
+
+Subsequent Codex requests use the selected active account; conversations do not bind their own accounts. Every stored account is also offered as its own model-picker route, and a route keeps its own account through authentication and token refresh. Fast Mode is conversation-scoped. Cancelling a new authorization preserves existing accounts; an explicit revoked-refresh response asks for reauthorization, while temporary failures preserve the account for retry. See [Account behavior](docs/reference.md#accounts-models-and-quota).
+
+### Why does a listed model fail?
+
+Account permissions, plugin/host compatibility, and network conditions all affect availability. Access on another client does not guarantee this integration will work. OpenAI controls model access, quota, context capacity, and service behavior; catalog entries are not proof of entitlement.
+
+### Can I keep the original `dsh-codex` plugin installed?
+
+Not in the same effective configuration: both register `openai-codex`. Follow [MIGRATION.md](MIGRATION.md); remove only the confirmed conflicting entry, not credentials or unrelated providers.
+
+### What do diagnostics prove?
+
+`doctor` is local. Capability and reviewer probes may make network requests and consume quota when their preconditions are met. `auto-review-probe` checks only the reviewer route and structured response, not the full Harness approval integration or execution of the reviewed action. Commands, limits, and exit codes are in the [diagnostics reference](docs/reference.md#capability-probes).
+
+A missing entry in [verified-compatibility.json](verified-compatibility.json) means a DSH/plugin combination is unverified, not known to be broken. Do not infer support for newer hosts from an older pairing.
+
+## Documentation and development
+
+- [Installation and upgrades](INSTALL.md)
+- [Configuration, diagnostics, and recovery](docs/reference.md)
+- [Migration from `dsh-codex`](MIGRATION.md)
+- [Architecture and security details](docs/design.md)
+- [Auto-review behavior](docs/auto-review.md)
+- [Release runbook](RELEASING.md), [Contributing](CONTRIBUTING.md), and [Security policy](SECURITY.md)
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm run test:browser
+pnpm run check:dsh-install
+```
+
+`check` covers static checks, unit tests, build, compatibility, and packaging. `lint:metadata` checks package and release rules; `lint:source` checks host and browser TypeScript for unhandled or misused promises, invalid awaits, duplicate cases, and unreachable code. Browser regression and isolated DSH installation are separate commands. These checks use no real OAuth authorization and do not replace real-account acceptance. To test an isolated client bundle without replacing `lib/client.js`, set `DSH_CODEX_TEST_CLIENT` to its path and run `pnpm exec vitest run tests/usage-built-client.integration.spec.tsx`; the test skips when unset.
+
+For this RC4 lab candidate, see [RC4 candidate validation](RC4-CANDIDATE.md) for the exact published peer baseline and keyless validation commands. Use the candidate’s `package-lock.json`; the inherited pnpm lockfile and release checks describe upstream releases.
+
+The browser suite loads the SDK's native client UI modules; their Harness-provided libraries are listed here as development dependencies. Before running it, install the Chromium build expected by the lockfile's Playwright with `pnpm exec playwright install chromium --only-shell`.
+
+## License and acknowledgements
+
+Copyright 2026 Frank Song for Codex Connect modifications and additional work. This project contains software derived from [Yan-Zero/dsh-codex](https://github.com/Yan-Zero/dsh-codex); Copyright 2026 Yan-Zero is retained for upstream material. Both are distributed under Apache-2.0; see [NOTICE](NOTICE).

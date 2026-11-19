@@ -1,0 +1,342 @@
+import { describe, expect, it, vi } from 'vitest'
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
+import {
+  assertOpenAICodexMaxTokensOverrides,
+  createOpenAICodexAdapter,
+  createOpenAICodexProfile,
+  openAICodexModelCatalog,
+  openAICodexModelCatalogFrom,
+  openAICodexUnavailableModels,
+  OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES,
+  OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES,
+  OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET,
+  OPENAI_CODEX_TRANSPORT,
+  OPENAI_CODEX_ASTRA_MODEL_ID,
+  withOpenAICodexAstra,
+  withOpenAICodexContextWindowOverrides,
+  withOpenAICodexMaxTokensOverrides,
+} from '../src/adapter.ts'
+import type { OpenAICodexCredentialStore } from '../src/store.ts'
+import { OPENAI_CODEX_PROVIDER } from '../src/store.ts'
+import { parseOpenAICodexModelsPayload } from '../src/model-catalog.ts'
+import { Config } from '../src/index.ts'
+
+describe('OpenAI Codex rc.2 adapter profile', () => {
+  it('preserves upstream Astra metadata while retaining calibrated reasoning choices', () => {
+    const provider = openaiCodexProvider()
+    const withoutAstra = {
+      ...provider,
+      getModels: () => provider.getModels().filter(model => model.id !== OPENAI_CODEX_ASTRA_MODEL_ID),
+    }
+    const patched = withOpenAICodexAstra(withoutAstra)
+    const astra = patched.getModels().filter(model => model.id === OPENAI_CODEX_ASTRA_MODEL_ID)
+
+    expect(astra).toEqual([expect.objectContaining({
+      name: 'GPT-6-Astra',
+      api: 'openai-codex-responses',
+      provider: OPENAI_CODEX_PROVIDER,
+      input: ['text', 'image'],
+      contextWindow: 272_000,
+      maxTokens: 128_000,
+    })])
+
+    const upstreamAstra = { ...astra[0]!, name: 'Upstream Astra', contextWindow: 300_000, thinkingLevelMap: { minimal: 'minimal' as const } }
+    const upstreamProvider = { ...provider, getModels: () => [upstreamAstra, ...withoutAstra.getModels()] }
+    const preserved = withOpenAICodexAstra(upstreamProvider)
+    expect(preserved.getModels()[0]).toEqual({ ...upstreamAstra, thinkingLevelMap: { off: null, minimal: null, xhigh: 'xhigh', max: 'max' } })
+    expect(upstreamAstra.thinkingLevelMap).toEqual({ minimal: 'minimal' })
+    expect(preserved.getModels().slice(1)).toEqual(withoutAstra.getModels())
+    expect(preserved.getModels().filter(model => model.id === OPENAI_CODEX_ASTRA_MODEL_ID)).toHaveLength(1)
+  })
+
+  it('distinguishes an omitted model list from an explicitly empty list', () => {
+    expect(Config({}).models.get()).toBeUndefined()
+    expect(Config({ models: [] }).models.get()).toEqual([])
+  })
+
+  it('supplies all request-image defaults required by ResolvedPiAiProviderProfile', () => {
+    const profile = createOpenAICodexProfile(openaiCodexProvider())
+
+    expect(profile.maxRequestImageBytes).toBe(OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES)
+    expect(profile.requestImagePixelBudget).toBe(OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET)
+    expect(profile.requestImageMaxBytes).toBe(OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES)
+    expect(profile.maxRequestImageBytes).toBe(20 * 1024 * 1024)
+    expect(profile.requestImagePixelBudget).toBe(2048 * 2048)
+    expect(profile.requestImageMaxBytes).toBe(1024 * 1024)
+  })
+
+  it('uses the finite SSE transport for completed one-shot requests', () => {
+    const profile = createOpenAICodexProfile(openaiCodexProvider())
+
+    expect(profile.transport).toBe(OPENAI_CODEX_TRANSPORT)
+    expect(profile.transport).toBe('sse')
+  })
+
+  it('filters discovery while keeping a hidden model resolvable', async () => {
+    const catalog = openAICodexModelCatalog()
+    expect(catalog.length).toBeGreaterThan(2)
+    const adapter = createOpenAICodexAdapter(
+      {} as OpenAICodexCredentialStore,
+      () => undefined,
+      undefined,
+      () => [catalog[1]!.id, catalog[0]!.id, catalog[1]!.id],
+    )
+
+    const listed = await adapter.listModels(OPENAI_CODEX_PROVIDER)
+    expect(listed.map(model => model.id)).toEqual([catalog[0]!.id, catalog[1]!.id])
+    await expect(adapter.resolveModel(OPENAI_CODEX_PROVIDER, catalog[2]!.id)).resolves.toMatchObject({
+      provider: OPENAI_CODEX_PROVIDER,
+      id: catalog[2]!.id,
+    })
+  })
+
+  it('advertises the full catalog when no visible-model list is configured', async () => {
+    const adapter = createOpenAICodexAdapter(
+      {} as OpenAICodexCredentialStore,
+      () => undefined,
+    )
+    const listed = await adapter.listModels(OPENAI_CODEX_PROVIDER)
+    expect(listed).toHaveLength(openAICodexModelCatalog().length)
+    expect(listed).toContainEqual(expect.objectContaining({ id: OPENAI_CODEX_ASTRA_MODEL_ID }))
+    await expect(adapter.resolveModel(OPENAI_CODEX_PROVIDER, OPENAI_CODEX_ASTRA_MODEL_ID)).resolves.toMatchObject({
+      provider: OPENAI_CODEX_PROVIDER,
+      id: OPENAI_CODEX_ASTRA_MODEL_ID,
+    })
+  })
+
+  it('resolves every advertised model and prepares its request without accessing credentials', async () => {
+    const credentials = { captureActiveAccount: vi.fn(() => { throw new Error('discovery must not read OAuth') }) } as Partial<OpenAICodexCredentialStore> as OpenAICodexCredentialStore
+    const adapter = createOpenAICodexAdapter(credentials, () => undefined)
+    const listed = await adapter.listModels(OPENAI_CODEX_PROVIDER)
+    expect(listed).toContainEqual(expect.objectContaining({ id: 'gpt-5.6-luna' }))
+    for (const model of listed) {
+      await expect(adapter.resolveModel(OPENAI_CODEX_PROVIDER, model.id)).resolves.toMatchObject({ id: model.id })
+      await expect(adapter.prepareCall(OPENAI_CODEX_PROVIDER, model.id)).resolves.toMatchObject({ model: { id: model.id } })
+    }
+    expect(credentials.captureActiveAccount).not.toHaveBeenCalled()
+    await expect(adapter.listModels('not-owned')).rejects.toMatchObject({ code: 'NO_ADAPTER' })
+    const prepared = await adapter.prepareCall(OPENAI_CODEX_PROVIDER, listed[0]!.id)
+    await expect((async () => { for await (const _chunk of prepared.stream({ provider: OPENAI_CODEX_PROVIDER, model: listed[0]!.id, messages: [] })) {} })()).rejects.toMatchObject({ code: 'AUTH_FAILED' })
+    expect(credentials.captureActiveAccount).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('context-window overrides', () => {
+  it('keeps the advertised catalog when no overrides are configured', () => {
+    const baseline = openaiCodexProvider().getModels()
+    const profile = createOpenAICodexProfile(openaiCodexProvider())
+
+    const listed = profile.piProvider.getModels()
+    expect(listed).toHaveLength(baseline.length)
+    for (const model of listed) {
+      expect(model.contextWindow).toBe(baseline.find(entry => entry.id === model.id)?.contextWindow)
+    }
+  })
+
+  it('replaces only the configured model context windows', () => {
+    const baseline = openaiCodexProvider().getModels()
+    const target = baseline.find(model => model.id.includes('gpt-5.6')) ?? baseline[0]!
+    const other = baseline.find(model => model.id !== target.id)!
+    const overrides = { [target.id]: 350_000 }
+    const profile = createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined, overrides)
+
+    const listed = profile.piProvider.getModels()
+    expect(listed.find(model => model.id === target.id)?.contextWindow).toBe(350_000)
+    expect(listed.find(model => model.id === other.id)?.contextWindow).toBe(other.contextWindow)
+  })
+
+  it('accepts a contextWindowOverrides config section', () => {
+    expect(Config({ contextWindowOverrides: { 'gpt-5.6-sol': 350_000 } }).contextWindowOverrides.get())
+      .toEqual({ 'gpt-5.6-sol': 350_000 })
+    expect(Config({}).contextWindowOverrides.get()).toBeUndefined()
+  })
+
+  it('withOpenAICodexContextWindowOverrides does not mutate the baseline provider', () => {
+    const provider = openaiCodexProvider()
+    const baseline = provider.getModels()
+    const overridden = withOpenAICodexContextWindowOverrides(provider, { [baseline[0]!.id]: 100_000 })
+
+    expect(overridden.getModels()[0]!.contextWindow).toBe(100_000)
+    expect(provider.getModels()[0]!.contextWindow).toBe(baseline[0]!.contextWindow)
+  })
+
+  it('refreshes resolved budgets without changing an already prepared call or output limits', async () => {
+    const target = 'gpt-5.6-sol'
+    let overrides: Record<string, number> | undefined = { [target]: 350_000 }
+    const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
+      undefined, undefined, undefined, undefined, () => overrides)
+    const first = await adapter.prepareCall(OPENAI_CODEX_PROVIDER, target)
+    expect(first.model.context?.contextWindow).toBe(350_000)
+    overrides[target] = 300_000
+    const next = await adapter.prepareCall(OPENAI_CODEX_PROVIDER, target)
+    expect(next.model.context?.contextWindow).toBe(300_000)
+    expect(first.model.context?.contextWindow).toBe(350_000)
+    overrides = undefined
+    const baseline = openaiCodexProvider().getModels().find(model => model.id === target)!
+    expect((await adapter.resolveModel(OPENAI_CODEX_PROVIDER, target)).context?.contextWindow).toBe(baseline.contextWindow)
+    const profile = createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined, { [target]: 350_000 })
+    expect(profile.piProvider.getModels().find(model => model.id === target)?.maxTokens).toBe(baseline.maxTokens)
+    expect(profile.configuredMaxTokens.size).toBe(0)
+    expect(profile.transport).toBe('sse')
+  })
+
+  it('reports unknown catalog ids instead of silently ignoring the override', () => {
+    expect(() => createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined, { 'misspelled-model': 300_000 }))
+      .toThrow('unknown model id "misspelled-model"')
+  })
+})
+
+describe('maximum-output-token overrides', () => {
+  it('rejects unknown ids and budgets outside the configuration ceiling', () => {
+    const catalog = openAICodexModelCatalog()
+    expect(() => assertOpenAICodexMaxTokensOverrides({ 'misspelled-model': 1_000 }, catalog))
+      .toThrow('unknown model id "misspelled-model"')
+    for (const budget of [0, -1, 1.5, NaN, Infinity, 872_001]) {
+      expect(() => assertOpenAICodexMaxTokensOverrides({ 'gpt-5.6-sol': budget }, catalog))
+        .toThrow('integer from 1 to 872000')
+    }
+    expect(() => assertOpenAICodexMaxTokensOverrides({ 'gpt-5.6-sol': 872_000 }, catalog)).not.toThrow()
+    expect(() => assertOpenAICodexMaxTokensOverrides({ 'gpt-5.6-sol': null }, catalog)).not.toThrow()
+  })
+
+  it('lands in configuredMaxTokens and the pi-ai model record without touching other models', () => {
+    const baseline = openaiCodexProvider().getModels()
+    const target = 'gpt-5.6-sol'
+    const other = baseline.find(model => model.id !== target)!
+    const profile = createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined, undefined, { [target]: 4_096 })
+
+    expect(profile.configuredMaxTokens.get(target)).toBe(4_096)
+    expect(profile.configuredMaxTokens.size).toBe(1)
+    expect(profile.piProvider.getModels().find(model => model.id === target)?.maxTokens).toBe(4_096)
+    expect(profile.piProvider.getModels().find(model => model.id === other.id)?.maxTokens).toBe(other.maxTokens)
+  })
+
+  it('emits defaultMaxTokens through the adapter and clears when the override is removed', async () => {
+    const target = 'gpt-5.6-sol'
+    let maxTokens: Record<string, number> | undefined = { [target]: 4_096 }
+    const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
+      undefined, undefined, undefined, undefined, undefined, () => maxTokens)
+
+    expect((await adapter.resolveModel(OPENAI_CODEX_PROVIDER, target)).defaultMaxTokens).toBe(4_096)
+    maxTokens = undefined
+    expect((await adapter.resolveModel(OPENAI_CODEX_PROVIDER, target)).defaultMaxTokens).toBeUndefined()
+  })
+
+  it('keeps a context override independent from the output cap', () => {
+    const target = 'gpt-5.6-sol'
+    const profile = createOpenAICodexProfile(openaiCodexProvider(), undefined, undefined, undefined,
+      { [target]: 350_000 }, { [target]: 4_096 })
+    expect(profile.piProvider.getModels().find(entry => entry.id === target))
+      .toMatchObject({ contextWindow: 350_000, maxTokens: 4_096 })
+  })
+
+  it('accepts a maxTokensOverrides config section', () => {
+    expect(Config({ maxTokensOverrides: { 'gpt-5.6-sol': 8_192 } }).maxTokensOverrides.get()).toEqual({ 'gpt-5.6-sol': 8_192 })
+    expect(Config({}).maxTokensOverrides.get()).toBeUndefined()
+  })
+
+  it('withOpenAICodexMaxTokensOverrides does not mutate the baseline provider', () => {
+    const provider = openaiCodexProvider()
+    const baseline = provider.getModels()
+    const overridden = withOpenAICodexMaxTokensOverrides(provider, { [baseline[0]!.id]: 2_048 })
+    expect(overridden.getModels()[0]!.maxTokens).toBe(2_048)
+    expect(provider.getModels()[0]!.maxTokens).toBe(baseline[0]!.maxTokens)
+  })
+})
+
+describe('live model catalog mapping', () => {
+  it('enables server-only GPT-6.1 Terra through its bundled frontier sibling', () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{
+      slug: 'gpt-6.1-terra',
+      display_name: 'GPT-6.1 Terra',
+      context_window: 500_000,
+      max_context_window: 872_000,
+      supported_reasoning_levels: [{ effort: 'max' }],
+      input_modalities: ['text', 'image'],
+    }] })
+
+    expect(openAICodexUnavailableModels(live)).toEqual([])
+    expect(openAICodexModelCatalogFrom({ live, mode: 'default' })).toContainEqual(expect.objectContaining({
+      id: 'gpt-6.1-terra',
+      name: 'GPT-6.1 Terra',
+      contextWindow: 500_000,
+      maxContextWindow: 872_000,
+      contextLimitSource: 'codex-catalog',
+    }))
+  })
+
+  it('still reports a slug whose family and role the installed catalog does not know', () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{ slug: 'gpt-7-orbit', context_window: 272_000 }] })
+    expect(openAICodexUnavailableModels(live)).toEqual(['gpt-7-orbit'])
+  })
+})
+
+describe('multi-route adapter', () => {
+  it('retains withdrawn models and blocks resolution and streaming before credential or network access', async () => {
+    const live = parseOpenAICodexModelsPayload({ models: [{ slug: 'gpt-6.1-sol', context_window: 272000 }] })
+    const withdrawn = live.map(model => ({ ...model, withdrawn: true as const }))
+    const credentials = new Proxy({} as OpenAICodexCredentialStore, { get() { throw new Error('Credentials must not be read') } })
+    const network = vi.fn(() => { throw new Error('Network must not be reached') })
+    vi.stubGlobal('fetch', network)
+    try {
+      const adapter = createOpenAICodexAdapter(credentials, () => undefined,
+        undefined, () => ['gpt-6.1-sol'], undefined, undefined, undefined, undefined,
+        () => [{ routeId: 'openai-codex', displayName: 'First', accountKey: 'first' },
+          { routeId: 'openai-codex-2', displayName: 'Second', accountKey: 'second' }],
+        { catalogLayer: key => ({ live: key === 'second' ? withdrawn : live, mode: 'default' }) })
+      expect(await adapter.listModels('openai-codex-2')).toContainEqual(expect.objectContaining({
+        id: 'gpt-6.1-sol', description: expect.stringContaining('no longer advertises'),
+      }))
+      await expect(adapter.resolveModel('openai-codex', 'gpt-6.1-sol')).resolves.toMatchObject({ id: 'gpt-6.1-sol' })
+      await expect(adapter.resolveModel('openai-codex-2', 'gpt-6.1-sol')).rejects.toMatchObject({ code: 'INVALID_CONFIG' })
+      const stream = adapter.stream({ provider: 'openai-codex-2', model: 'gpt-6.1-sol', messages: [] })
+      await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'INVALID_CONFIG' })
+      expect(network).not.toHaveBeenCalled()
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('resolves every bound route under its own provider id and catalog', async () => {
+    const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined,
+      () => [
+        { routeId: 'openai-codex', displayName: 'OpenAI Codex' },
+        { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct 3f9a2c)', accountKey: 'acct_3f9a2c' },
+      ])
+
+    expect(adapter.providerInfo('openai-codex-2').name).toBe('OpenAI Codex (acct 3f9a2c)')
+    expect(await adapter.listModels('openai-codex-2')).toHaveLength(openAICodexModelCatalog().length)
+    await expect(adapter.resolveModel('openai-codex-2', 'gpt-5.6-sol')).resolves.toMatchObject({
+      provider: 'openai-codex-2',
+      id: 'gpt-5.6-sol',
+    })
+    await expect(adapter.resolveModel(OPENAI_CODEX_PROVIDER, 'gpt-5.6-sol')).resolves.toMatchObject({
+      provider: OPENAI_CODEX_PROVIDER,
+    })
+  })
+
+  it.each([
+    ['gpt-6-sol', 'gpt-6-luna'],
+    ['gpt-6.2-astra', 'gpt-6.2-sol'],
+  ])('lists official models %s and %s on both allowlisted account routes', async (...visible) => {
+    const live = parseOpenAICodexModelsPayload({ models: visible.map(slug => ({
+      slug, display_name: slug, context_window: 272_000, max_context_window: 872_000,
+      supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'max' }],
+      input_modalities: ['text', 'image'],
+    })) })
+    const adapter = createOpenAICodexAdapter({} as OpenAICodexCredentialStore, () => undefined,
+      undefined, () => visible, undefined, undefined, undefined, undefined,
+      () => [
+        { routeId: OPENAI_CODEX_PROVIDER, displayName: 'OpenAI Codex' },
+        { routeId: 'openai-codex-2', displayName: 'OpenAI Codex (acct two)', accountKey: 'acct_two' },
+      ], { catalogLayer: () => ({ live, mode: 'default' }) })
+    try {
+      for (const route of [OPENAI_CODEX_PROVIDER, 'openai-codex-2']) {
+        expect((await adapter.listModels(route)).map(model => model.id).sort()).toEqual([...visible].sort())
+        for (const id of visible) {
+          await expect(adapter.resolveModel(route, id)).resolves.toMatchObject({ id, provider: route })
+          await expect(adapter.prepareCall(route, id)).resolves.toMatchObject({ model: { id, provider: route } })
+        }
+      }
+    } finally { await adapter.dispose() }
+  })
+})

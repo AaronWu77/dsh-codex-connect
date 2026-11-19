@@ -1,0 +1,850 @@
+import type { GenerateOptions, StreamChunk, PreparedAdapterCall } from '@deepseek-ai/dsh-llm'
+import { appendImageSelectionHandles } from './image-handle-bridge.ts'
+/** OpenAI Codex adapter assembled from public dsh-llm-pi-ai extension points. */
+
+import { createHash } from 'node:crypto'
+import { bridgePiProvider } from './pi-host-bridge.ts'
+import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai'
+import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import type { Context as PiContext, Model, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
+import { LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
+import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
+import type { OpenAICodexCredentialStore } from './store.ts'
+import { readOpenAICodexAccountRequestAuth, readOpenAICodexRequestAuth } from './auth.ts'
+import { OPENAI_CODEX_PROVIDER } from './store.ts'
+import { isOpenAICodexRouteId, OPENAI_CODEX_PRIMARY_DISPLAY_NAME } from './account-routes.ts'
+import type { FastModeRegistry } from './fast-mode.ts'
+import { ConversationSpeedRegistry } from './speed-mode-registry.ts'
+import { SpeedModeRequestScope } from './speed-mode-request-scope.ts'
+import { OpenAICodexRequestLifecycle } from './request-lifecycle.ts'
+import type { OpenAICodexPayloadMetadata } from './request-lifecycle.ts'
+import { DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT } from './settings-contract.ts'
+import type { OpenAICodexModelTransport } from './settings-contract.ts'
+import { projectOpenAICodexSpeedPayload } from './speed-mode-contract.ts'
+import type { OpenAICodexReasoningEffort } from './reasoning-defaults.ts'
+import { openAICodexAccountKey } from './store.ts'
+import type {
+  OpenAICodexContextWindowMode,
+  OpenAICodexModelCatalogEntry,
+} from './model-contract.ts'
+import {
+  isValidOpenAICodexContextBudget,
+  openAICodexContextLimit,
+  openAICodexModeContextWindow,
+} from './model-contract.ts'
+import type { OpenAICodexLiveModel } from './model-catalog.ts'
+import type { OpenAICodexProxyManager } from './provider-proxy.ts'
+import type { RecentRequestLog } from './recent-requests.ts'
+import type { OpenAICodexWebSocketResidency } from './ws-residency.ts'
+import { OpenAICodexBodyIdentity } from './body-identity.ts'
+import { readOpenAICodexTransportFailure } from './ws-residency.ts'
+
+/** Official Codex id supplied when the installed pi-ai catalog predates Astra. */
+export const OPENAI_CODEX_ASTRA_MODEL_ID = 'gpt-6-astra'
+
+/** Optional adapter collaborators beyond the positional profile inputs. */
+export interface OpenAICodexAdapterExtras {
+  /** Resolve model transport for new prepared calls; omission retains SSE. */
+  resolveTransport?: () => OpenAICodexModelTransport
+  /** Own the resident-connection budget; absent leaves every request on its profile transport. */
+  residency?: OpenAICodexWebSocketResidency
+  imageEditingEnabled?: () => boolean
+  /** Optional profile fallback; explicit request effort wins in the current Host consumer. */
+  resolveReasoningEffort?: () => OpenAICodexReasoningEffort | undefined
+  /** Live catalog layer for one route's account plus the context-window mode. */
+  catalogLayer?: (accountKey: string | undefined) => OpenAICodexCatalogLayer
+  /** Resolve the payload field-name logger for each request; undefined disables logging. */
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined
+  /** Process-local request summaries for the sidebar panel; absent records nothing. */
+  recentRequests?: RecentRequestLog
+  /** Resolve whether a request belongs to a subagent Session. */
+  resolveRequestKind?: (sessionId: GenerateOptions['sessionId']) => 'conversation' | 'subagent'
+}
+
+/** One LLM route this adapter registers and the store account it authenticates as. */
+export interface OpenAICodexRouteBinding {
+  /** Harness route id; the store's active account keeps `openai-codex`. */
+  routeId: string
+  /** Selector label; only the primary route carries the bare product name. */
+  displayName: string
+  /** Account key this route is bound to; absent binds whatever is active per request. */
+  accountKey?: string
+}
+
+/** Profile carrying the route's account binding so auth freezes with the request. */
+export type OpenAICodexRouteProfile = ResolvedPiAiProviderProfile & {
+  /** Account key this route authenticates as; absent binds the store's active account. */
+  openaiCodexAccountKey?: string
+}
+
+/** Single-route binding retained when no account enumeration is supplied. */
+export const OPENAI_CODEX_PRIMARY_ROUTE: OpenAICodexRouteBinding = Object.freeze({
+  routeId: OPENAI_CODEX_PROVIDER,
+  displayName: OPENAI_CODEX_PRIMARY_DISPLAY_NAME,
+})
+
+const OPENAI_CODEX_ASTRA_MODEL: Model<'openai-codex-responses'> = {
+  id: OPENAI_CODEX_ASTRA_MODEL_ID,
+  name: 'GPT-6-Astra',
+  api: 'openai-codex-responses',
+  provider: OPENAI_CODEX_PROVIDER,
+  baseUrl: 'https://chatgpt.com/backend-api',
+  reasoning: true,
+  input: ['text', 'image'],
+  // ChatGPT OAuth usage is read from the server; no authoritative token-price schedule is available here.
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 272_000,
+  maxTokens: 128_000,
+  thinkingLevelMap: { off: null, minimal: null, xhigh: 'xhigh', max: 'max' },
+  compat: {
+    supportsOpenAIGrammarTools: true,
+    supportsAdditionalTools: true,
+    supportsToolSearch: true,
+  },
+}
+
+/** Preserve native Astra metadata with calibrated effort choices, or add the fallback. */
+export function withOpenAICodexAstra(
+  provider: Provider<'openai-codex-responses'>,
+): Provider<'openai-codex-responses'> {
+  const baseline = provider.getModels()
+  const models = baseline.some(model => model.id === OPENAI_CODEX_ASTRA_MODEL_ID)
+    ? baseline.map(model => model.id === OPENAI_CODEX_ASTRA_MODEL_ID
+      ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, ...OPENAI_CODEX_ASTRA_MODEL.thinkingLevelMap } }
+      : model)
+    : [OPENAI_CODEX_ASTRA_MODEL, ...baseline]
+  return { ...provider, getModels: () => models }
+}
+
+/** One live-catalog layer plus the selected context-window mode. */
+export interface OpenAICodexCatalogLayer {
+  /** Server-advertised models; empty means the bundled catalog answers. */
+  live: readonly OpenAICodexLiveModel[]
+  /** Which server window becomes the advertised budget. */
+  mode: OpenAICodexContextWindowMode
+}
+
+/**
+ * Resolve a slug's family: the id through its last dash-separated segment that
+ * contains a digit. `gpt-5.6-next` is family `gpt-5.6`; `gpt-reserve` and
+ * `codex-auto-review` carry no version segment and have no family.
+ * @param slug - server model slug.
+ * @returns the family prefix, or undefined when the slug has no version segment.
+ */
+export function openAICodexModelFamily(slug: string): string | undefined {
+  const parts = slug.split('-')
+  let end = -1
+  for (let index = 0; index < parts.length; index += 1) {
+    if (/[0-9]/u.test(parts[index] ?? '')) end = index
+  }
+  return end <= 0 ? undefined : parts.slice(0, end + 1).join('-')
+}
+
+/**
+ * Whether the installed catalog already knows a slug's family. A live model is
+ * added to the picker only when a bundled id equals the family or extends it,
+ * so an unrecognized family is reported instead of guessed into the selector.
+ * @param slug - server model slug.
+ * @param knownIds - ids the installed pi-ai catalog advertises.
+ * @returns true when the family is present in the installed catalog.
+ */
+export function isOpenAICodexKnownModelFamily(slug: string, knownIds: readonly string[]): boolean {
+  const family = openAICodexModelFamily(slug)
+  if (family === undefined) return false
+  const prefix = `${family}-`
+  return knownIds.some(id => id === family || id.startsWith(prefix))
+}
+
+/**
+ * Bundled records for server generations the installed catalog predates. Each
+ * alias names the installed model filling the same product role; the live
+ * payload still supplies the id, name, windows, and output cap.
+ */
+const OPENAI_CODEX_MODEL_PREDECESSORS: Readonly<Record<string, readonly string[]>> = {
+  'gpt-6.1-sol': ['gpt-6-sol', 'gpt-5.6-sol'],
+  'gpt-6.1-terra': ['gpt-6-astra', 'gpt-5.6-terra'],
+  'gpt-6.2-astra': ['gpt-6-astra'],
+  'gpt-6.2-sol': ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'],
+}
+
+/**
+ * Overlay the live catalog on the installed one. Known slugs keep their
+ * bundled record with the selected mode's window and the server output cap;
+ * Explicitly mapped generations and family-known new slugs use a sibling record. Native and
+ * synthesized GPT-6.1 Sol records disable Off and Minimal. Unknown slugs are
+ * returned so the Host can report them without enabling them.
+ * @param provider - installed provider catalog.
+ * @param live - server-advertised models.
+ * @param mode - selected context-window mode.
+ * @returns a detached provider plus the slugs kept out of the picker.
+ */
+export function applyOpenAICodexLiveCatalog(
+  provider: Provider,
+  live: readonly OpenAICodexLiveModel[],
+  mode: OpenAICodexContextWindowMode,
+): { provider: Provider; unavailableModels: readonly string[] } {
+  const baseline = provider.getModels().map(model => model.id === 'gpt-6.1-sol'
+    ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null, minimal: null } }
+    : model)
+  const bySlug = new Map(live.map(entry => [entry.slug, entry]))
+  const knownIds = baseline.map(model => model.id)
+  const models = baseline.map(model => {
+    const entry = bySlug.get(model.id)
+    if (entry === undefined) return model
+    const contextWindow = openAICodexModeContextWindow(entry.contextWindow, entry.maxContextWindow, mode)
+    const maxTokens = entry.maxOutputTokens ?? model.maxTokens
+    return contextWindow === model.contextWindow && maxTokens === model.maxTokens
+      ? model
+      : { ...model, contextWindow, maxTokens }
+  })
+  const unavailableModels: string[] = []
+  for (const entry of live) {
+    if (baseline.some(model => model.id === entry.slug)) continue
+    const aliases = OPENAI_CODEX_MODEL_PREDECESSORS[entry.slug]
+    const predecessor = aliases?.map(id => baseline.find(model => model.id === id)).find(model => model !== undefined)
+      ?? (entry.slug === 'gpt-6-sol' || entry.slug === 'gpt-6-luna'
+        ? baseline.find(model => model.id === `gpt-5.6-${entry.slug.slice('gpt-6-'.length)}`)
+        : undefined)
+    const family = openAICodexModelFamily(entry.slug)
+    if (predecessor === undefined && (family === undefined || !isOpenAICodexKnownModelFamily(entry.slug, knownIds))) {
+      unavailableModels.push(entry.slug)
+      continue
+    }
+    const template = predecessor ?? baseline.find(model => model.id === family || model.id.startsWith(`${family}-`))
+    if (template === undefined) {
+      unavailableModels.push(entry.slug)
+      continue
+    }
+    models.push({
+      ...template,
+      id: entry.slug,
+      name: entry.displayName ?? entry.slug,
+      ...entry.slug === 'gpt-6.1-sol'
+        ? { thinkingLevelMap: { ...template.thinkingLevelMap, off: null, minimal: null } }
+        : {},
+      contextWindow: openAICodexModeContextWindow(entry.contextWindow, entry.maxContextWindow, mode),
+      maxTokens: entry.maxOutputTokens ?? template.maxTokens,
+    })
+  }
+  return { provider: { ...provider, getModels: () => models }, unavailableModels }
+}
+
+/** Return a detached copy of the effective Codex model catalog. */
+export function openAICodexModelCatalog(): readonly OpenAICodexModelCatalogEntry[] {
+  return openAICodexModelCatalogFrom()
+}
+
+/**
+ * List live slugs whose family the installed catalog does not know. They stay
+ * out of the picker and are reported through the catalog status instead.
+ * @param live - server-advertised models.
+ * @returns slugs held back from the selector.
+ */
+export function openAICodexUnavailableModels(live: readonly OpenAICodexLiveModel[]): readonly string[] {
+  return applyOpenAICodexLiveCatalog(withOpenAICodexAstra(openaiCodexProvider()), live, 'default').unavailableModels
+}
+
+/**
+ * Build the catalog the settings card reads from the selected live layer.
+ * @param layer - live models and context-window mode; omitted uses the bundled catalog.
+ * @returns detached entries carrying server tiers and reasoning levels when known.
+ */
+export function openAICodexModelCatalogFrom(
+  layer: OpenAICodexCatalogLayer = { live: [], mode: 'default' },
+): readonly OpenAICodexModelCatalogEntry[] {
+  const merged = applyOpenAICodexLiveCatalog(withOpenAICodexAstra(openaiCodexProvider()), layer.live, layer.mode).provider
+  const bySlug = new Map(layer.live.map(entry => [entry.slug, entry]))
+  return merged.getModels().map(model => {
+    const entry = bySlug.get(model.id)
+    return {
+      id: model.id,
+      name: model.name,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      ...entry === undefined
+        ? openAICodexContextLimit(model.id, model.contextWindow)
+        : openAICodexContextLimit(model.id, entry.contextWindow, entry.maxContextWindow),
+      ...entry === undefined || entry.serviceTiers.length === 0 ? {} : { serviceTiers: entry.serviceTiers },
+      ...entry === undefined || entry.reasoningLevels.length === 0 ? {} : { reasoningLevels: entry.reasoningLevels },
+    }
+  })
+}
+
+/** Provider idle ceiling used by the composite route. */
+export const OPENAI_CODEX_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+/** rc.2 default maximum base64 image payload retained in one request. */
+export const OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
+/** rc.2 default total-pixel budget for one deterministic inline image version. */
+export const OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048
+/** rc.2 default raw encoded-byte cap for one deterministic inline image version. */
+export const OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
+/** Request-level retained-image count bound; the harness omits images past it instead of failing. */
+export const OPENAI_CODEX_MAX_REQUEST_IMAGES = 50
+/** Count-overflow offload step, never above the retained-image bound. */
+export const OPENAI_CODEX_IMAGE_OFFLOAD_COUNT_QUANTUM = 10
+
+/** Default transport retained for existing profiles and standalone diagnostics. */
+export const OPENAI_CODEX_TRANSPORT = DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
+
+/**
+ * Give the generic dsh adapter a request-scoped bearer-token entry without
+ * changing the provider's user-facing OAuth flow. The resolver accepts only
+ * the explicit override supplied by this plugin; it never discovers an API
+ * key from the environment or persistent api-key credentials.
+ */
+function isPayloadRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Maximum prompt-cache key length accepted by the Codex Responses API. */
+export const OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH = 64
+
+/** Bound one prompt-cache key exactly as the vendored provider does. */
+function clampOpenAICodexPromptCacheKey(value: string): string {
+  const characters = Array.from(value)
+  return characters.length <= OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH
+    ? value
+    : characters.slice(0, OPENAI_CODEX_PROMPT_CACHE_KEY_MAX_LENGTH).join('')
+}
+
+/** Concatenate the text parts of one pi-ai message content value. */
+function openAICodexContentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map(part => isPayloadRecord(part) && typeof part['text'] === 'string' ? part['text'] : '')
+    .join('')
+}
+
+/**
+ * Derive the prompt-cache key for one request. The Harness session id is the
+ * stable per-session identity, so it is used whenever the request supplies one.
+ * Without it, a hash of the effective system prompt and the first user message keeps
+ * requests from the same conversation together. A different key only causes a
+ * prompt-cache miss; it never changes the model's answer.
+ * @param context - exact pi-ai request context.
+ * @param sessionId - Harness session id from the request options, when present.
+ * @returns the key to send, or undefined when no stable key can be derived.
+ */
+export function deriveOpenAICodexPromptCacheKey(
+  context: PiContext,
+  sessionId: string | undefined,
+): string | undefined {
+  if (sessionId !== undefined && sessionId.trim().length > 0) return clampOpenAICodexPromptCacheKey(sessionId.trim())
+  // Public Context inputs may use systemPrompt instead of transcript system messages.
+  const systemMessage = getCurrentSystemMessage(context.messages)
+  const system = systemMessage === undefined
+    ? context.systemPrompt ?? ''
+    : getSystemMessageText(systemMessage)
+  const firstUser = (context.messages ?? [])
+    .filter(message => message.role === 'user')
+    .map(message => openAICodexContentText(message.content))
+    .find(text => text.length > 0)
+  if (system.length === 0 && firstUser === undefined) return undefined
+  const digest = createHash('sha1')
+    .update(system)
+    .update('\u0000')
+    .update((firstUser ?? '').slice(0, 4096))
+    .digest('hex')
+  return `codex-${digest}`
+}
+
+/** Request-scoped payload additions applied by one provider wrapper. */
+export interface OpenAICodexPayloadPolicy {
+  /** Fast Mode registry; absent never adds the priority tier. */
+  fastMode?: FastModeRegistry | undefined
+  /** Adapter-owned request capture, attributed only by the normal auth resolver. */
+  requestScope?: SpeedModeRequestScope | undefined
+  /** Derive the prompt-cache key; absent never adds one. */
+  derivePromptCacheKey?: ((context: PiContext, sessionId: string | undefined) => string | undefined) | undefined
+  /** Resolve the field-name logger for each request; undefined disables logging. */
+  onPayloadFields?: (() => ((names: readonly string[]) => void) | undefined) | undefined
+  /** Observe content-free final payload metadata; absent disables observation, observer failures do not alter the request. */
+  onPayloadMetadata?: ((metadata: OpenAICodexPayloadMetadata) => void) | undefined
+  /** Record prepared bodies so a full resend can name its first divergence. */
+  bodyIdentity?: OpenAICodexBodyIdentity | undefined
+}
+
+/**
+ * Apply the Codex request payload policy in one transform: the Fast Mode
+ * priority tier, the prompt-cache key, and optional diagnostics. A request
+ * with no additions or observers keeps the caller's options object.
+ * @param provider - provider whose streamSimple is wrapped.
+ * @param policy - request-scoped additions; each is skipped when absent.
+ * @returns a detached provider applying the policy.
+ */
+export function withOpenAICodexPayloadPolicy(provider: Provider, policy: OpenAICodexPayloadPolicy): Provider {
+  const streamSimple = provider.streamSimple
+  return {
+    ...provider,
+    streamSimple(model, context, options?: SimpleStreamOptions) {
+      const sessionId = options?.sessionId
+      const codexRoute = provider.id === model.provider && isOpenAICodexRouteId(provider.id)
+      const scoped = codexRoute && policy.fastMode instanceof ConversationSpeedRegistry ? policy.fastMode : undefined
+      const request = policy.requestScope?.current()
+      const captured = scoped?.captureSpeed(sessionId)
+      const mode = scoped === undefined
+        ? codexRoute && policy.fastMode?.isEnabled(sessionId) === true ? 'fast' : 'standard'
+        : scoped.confirmCapturedSpeed(sessionId, request?.selection ?? captured!, {
+          workspace: scoped.workspaceFor(sessionId ?? ''), accountKey: request?.accountKey,
+          provider: model.provider, model: model.id,
+        })
+      const fastEnabled = mode === 'fast'
+      const cacheKey = codexRoute && options?.cacheRetention !== 'none'
+        ? policy.derivePromptCacheKey?.(context, sessionId)
+        : undefined
+      const logFields = codexRoute ? policy.onPayloadFields?.() : undefined
+      if (mode === 'standard' && (scoped === undefined || options?.onPayload === undefined)
+        && cacheKey === undefined && logFields === undefined && policy.onPayloadMetadata === undefined) {
+        return streamSimple.call(provider, model, context, options)
+      }
+      const previousOnPayload = options?.onPayload
+      const nextOptions: SimpleStreamOptions = {
+        ...options,
+        async onPayload(payload, payloadModel) {
+          const replaced = await previousOnPayload?.(payload, payloadModel)
+          const nextPayload = replaced === undefined ? payload : replaced
+          const speedPayload = scoped !== undefined || fastEnabled
+            ? projectOpenAICodexSpeedPayload(nextPayload, model.provider, model.id, mode)
+            : nextPayload
+          if (!isPayloadRecord(speedPayload)) return speedPayload
+          const additions: Record<string, unknown> = {}
+          if (cacheKey !== undefined) additions['prompt_cache_key'] = cacheKey
+          const result = { ...speedPayload, ...additions }
+          if (policy.onPayloadMetadata !== undefined) {
+            const reasoning = result['reasoning']
+            try {
+              policy.onPayloadMetadata({
+                bodyBytes: Buffer.byteLength(JSON.stringify(result), 'utf8'),
+                reasoning: isPayloadRecord(reasoning) && typeof reasoning['effort'] === 'string' ? reasoning['effort'] : null,
+              })
+            } catch (_error) {
+              // Optional diagnostics must not alter the provider request.
+            }
+          }
+          policy.bodyIdentity?.record(sessionId ?? '', result)
+          logFields?.(Object.keys(result))
+          return result
+        },
+      }
+      return streamSimple.call(provider, model, context, nextOptions)
+    },
+  }
+}
+
+/** Add the request-scoped Fast Mode hint without changing auth or other options. */
+export function withOpenAICodexFastMode(
+  provider: Provider,
+  fastMode: FastModeRegistry | undefined,
+): Provider {
+  return withOpenAICodexPayloadPolicy(provider, { fastMode })
+}
+
+function requestProvider(
+  provider: Provider,
+  fastMode?: FastModeRegistry,
+  proxyManager?: OpenAICodexProxyManager,
+  resolveProxyUrl?: () => string | undefined,
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
+  requestScope?: SpeedModeRequestScope,
+  requests?: OpenAICodexRequestLifecycle,
+  routeLabel?: string,
+  transport: OpenAICodexModelTransport = DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+  residency?: OpenAICodexWebSocketResidency,
+): Provider {
+  const nativeStream = provider.streamSimple
+  const requestOwnedProvider: Provider = {
+    ...provider,
+    streamSimple(model, context, options) {
+      const sessionId = options?.sessionId
+      // Continuation is admitted per request: the resident budget only covers
+      // conversation turns, and every other request keeps the finite SSE path.
+      const decision = transport === 'websocket-cached' && residency !== undefined
+        ? residency.admit(sessionId, requests?.current()?.kind)
+        : undefined
+      requests?.noteRoute(routeLabel, transport, decision?.continuation === false)
+      const admitted = decision?.continuation === true ? decision : undefined
+      // `auto` is request-owned by design: it drops the cache key. Every other
+      // transport relies on PI's session-keyed cache, so the business Session id
+      // must reach PI intact.
+      const dropSessionId = decision === undefined && transport === 'auto'
+      const { sessionId: _sessionId, ...withoutSession } = options ?? {}
+      const requestOptions = decision === undefined
+        ? (dropSessionId ? withoutSession : options)
+        : { ...options, transport: decision.continuation ? 'websocket-cached' as const : 'sse' as const }
+      let stream: ReturnType<typeof nativeStream>
+      try {
+        stream = nativeStream.call(provider, model, context, requestOptions)
+      } catch (error: unknown) {
+        if (admitted?.lease !== undefined) residency?.abort(admitted.lease)
+        throw error
+      }
+      const settlement = stream.result().then(
+        message => {
+          const failure = readOpenAICodexTransportFailure(message)
+          const settlement = admitted === undefined ? undefined : residency?.settle(admitted.lease, failure)
+          const observed = decision === undefined
+            ? (transport === 'sse' ? 'sse' as const : undefined)
+            : settlement?.transport ?? 'sse'
+          const continuation = settlement?.continuation
+          const deltaItems = settlement?.deltaItems
+          const deltaBytes = deltaItems === undefined ? undefined : identity.deltaBytes(sessionId ?? '', deltaItems)
+          requests?.noteResult(message, observed, continuation, continuation === 'full' ? identity.explain(sessionId ?? '') : undefined, deltaBytes)
+        },
+        () => { if (admitted !== undefined) residency?.settle(admitted.lease, undefined) },
+      )
+      requests?.trackProducer(settlement)
+      return stream
+    },
+  }
+  const identity = new OpenAICodexBodyIdentity()
+  const configured = withOpenAICodexPayloadPolicy(requestOwnedProvider, {
+    fastMode, requestScope, bodyIdentity: identity,
+    derivePromptCacheKey: deriveOpenAICodexPromptCacheKey,
+    ...requests === undefined ? {} : { onPayloadMetadata: (metadata: OpenAICodexPayloadMetadata) => { requests.notePayloadMetadata(metadata) } },
+    ...resolveOnPayloadFields === undefined ? {} : { onPayloadFields: resolveOnPayloadFields },
+  })
+  const streamSimple = configured.streamSimple
+  return {
+    ...configured,
+    streamSimple(model, context, options?: SimpleStreamOptions) {
+      const captured = requests?.current()
+      const proxyUrl = captured === undefined ? resolveProxyUrl?.() : captured.proxyUrl
+      const operation = () => streamSimple.call(configured, model, context, options)
+      return proxyManager?.runStream(proxyUrl, operation) ?? operation()
+    },
+    auth: {
+      ...provider.auth,
+      apiKey: {
+        name: 'OpenAI Codex OAuth bearer token',
+        async resolve({ credential }) {
+          const apiKey = credential?.key
+          return apiKey === undefined || apiKey.length === 0
+            ? undefined
+            : { auth: { apiKey }, source: 'OAuth' }
+        },
+      },
+    },
+  }
+}
+
+/**
+ * Explain why one model cannot be requested on a route whose account no longer offers it.
+ * The message names the account and the safe next steps; it carries no credential or
+ * provider response data.
+ * @param routeLabel - selector label of the route's account, for example `OpenAI Codex (AaronWu)`.
+ * @param model - model id the account's latest list no longer advertises.
+ * @returns the actionable failure the adapter reports instead of sending the request.
+ */
+export function openAICodexWithdrawnModelMessage(routeLabel: string, model: string): string {
+  return `OpenAI Codex model "${model}" is not currently offered to ${routeLabel}.`
+    + ' This account no longer advertises the model; its access or model catalog may have changed.'
+    + ' Refresh models under Settings, Plugins, Codex Connect, or choose another model or account.'
+}
+
+/** Build the DSH rc.2 profile with request and host streams on PI 1.4.0. */
+export function createOpenAICodexProfile(
+  provider: Provider,
+  fastMode?: FastModeRegistry,
+  proxyManager?: OpenAICodexProxyManager,
+  resolveProxyUrl?: () => string | undefined,
+  contextWindowOverrides?: Readonly<Record<string, number>> | undefined,
+  maxTokensOverrides?: Readonly<Record<string, number>> | undefined,
+  route: OpenAICodexRouteBinding = OPENAI_CODEX_PRIMARY_ROUTE,
+  layer?: OpenAICodexCatalogLayer | undefined,
+  resolveOnPayloadFields?: () => ((names: readonly string[]) => void) | undefined,
+  requestPolicy?: {
+    requestScope?: SpeedModeRequestScope
+    reasoningEffort?: OpenAICodexReasoningEffort
+    transport?: OpenAICodexModelTransport
+    requests?: OpenAICodexRequestLifecycle
+    residency?: OpenAICodexWebSocketResidency
+  },
+): OpenAICodexRouteProfile & { piProvider: ReturnType<typeof bridgePiProvider> } {
+  const effectiveLayer: OpenAICodexCatalogLayer = layer ?? { live: [], mode: 'default' }
+  const layeredProvider = applyOpenAICodexLiveCatalog(provider, effectiveLayer.live, effectiveLayer.mode).provider
+  const effectiveProvider = applyOpenAICodexOverrides(layeredProvider, contextWindowOverrides, maxTokensOverrides, layer?.live)
+  const routedProvider = withOpenAICodexRouteId(effectiveProvider, route.routeId)
+  // A withdrawn model stays listed but never reaches the provider: the adapter rejects it
+  // with the reason before any request is prepared or streamed.
+  const modelErrors = new Map<string, string>()
+  for (const model of layer?.live ?? []) {
+    if (model.withdrawn !== true) continue
+    modelErrors.set(model.slug, openAICodexWithdrawnModelMessage(route.displayName, model.slug))
+  }
+  const profile = {
+    provider: route.routeId,
+    displayName: route.displayName,
+    transport: requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT,
+    streamIdleTimeoutMs: OPENAI_CODEX_STREAM_IDLE_TIMEOUT_MS,
+    maxRequestImageBytes: OPENAI_CODEX_MAX_REQUEST_IMAGE_BYTES,
+    maxRequestImages: OPENAI_CODEX_MAX_REQUEST_IMAGES,
+    imageOffloadCountQuantum: OPENAI_CODEX_IMAGE_OFFLOAD_COUNT_QUANTUM,
+    requestImagePixelBudget: OPENAI_CODEX_REQUEST_IMAGE_PIXEL_BUDGET,
+    requestImageMaxBytes: OPENAI_CODEX_REQUEST_IMAGE_MAX_BYTES,
+    retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-connect retryPolicy'),
+    ...requestPolicy?.reasoningEffort === undefined ? {} : { reasoning: requestPolicy.reasoningEffort },
+    configuredMaxTokens: new Map(Object.entries(maxTokensOverrides ?? {})),
+    modelErrors,
+    piProvider: bridgePiProvider(requestProvider(routedProvider, fastMode, proxyManager, resolveProxyUrl, resolveOnPayloadFields, requestPolicy?.requestScope, requestPolicy?.requests, route.displayName, requestPolicy?.transport ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT, requestPolicy?.residency)),
+    ...route.accountKey === undefined ? {} : { openaiCodexAccountKey: route.accountKey },
+  }
+  return profile
+}
+
+/**
+ * Present one provider under a distinct LLM route id. Model records take the
+ * route id too, because pi-ai resolves the provider that serves a model from
+ * `model.provider`; the catalog implementation, auth, and streaming behavior
+ * are the same provider's. The wrapped providers never read `this`, so the
+ * spread keeps their behavior.
+ */
+export function withOpenAICodexRouteId(provider: Provider, routeId: string): Provider {
+  if (routeId === provider.id) return provider
+  const models = provider.getModels().map(model => ({ ...model, provider: routeId }))
+  return { ...provider, id: routeId, getModels: () => models }
+}
+
+/**
+ * Detach one provider and replace the advertised model metadata for the
+ * configured ids. Request streaming itself is unaffected: pi-ai streams the
+ * caller-supplied model, so only the metadata Harness reads for context
+ * budgeting, per-request default output caps, and compaction changes.
+ */
+function applyOpenAICodexOverrides(
+  provider: Provider,
+  contextWindowOverrides: Readonly<Record<string, number>> | undefined,
+  maxTokensOverrides: Readonly<Record<string, number>> | undefined,
+  live?: readonly OpenAICodexLiveModel[],
+): Provider {
+  if (contextWindowOverrides === undefined && maxTokensOverrides === undefined) return provider
+  const baselineModels = provider.getModels()
+  const liveMaximums = new Map(live?.map(model => [model.slug, model.maxContextWindow]))
+  const validationModels = baselineModels.map(model => ({
+    id: model.id, contextWindow: model.contextWindow,
+    maxContextWindow: liveMaximums.get(model.id)
+      ?? openAICodexContextLimit(model.id, model.contextWindow).maxContextWindow,
+  }))
+  assertOpenAICodexContextWindowOverrides(contextWindowOverrides, validationModels)
+  assertOpenAICodexMaxTokensOverrides(maxTokensOverrides, validationModels)
+  const replaced = baselineModels.map(model => {
+    const contextWindow = contextWindowOverrides?.[model.id]
+    const maxTokens = maxTokensOverrides?.[model.id]
+    return contextWindow === undefined && maxTokens === undefined
+      ? model
+      : {
+          ...model,
+          ...contextWindow === undefined ? {} : { contextWindow },
+          ...maxTokens === undefined ? {} : { maxTokens },
+        }
+  })
+  return { ...provider, getModels: () => replaced }
+}
+
+/** Detach one provider and replace the advertised context window for the configured model ids. */
+export function withOpenAICodexContextWindowOverrides(
+  provider: Provider,
+  overrides: Readonly<Record<string, number>>,
+): Provider {
+  return applyOpenAICodexOverrides(provider, overrides, undefined)
+}
+
+/** Detach one provider and replace the advertised maximum output tokens for the configured model ids. */
+export function withOpenAICodexMaxTokensOverrides(
+  provider: Provider,
+  overrides: Readonly<Record<string, number>>,
+): Provider {
+  return applyOpenAICodexOverrides(provider, undefined, overrides)
+}
+
+/**
+ * Validate numeric context budgets against the catalog. Null resets can mask inherited
+ * values for models that are no longer in the catalog.
+ * @param overrides - per-model budgets or resets.
+ * @param catalog - model ids and their context limits.
+ * @throws {TypeError} If a numeric budget targets an unknown model or exceeds its valid range.
+ */
+export function assertOpenAICodexContextWindowOverrides(
+  overrides: Readonly<Record<string, number | null>> | undefined,
+  catalog: readonly (Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>
+    & Partial<Pick<OpenAICodexModelCatalogEntry, 'maxContextWindow'>>)[],
+): void {
+  const models = new Map(catalog.map(model => [model.id, model]))
+  for (const [id, budget] of Object.entries(overrides ?? {})) {
+    if (budget === null) continue
+    const model = models.get(id)
+    if (model === undefined) throw new TypeError(`OpenAI Codex contextWindowOverrides contains unknown model id "${id}"`)
+    const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
+    if (!isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
+      throw new TypeError(`OpenAI Codex contextWindowOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
+    }
+  }
+}
+
+/**
+ * Validate numeric output budgets against the same catalog limits as context budgets.
+ * Null resets can mask inherited values for models that are no longer in the catalog.
+ * @param overrides - per-model budgets or resets.
+ * @param catalog - model ids and their context limits.
+ * @throws {TypeError} If a numeric budget targets an unknown model or exceeds its valid range.
+ */
+export function assertOpenAICodexMaxTokensOverrides(
+  overrides: Readonly<Record<string, number | null>> | undefined,
+  catalog: readonly (Pick<OpenAICodexModelCatalogEntry, 'id' | 'contextWindow'>
+    & Partial<Pick<OpenAICodexModelCatalogEntry, 'maxContextWindow'>>)[],
+): void {
+  const models = new Map(catalog.map(model => [model.id, model]))
+  for (const [id, budget] of Object.entries(overrides ?? {})) {
+    if (budget === null) continue
+    const model = models.get(id)
+    if (model === undefined) throw new TypeError(`OpenAI Codex maxTokensOverrides contains unknown model id "${id}"`)
+    const maxContextWindow = model.maxContextWindow ?? openAICodexContextLimit(id, model.contextWindow).maxContextWindow
+    if (!isValidOpenAICodexContextBudget(budget, maxContextWindow)) {
+      throw new TypeError(`OpenAI Codex maxTokensOverrides for "${id}" must be an integer from 1 to ${maxContextWindow} tokens; use null to restore the catalog default`)
+    }
+  }
+}
+
+/**
+ * Create the Codex subscription adapter without requiring a dsh fork. The
+ * public pi-ai adapter owns Harness message conversion, image attachment
+ * resolution, streaming, reasoning metadata, and compaction behavior; this
+ * plugin supplies its provider-native OAuth token for each request.
+ */
+export function createOpenAICodexAdapter(
+  credentials: OpenAICodexCredentialStore,
+  resolveAttachments: () => AttachmentStore | undefined,
+  fastMode?: FastModeRegistry,
+  visibleModelIds?: () => readonly string[] | undefined,
+  proxyManager?: OpenAICodexProxyManager,
+  resolveProxyUrl?: () => string | undefined,
+  contextWindowOverrides?: () => Readonly<Record<string, number>> | undefined,
+  maxTokensOverrides?: () => Readonly<Record<string, number>> | undefined,
+  routeBindings?: () => readonly OpenAICodexRouteBinding[],
+  extras?: OpenAICodexAdapterExtras,
+): PiAiAdapter & { dispose(): Promise<void> } {
+  const provider = withOpenAICodexAstra(openaiCodexProvider())
+  const requestScope = new SpeedModeRequestScope()
+  const requests = new OpenAICodexRequestLifecycle(resolveProxyUrl, extras?.recentRequests, extras?.resolveRequestKind)
+  let profiles: Map<string, ReturnType<typeof createOpenAICodexProfile>> | undefined
+  let previousKey: unknown
+  const currentProfiles = (): Map<string, ReturnType<typeof createOpenAICodexProfile>> => {
+    const windowOverrides = contextWindowOverrides?.()
+    const tokenOverrides = maxTokensOverrides?.()
+    const reasoningEffort = extras?.resolveReasoningEffort?.()
+    const transport = extras?.resolveTransport?.() ?? DEFAULT_OPENAI_CODEX_MODEL_TRANSPORT
+    const bindings = routeBindings?.() ?? [OPENAI_CODEX_PRIMARY_ROUTE]
+    // Each route reads the catalog of the account it authenticates as.
+    const layers = bindings.map(route => extras?.catalogLayer?.(route.accountKey))
+    const key = {
+      transport,
+      reasoningEffort: reasoningEffort ?? null,
+      window: windowOverrides === undefined ? null : { ...windowOverrides },
+      tokens: tokenOverrides === undefined ? null : { ...tokenOverrides },
+      routes: bindings.map(route => [route.routeId, route.displayName, route.accountKey ?? null]),
+      catalog: bindings.map((route, index) => {
+        const layer = layers[index]
+        return layer === undefined ? null : { route: route.routeId, mode: layer.mode, live: layer.live }
+      }),
+    }
+    if (profiles === undefined || !deepEqualJson(previousKey, key)) {
+      previousKey = key
+      // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
+      profiles = new Map(bindings.map((route, index) => [
+        route.routeId,
+        createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, windowOverrides, tokenOverrides, route, layers[index], extras?.resolveOnPayloadFields,
+          { requestScope, requests, transport, ...reasoningEffort === undefined ? {} : { reasoningEffort }, ...extras?.residency === undefined ? {} : { residency: extras.residency } }),
+      ] as const))
+    }
+    return profiles
+  }
+  class OpenAICodexAdapter extends PiAiAdapter {
+    private streamWithImageHandles(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>, options: GenerateOptions): AsyncIterable<StreamChunk> {
+      return requests.stream(request => {
+        const projected = extras?.imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(request) : request
+        return fastMode instanceof ConversationSpeedRegistry
+          ? requestScope.stream(stream, projected, () => {
+            const captured = fastMode.captureSpeed(request.sessionId)
+            // Auxiliary title/compaction requests do not opt into a paid conversation tier.
+            return request.purpose !== undefined && captured.mode === 'ultrafast' ? { mode: 'standard' } : captured
+          })
+          : stream(projected)
+      }, options)
+    }
+
+    /** Cancel and settle admitted requests before releasing this adapter's proxy resources. */
+    dispose(): Promise<void> { return requests.dispose() }
+    override async prepareCall(providerId: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
+      const prepared = await super.prepareCall(providerId, model, signal)
+      return { ...prepared, stream: options => this.streamWithImageHandles(prepared.stream, options) }
+    }
+    override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      return this.streamWithImageHandles(next => super.stream(next), options)
+    }
+
+    override async listModels(providerId: string) {
+      // Host rc.2 discovery resolves API keys; this plugin must list cached metadata
+      // without capturing an account, refreshing OAuth, or sending provider traffic.
+      const profile = currentProfiles().get(providerId)
+      if (profile === undefined) throw new LlmError(`pi-ai adapter does not own provider "${providerId}"`, 'NO_ADAPTER')
+      const catalog = profile.piProvider.getModels().map(model => ({
+        provider: providerId, id: model.id, name: model.name, inputModalities: [...model.input],
+      }))
+      const configured = visibleModelIds?.()
+      const visible = configured === undefined ? undefined : new Set(configured)
+      const errors = profile.modelErrors
+      return catalog.filter(model => visible === undefined || visible.has(model.id)).map(model => {
+        const failure = errors?.get(model.id)
+        return failure === undefined ? model : { ...model, description: failure }
+      })
+    }
+  }
+  return new OpenAICodexAdapter({
+    profiles: currentProfiles,
+    resolveApiKey: async (_provider, profile) => {
+      const accountKey = (profile as OpenAICodexRouteProfile).openaiCodexAccountKey
+      const captured = requests.current()
+      const operation = async () => {
+        const auth = accountKey === undefined
+          ? await readOpenAICodexRequestAuth(credentials, captured?.signal)
+          : await readOpenAICodexAccountRequestAuth(credentials, accountKey, captured?.signal)
+        captured?.signal.throwIfAborted()
+        requestScope.recordAccount(openAICodexAccountKey(auth.accountId))
+        return auth.access
+      }
+      const proxyUrl = captured === undefined ? resolveProxyUrl?.() : captured.proxyUrl
+      return proxyManager?.run(proxyUrl, operation) ?? operation()
+    },
+    // Host-side auth accepts only the explicit bearer token resolved above.
+    auth: { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() },
+    resolveAttachments,
+  })
+}
+
+/** Deterministic image handles derived exclusively from logged attachment metadata. */
+export function withOpenAICodexImageSelectionHandles(options: GenerateOptions): GenerateOptions {
+  let changed = false
+  const messages = options.messages.map(message => {
+    const content = appendImageSelectionHandles(message.content)
+    if (content === undefined) return message
+    changed = true
+    return { ...message, content }
+  })
+  return changed ? { ...options, messages } : options
+}
+
+
+
+
+
+
+
+
+
+
+

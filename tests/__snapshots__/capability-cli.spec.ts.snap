@@ -1,0 +1,28 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`assembled capability CLI > snapshots the actual offline command with unread credential contents 1`] = `
+"Codex Connect 0.1.0-alpha.4.35: standalone route diagnostics
+Scope: local host versions and the selected standalone route; not the active Harness profile.
+Model: gpt-5.6-sol; network: direct; probe: not-requested
+runtime: supported (declared-host-versions-match)
+  Host package versions satisfy the declared requirements; this is not a live profile or browser compatibility test.
+oauth: unknown (credential-metadata-only)
+  A private credential file does not prove authorization; use an explicit probe.
+responses: unknown (not-probed)
+  Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
+transport: unknown (standalone-sse-not-probed)
+  This standalone probe tests SSE, not the running profile's transport setting, resident budget, or WebSocket support.
+model: unknown (catalog-is-not-entitlement)
+  Run capabilities --model <catalog-id> --probe explicitly; this sends a fixed short request and may consume quota.
+providerFallback: rejected (no-automatic-provider-failover)
+  Select another provider explicitly. Model transport auto can fall back from WebSocket to SSE without switching providers or accounts; this standalone SSE probe does not verify that path.
+contextManagement: unknown (no-successful-optional-operation)
+  Schema recognition is not capability evidence; keep optional context management disabled.
+continuation: unknown (no-continuation-round-trip)
+  A stateless probe does not verify continuation, Fork, or restart; retain Harness-owned history.
+nativeCompaction: rejected (no-native-compaction-integration)
+  Keep Harness text-summary compaction; track the typed-operation and durable-replay prerequisites in Issue #65.
+websocketReuse: unknown (resident-budget-not-probed)
+  A positive maxResidentWebSocketSessions keeps one resident connection per conversation; this standalone probe does not exercise it.
+"
+`;
