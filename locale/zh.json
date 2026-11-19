@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex 连接",
+    "description": "用 ChatGPT OAuth 账号在 Harness 中调用 Codex 模型"
+  }
+}
