@@ -57,7 +57,8 @@
     "check:release-workflow": "node scripts/check-release-workflow.mjs",
     "check:env-proxy-import": "node scripts/check-env-proxy-import.mjs",
     "check": "pnpm run check:release-workflow && pnpm run check:canary-workflow && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:env-proxy-import && pnpm run check:capability-cli && pnpm --silent run check:compatibility && pnpm run pack:check",
-    "prepublishOnly": "pnpm --config.minimum-release-age=0 run check"
+    "prepublishOnly": "pnpm --config.minimum-release-age=0 run check",
+    "prepack": "pnpm run build"
   },
   "exports": {
     "./locale/*.json": "./locale/*.json",
