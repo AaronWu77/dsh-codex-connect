@@ -87,8 +87,8 @@
   ],
   "dependencies": {
     "@earendil-works/pi-ai-host": "npm:@earendil-works/pi-ai@1.4.0",
-    "undici": "8.11.2",
-    "zod": "4.6.6",
+    "undici": "8.12.4",
+    "zod": "4.6.7",
     "@earendil-works/pi-ai": "1.4.0"
   },
   "license": "Apache-2.0",
